@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法而非存储概念；(5) Lance 主表 = representations.lance（内嵌 vector）；(6) 血缘用 lineage.json；(7) Catalog 用 PostgreSQL（借鉴 Lakekeeper），支持 Credential Vending + WAP + 多引擎互操作。
+> **修订说明**：基于 v0.1 review + 架构讨论，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是检索最小单元，提升为一等公民；(5) Lance 主表 = chunks（内嵌 vector）。
 
 ---
 
@@ -183,22 +183,23 @@ Entity: pricing.pdf
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│  L6  Intelligent Engine                                      │
+│  L5  Intelligent Engine                                      │
 │      Query Understanding · Capability Routing · Fusion · RAG │
 ├──────────────────────────────────────────────────────────────┤
-│  L5  Retrieval Capabilities (Tools)                          │
+│  L4  Retrieval Capabilities (Tools)                          │
 │      ls · read · stat · grep · glob                          │
 │      semantic · lexical · hybrid · visual · audio · table    │
 │      graph                                                   │
 ├──────────────────────────────────────────────────────────────┤
-│  L4  Virtual File System (VFS)                               │
+│  L3.5  Virtual File System (VFS)                             │
 │      迭代式 OSS prefix 扫描 → 目录树缓存                      │
 │      路径 ↔ Entity/Representation 映射                       │
 │      glob / grep / ls / stat / read 基于此层                  │
 ├──────────────────────────────────────────────────────────────┤
 │  L3  Indexing Layer (LanceDB)                                │
-│      representations.lance (vector + FTS + scalar filter)    │
+│      chunks 主表 (vector + FTS + scalar filter)              │
 │      Hybrid Search (RRF / CrossEncoder rerank)               │
+│      Graph index (edges 表)                                  │
 ├──────────────────────────────────────────────────────────────┤
 │  L2  Representation Layer                                    │
 │      Pipeline A → canonical_md → chunks → embeddings         │
@@ -209,7 +210,7 @@ Entity: pricing.pdf
 ├──────────────────────────────────────────────────────────────┤
 │  L1  Entity Layer                                            │
 │      Entity registry (1 OSS Object = 1 Entity)               │
-│      lineage.json (血缘) · Manifest                          │
+│      Edge registry (跨 Entity 关系) · Manifest               │
 ├──────────────────────────────────────────────────────────────┤
 │  L0  Raw Object Store (OSS Data Lake)                        │
 │      oss://vector-lake/{ws}/{col}/raw/{entity_id}/original   │
@@ -228,9 +229,8 @@ Entity: pricing.pdf
 | **Indexer** | 构建 Lance 索引（IVF_PQ / HNSW / FTS） | 索引状态 |
 | **Compiler** | LLM 编译 wiki / summary / mind_map / graph | 高阶 representation |
 | **Publisher** | 版本标记 active、原子切换 | active 版本 |
-| **Reconciler** | 周期扫描 OSS / PostgreSQL / Lance / index | drift 报告 + 修复 |
+| **Reconciler** | 周期扫描 OSS / manifest / Lance / index | drift 报告 + 修复 |
 | **VFS Builder** | 迭代式扫描 OSS prefix，构建虚拟文件系统目录树 | 目录树缓存 + 路径映射 |
-| **Catalog Service** | PostgreSQL 元数据管理 + Credential Vending + WAP | Entity 注册 + 路由 |
 | **Retrieval Gateway** | 暴露统一检索 API（含 VFS 工具） | tool 调用结果 |
 | **Intelligent Engine** | 理解 query、路由能力、融合、重排 | evidence pack |
 
@@ -482,110 +482,38 @@ vector-lake/{workspace_id}/{collection_id}/
 - 迁移/复制/删除 = 操作整个 Entity 目录。
 - 不同 Entity 之间完全隔离，无并发写入冲突。
 
-#### 1 张 Lance 表 + 1 个 JSON 文件 + Catalog 服务
+#### 2 张 Lance 表 + 1 个 JSON 文件
 
-| # | 文件/服务 | 位置 | 用途 |
+| # | 文件 | 位置 | 用途 |
 | --- | --- | --- | --- |
-| 1 | **Catalog Service** (PostgreSQL) | 全局服务 | Entity 注册 + 检索路由 + 权限 + 凭证分发（借鉴 Lakekeeper） |
+| 1 | `catalog.lance` | 全局 | Entity 注册 + 检索路由 |
 | 2 | `representations.lance` | Entity 目录内 | 该 Entity 的所有可检索单元（含 vector + text） |
 | — | `lineage.json` | Entity 目录内 | 该 Entity 的血缘边（JSON，内存操作，无需 Lance 索引） |
 
-#### Catalog Service（借鉴 Lakekeeper）
-
-用 PostgreSQL 替代 `catalog.lance` 做元数据管理，借鉴 Lakekeeper 的实体层级和 REST Catalog API：
-
-**实体层级**：
+#### `catalog.lance`（全局）
 
 ```text
-Server
-  └── Project (项目级隔离)
-        └── Warehouse (workspace_id + collection_id)
-              └── Namespace (entity_type 分组，可选)
-                    └── Table (Entity，每个 Entity 对应一个 Iceberg Table)
+entity_id            string
+entity_type          string              # document / image / audio / video
+workspace_id         string
+collection_id        string
+name                 string              # pricing.pdf
+source_uri           string              # oss://.../{entity_id}/original
+source_version       string              # etag
+content_hash         string              # SHA-256
+version              int                 # 单调递增
+status               string              # enabled / hidden / deleted
+entity_uri           string              # oss://.../{entity_id}/
+representation_types list<string>        # [canonical_md, ocr_text, page_image, ...]
+modalities           list<string>        # [text, image]
+chunk_count          int                 # 可检索单元数
+model_version        string              # 最新 embedding 模型版本
+staging_status       string              # pending / merged / stale
+created_at           timestamp
+updated_at           timestamp
 ```
 
-**与 Lakekeeper 的映射**：
-
-| Lakekeeper 概念 | Vector-Lake 对应 | 说明 |
-| --- | --- | --- |
-| Project | 项目 | 多租户隔离（v0.1 单 Project） |
-| Warehouse | workspace_id + collection_id | 知识库级隔离 |
-| Namespace | entity_type | document / image / audio / video |
-| Table | Entity | 1 OSS Object = 1 Table |
-
-**Catalog Service 核心能力**：
-
-| 能力 | 说明 | v0.1 |
-| --- | --- | --- |
-| **Entity 注册** | CRUD Entity 元数据 | ✅ |
-| **检索路由** | 根据 workspace/collection 定位 Entity 的 Lance 文件 | ✅ |
-| **Staging 状态** | 跟踪 Parquet → Lance 汇聚状态 | ✅ |
-| **Storage Credential Vending** | 为客户端分发临时 S3 凭证（不暴露永久密钥） | ✅ |
-| **Soft Deletion** | 删除标记，不物理删除 | ✅ |
-| **Write-Audit-Publish** | 写入 staging → 审计 → publish 到 active | ✅ |
-| **权限控制** | Project / Warehouse / Namespace / Table 级权限 | v0.1 仅 Warehouse 隔离 |
-| **多引擎互操作** | 兼容 Iceberg REST Catalog API，Spark/Trino/DuckDB 可直接查询 | v0.2 |
-| **Event 通知** | Pipeline 事件推送到 NATS/Kafka | v0.2 |
-
-**PostgreSQL Schema**（核心表）：
-
-```sql
--- Entity 注册表（替代 catalog.lance）
-CREATE TABLE entities (
-  entity_id       UUID PRIMARY KEY,
-  entity_type     VARCHAR(20) NOT NULL,  -- document / image / audio / video
-  workspace_id    VARCHAR(64) NOT NULL,
-  collection_id   VARCHAR(64) NOT NULL,
-  name            VARCHAR(512) NOT NULL,
-  source_uri      TEXT NOT NULL,
-  source_version  VARCHAR(128),
-  content_hash    VARCHAR(128),
-  version         INT NOT NULL DEFAULT 1,
-  status          VARCHAR(20) NOT NULL DEFAULT 'enabled',
-  entity_uri      TEXT NOT NULL,          -- oss://.../{entity_id}/
-  representation_types TEXT[],             -- [canonical_md, ocr_text, ...]
-  modalities      TEXT[],                 -- [text, image]
-  chunk_count     INT DEFAULT 0,
-  model_version   VARCHAR(64),
-  staging_status  VARCHAR(20) DEFAULT 'pending',
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(workspace_id, collection_id, name)
-);
-
--- Pipeline 运行历史
-CREATE TABLE pipeline_runs (
-  run_id          UUID PRIMARY KEY,
-  entity_id       UUID REFERENCES entities(entity_id),
-  entity_version  INT NOT NULL,
-  pipeline_id     VARCHAR(64) NOT NULL,
-  status          VARCHAR(20) NOT NULL,
-  started_at      TIMESTAMPTZ NOT NULL,
-  finished_at     TIMESTAMPTZ,
-  error_message   TEXT
-);
-
--- Warehouse（知识库）配置
-CREATE TABLE warehouses (
-  warehouse_id    VARCHAR(64) PRIMARY KEY,
-  workspace_id    VARCHAR(64) NOT NULL,
-  collection_id   VARCHAR(64) NOT NULL,
-  storage_profile JSONB NOT NULL,          -- S3 配置
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
-**为什么用 PostgreSQL 替代 catalog.lance**：
-
-| 维度 | catalog.lance | PostgreSQL (Lakekeeper 风格) |
-| --- | --- | --- |
-| **事务性** | 无 ACID | 完整 ACID |
-| **复杂查询** | 有限 SQL | 完整 SQL + JOIN |
-| **并发写入** | 单写者 | 多写者 + 行锁 |
-| **权限模型** | 无 | 表级 / 行级权限 |
-| **Credential Vending** | 不支持 | 原生支持 |
-| **多引擎互操作** | 不支持 | Iceberg REST Catalog 兼容 |
-| **可观测性** | 差 | SQL 审计 + 日志 |
+> `staging_status`：`pending` = 有新 Parquet 未汇聚；`merged` = 已汇聚到 Lance；`stale` = staging 有更新但未重新汇聚。
 
 #### `representations.lance`（Entity 目录内，核心检索表）
 
