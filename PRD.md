@@ -191,10 +191,15 @@ Entity: pricing.pdf
 │      semantic · lexical · hybrid · visual · audio · table    │
 │      graph                                                   │
 ├──────────────────────────────────────────────────────────────┤
+│  L3.5  Virtual File System (VFS)                             │
+│      迭代式 OSS prefix 扫描 → 目录树缓存                      │
+│      路径 ↔ Entity/Representation 映射                       │
+│      glob / grep / ls / stat / read 基于此层                  │
+├──────────────────────────────────────────────────────────────┤
 │  L3  Indexing Layer (LanceDB)                                │
 │      chunks 主表 (vector + FTS + scalar filter)              │
 │      Hybrid Search (RRF / CrossEncoder rerank)               │
-│      Graph index (edges 表) · Grep (ripgrep on OSS)          │
+│      Graph index (edges 表)                                  │
 ├──────────────────────────────────────────────────────────────┤
 │  L2  Representation Layer                                    │
 │      Pipeline A → canonical_md → chunks → embeddings         │
@@ -225,7 +230,8 @@ Entity: pricing.pdf
 | **Compiler** | LLM 编译 wiki / summary / mind_map / graph | 高阶 representation |
 | **Publisher** | 版本标记 active、原子切换 | active 版本 |
 | **Reconciler** | 周期扫描 OSS / manifest / Lance / index | drift 报告 + 修复 |
-| **Retrieval Gateway** | 暴露统一检索 API | tool 调用结果 |
+| **VFS Builder** | 迭代式扫描 OSS prefix，构建虚拟文件系统目录树 | 目录树缓存 + 路径映射 |
+| **Retrieval Gateway** | 暴露统一检索 API（含 VFS 工具） | tool 调用结果 |
 | **Intelligent Engine** | 理解 query、路由能力、融合、重排 | evidence pack |
 
 ### 3.3 数据流
@@ -832,24 +838,151 @@ active · hidden · deleted · stale
 
 ## 8. 检索能力（Retrieval Capabilities）
 
-### 8.1 能力清单
+### 8.1 Virtual File System（VFS）— 文件系统级能力
 
-| 能力 | 面对的数据 | 典型输入 | 典型输出 |
-| --- | --- | --- | --- |
-| `ls` | entity | dir / collection | entity 列表 |
-| `stat` | entity | entity_id | 元数据 + 状态 |
-| `read` | representation | entity_id + rep_type | 内容 |
-| `grep` | OSS 上的 text / md / ocr / transcript | pattern | 行级命中 |
-| `glob` | entity name | pattern | 匹配 entity |
-| `semantic` | chunks.vector | 自然语言 | top-k chunk + score |
-| `lexical` | chunks.text (FTS) | 关键词 | top-k chunk + BM25 |
-| `hybrid` | chunks.vector + chunks.text | 自然语言 | top-k chunk + 融合 score |
-| `visual` | chunks.vector (modality=image) | image / text | top-k chunk |
-| `audio` | chunks.vector (modality=audio) | audio / text | top-k chunk |
-| `table` | chunks (modality=table) | SQL-like / 关键词 | 表行 + 来源 |
-| `graph` | edges | 实体 / 关系查询 | 邻居子图 |
+**VFS 是 OSS 数据湖的虚拟文件系统层**，通过迭代式 prefix 扫描构建目录树缓存，对外提供文件系统级操作。
 
-### 8.2 Hybrid Search（v0.1 核心检索模式）
+#### VFS 构建方式
+
+```text
+迭代式 OSS Prefix 扫描：
+
+1. 初始扫描
+   ├─ 从 vector-lake/{workspace_id}/{collection_id}/ 开始
+   ├─ 列出所有 prefix（raw/ / representations/ / staging/ / indexes/）
+   └─ 递归扫描每个 prefix，构建完整目录树
+
+2. 增量更新
+   ├─ 监听 OSS 事件（新对象 / 删除 / 修改）
+   ├─ 只更新受影响的子树
+   └─ 定期全量对账（reconcile）
+
+3. 目录树缓存
+   ├─ 内存中维护完整的虚拟目录树
+   ├─ 每个节点记录：path / type(file|dir) / size / last_modified / entity_id / rep_type
+   └─ 定期持久化到 catalog.lance
+```
+
+#### VFS 路径映射
+
+VFS 将 OSS 路径映射为语义化的虚拟路径：
+
+```text
+OSS 物理路径                                          VFS 虚拟路径
+─────────────────────────────────────────────────────────────────────
+raw/{entity_id}/original                         →  /{name}                    # 原始文件
+representations/{entity_id}/v1/canonical.md      →  /{name}/canonical.md       # 视角文件
+representations/{entity_id}/v1/page_image/       →  /{name}/pages/             # 页面图片
+representations/{entity_id}/v1/ocr.md            →  /{name}/ocr.md             # OCR 结果
+representations/{entity_id}/v1/mind_map.json     →  /{name}/mind_map.json      # 脑图
+wiki/{entity_id}.md                              →  /{name}/wiki.md            # Wiki 页面
+```
+
+**用户看到的目录结构**：
+
+```text
+/
+├── pricing.pdf/                    ← Entity（目录）
+│   ├── original                    ← raw 文件
+│   ├── canonical.md                ← 直接提取
+│   ├── ocr.md                      ← OCR 提取
+│   ├── vlm_extracted.md            ← VLM 提取
+│   ├── pages/                      ← 页面图片
+│   │   ├── page_001.png
+│   │   └── page_007.png
+│   ├── mind_map.json               ← 脑图
+│   ├── graph.json                  ← 关系图
+│   ├── summary.md                  ← 摘要
+│   └── wiki.md                     ← Wiki 页面
+│
+├── meeting.wav/                    ← Entity（目录）
+│   ├── original
+│   ├── transcript.md               ← 转写全文
+│   ├── segments/                   ← 音频片段
+│   └── wiki.md
+│
+└── chart.png/                      ← Entity（目录）
+    ├── original
+    ├── ocr.md                      ← OCR 文字
+    ├── caption.md                  ← 图片描述
+    └── wiki.md
+```
+
+#### VFS 提供的工具
+
+| 工具 | 实现 | 说明 |
+| --- | --- | --- |
+| `ls` | 读目录树缓存 | 列出虚拟路径下的子项；支持 `--sort` / `--filter` |
+| `stat` | 读目录树缓存 + catalog | 返回文件/目录元数据（size / last_modified / entity_id / status） |
+| `read` | 从 OSS 读取实际文件 | 返回文件内容；支持 range 读取 |
+| `glob` | 在目录树缓存上匹配 | 支持 `**/*.pdf` / `**/canonical.md` 等模式 |
+| `grep` | 迭代式扫描 OSS 文本文件 | 在匹配的文件中搜索 pattern；支持正则 |
+
+#### grep 的迭代式实现
+
+grep 不能依赖索引（它需要精确匹配原始文本），所以采用**迭代式 OSS 文件扫描**：
+
+```text
+grep "Q3 定价" /pricing.pdf/**
+   │
+   ▼
+[1] glob 匹配 → 找到 /pricing.pdf/canonical.md, /pricing.pdf/ocr.md, ...
+   │
+   ▼
+[2] 过滤文本文件（mime_type = text/* 或 .md/.txt/.json）
+   │
+   ▼
+[3] 迭代式读取 + ripgrep
+   ├─ 从 OSS 流式读取每个文件
+   ├─ 用 ripgrep 在内存中匹配
+   └─ 收集命中行 + 上下文
+   │
+   ▼
+[4] 返回结果
+   └─ 每个命中：file_path / line_number / line_text / context
+```
+
+**优化**：
+- 先用 `glob` 缩小范围，避免扫描所有文件。
+- 对已缓存在本地的 representation（如 staging 中的 Parquet），直接本地 grep。
+- 大文件分块流式读取，不全部加载到内存。
+
+#### VFS 与 Lance 检索的协作
+
+```text
+用户查询 "Q3 定价策略"
+   │
+   ├── 需要精确匹配 → VFS grep（迭代式 OSS 扫描）
+   │                    返回：行级命中 + 文件路径
+   │
+   ├── 需要语义匹配 → Lance hybrid search
+   │                    返回：chunk 级命中 + entity_id + page_number
+   │
+   ├── 需要浏览文件 → VFS ls / glob
+   │                    返回：目录列表 / 文件匹配
+   │
+   └── 需要读文件内容 → VFS read
+                        返回：文件内容
+```
+
+### 8.2 能力清单
+
+| 能力 | 实现层 | 面对的数据 | 典型输入 | 典型输出 |
+| --- | --- | --- | --- | --- |
+| `ls` | VFS | 目录树缓存 | dir / collection | 子项列表 |
+| `stat` | VFS | 目录树缓存 + catalog | entity_id / path | 元数据 + 状态 |
+| `read` | VFS | OSS 文件 | entity_id + rep_type | 文件内容 |
+| `grep` | VFS | OSS 文本文件（迭代式扫描） | pattern + path | 行级命中 |
+| `glob` | VFS | 目录树缓存 | pattern | 匹配文件/目录 |
+| `semantic` | Lance | chunks.vector | 自然语言 | top-k chunk + score |
+| `lexical` | Lance | chunks.text (FTS) | 关键词 | top-k chunk + BM25 |
+| `hybrid` | Lance | chunks.vector + chunks.text | 自然语言 | top-k chunk + 融合 score |
+| `visual` | Lance | chunks.vector (modality=image) | image / text | top-k chunk |
+| `audio` | Lance | chunks.vector (modality=audio) | audio / text | top-k chunk |
+| `table` | Lance | chunks (modality=table) | SQL-like / 关键词 | 表行 + 来源 |
+| `graph` | Lance | edges | 实体 / 关系查询 | 邻居子图 |
+
+### 8.3 Hybrid Search（v0.1 核心检索模式）
 
 ```json
 {
@@ -880,7 +1013,7 @@ results = (
 )
 ```
 
-### 8.3 预览能力（Preview）
+### 8.4 预览能力（Preview）
 
 **每个 Entity 的每种 Representation 都必须可预览**。预览是检索到知识后的第一交互动作。
 
@@ -974,7 +1107,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
    ← 右键 page_image → "查看影响" → 高亮 ocr_text, vlm_md, image_emb
 ```
 
-### 8.4 工具协议
+### 8.5 工具协议
 
 所有工具返回统一的 **evidence 包装**：
 
