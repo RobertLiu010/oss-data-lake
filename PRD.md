@@ -664,7 +664,73 @@ results = (
 )
 ```
 
-### 8.3 工具协议
+### 8.3 预览能力（Preview）
+
+**每个 Entity 的每种 Representation 都必须可预览**。预览是检索到知识后的第一交互动作。
+
+#### 预览 API
+
+```text
+GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
+```
+
+返回对应 representation 的可渲染内容。
+
+#### 各 Representation 的预览方式
+
+| rep_type | 预览渲染 | 说明 |
+| --- | --- | --- |
+| `raw` | 原文件下载 / 浏览器内嵌 | PDF 用 pdf.js；图片直接展示；音频用 `<audio>` |
+| `canonical_md` | Markdown 渲染 | 支持 GFM（表格、代码块、数学公式） |
+| `plain_text` | 纯文本 + 行号 | 等宽字体，支持高亮定位 |
+| `page_image` | 图片列表 / 翻页 | 每页一张截图，支持页码跳转 |
+| `ocr_text` | Markdown 渲染 | 同 canonical_md |
+| `vlm_extracted_md` | Markdown 渲染 | 同 canonical_md |
+| `caption` | 文本卡片 | 图片描述文本 |
+| `table_md` / `table_json` | 表格渲染 | JSON 转 HTML 表格；Markdown 表格直接渲染 |
+| `transcript` | 时间轴 + 文本 | 带时间戳的转写文本，可点击跳转 |
+| `transcript_segment` | 时间轴 + 文本 | 同 transcript |
+| `audio_segment` | 音频播放器 | `<audio>` + 时间范围高亮 |
+| `mind_map` | 脑图渲染 | JSON → 交互式脑图（可展开/折叠） |
+| `graph_json` | 关系图渲染 | JSON → 力导向图（可拖拽/缩放） |
+| `wiki_md` | Wiki 页面渲染 | Markdown + backlinks + 面包屑 |
+| `summary` | 文本卡片 | 摘要文本 |
+| `layout_json` | JSON 树 / 版面叠加 | 可视化版面结构 |
+
+#### 预览与检索结果的联动
+
+```text
+检索命中 chunk
+  │
+  ├─ 点击 → 预览该 chunk 所在的 representation
+  │         自动定位到 page_number / start_pos
+  │
+  └─ 切换视角 → 预览同一 entity 的其他 representation
+                保留定位（同一页码 / 同一时间戳）
+```
+
+#### Entity 视角面板
+
+每个 Entity 提供一个**视角面板**，列出所有可用的 Representation：
+
+```json
+{
+  "entity_id": "abc123",
+  "name": "pricing.pdf",
+  "representations": [
+    { "rep_type": "raw", "status": "ready", "preview_url": "/preview/abc123?rep_type=raw" },
+    { "rep_type": "canonical_md", "status": "ready", "preview_url": "/preview/abc123?rep_type=canonical_md" },
+    { "rep_type": "page_image", "status": "ready", "preview_url": "/preview/abc123?rep_type=page_image" },
+    { "rep_type": "ocr_text", "status": "ready", "preview_url": "/preview/abc123?rep_type=ocr_text" },
+    { "rep_type": "mind_map", "status": "ready", "preview_url": "/preview/abc123?rep_type=mind_map" },
+    { "rep_type": "graph_json", "status": "skipped", "preview_url": null }
+  ]
+}
+```
+
+用户可以在视角面板中**一键切换**不同 Representation 的预览，无需重新检索。
+
+### 8.4 工具协议
 
 所有工具返回统一的 **evidence 包装**：
 
@@ -852,6 +918,8 @@ semantic · lexical · hybrid · visual
 | `POST /tools/lexical` | 关键词检索 |
 | `POST /tools/hybrid` | 混合检索（semantic + lexical + rerank） |
 | `POST /tools/visual` | 图像检索 |
+| `GET /preview/{entity_id}` | 预览 representation（rep_type / page 参数） |
+| `GET /perspectives/{entity_id}` | 获取 Entity 的视角面板（所有可用 representation 列表） |
 | `POST /engine/ask` | 智能引擎（综合） |
 
 ### 12.3 统一响应
@@ -880,6 +948,7 @@ semantic · lexical · hybrid · visual
 | | `semantic` P95 | ≤ 300 ms |
 | | `lexical / grep` P95 | ≤ 200 ms |
 | | `read` P95 | ≤ 300 ms（OSS 读） |
+| | `preview` P95 | ≤ 500 ms（含 OSS 读 + 渲染数据准备） |
 | **吞吐** | `hybrid` QPS（单 workspace） | ≥ 50 |
 | **可恢复** | raw → searchable 时间 | ≤ 5 min（PDF 100 页级别） |
 | **一致性** | reconcile 周期 | ≤ 15 min |
@@ -904,6 +973,8 @@ semantic · lexical · hybrid · visual
 | **S7. 版本切换** | raw 更新 | 旧版本 active 直到新版本 publish 成功；检索无中断 |
 | **S8. Reconcile** | content_hash 变化 | reconcile 检测到变化，触发 pipeline 重跑 |
 | **S9. Pipeline 追加** | 注册新 pipeline | 对已有 entity 按需重跑；不影响已有 representation |
+| **S10. 视角预览** | 检索命中 pricing.pdf 的 chunk | 点击 → 预览 canonical_md（定位到第7页）；切换 → 预览 page_image / ocr_text / mind_map |
+| **S11. 视角面板** | 打开 entity 详情 | 列出所有可用 representation + 状态 + preview_url；skipped/failed 的灰显 |
 
 ---
 
