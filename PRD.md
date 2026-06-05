@@ -71,6 +71,7 @@
 | **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 一等公民，检索命中的原子粒度 |
 | **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 Lance chunks 表的 vector 列 |
 | **Index** | 某类检索能力（semantic/lexical/grep/visual/...） | 可演进 | 检索入口 |
+| **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，支持追溯 / 可视化 / 影响分析 |
 | **Edge** | 跨 Entity 关系（cites/mentions/same_as/...） | 可演进 | 图检索基础 |
 
 ### 2.2 核心链路
@@ -106,7 +107,7 @@ Raw Object (OSS, immutable)
 
 ### 2.4 Representation 是"认知视角"
 
-同一个 Entity 可以有多种认知视角，它们之间可以互为 derived_from：
+同一个 Entity 可以有多种认知视角，它们之间通过 **Lineage（血缘）** 互相关联：
 
 ```text
 Entity: "https://example.com/pricing"
@@ -119,15 +120,39 @@ Entity: "https://example.com/pricing"
   └── rep: graph_json          ← 实体关系图
 ```
 
-derived_from 链：
+Lineage 血缘链：
 
 ```text
-raw_html → canonical_md
-raw_html → page_screenshot
-page_screenshot → vlm_extracted_md    ← 图片→文字
-canonical_md → mind_map               ← 文字→结构
-canonical_md → summary
-canonical_md → graph_json
+raw ──► canonical_md ──► mind_map
+                   ├──► summary
+                   └──► graph_json
+raw ──► page_screenshot ──► vlm_extracted_md
+```
+
+### 2.5 Lineage 是一等公民
+
+Lineage 不只是 `derived_from` 字段，它是核心能力：
+
+**1. 追溯（Trace）**：从任意 representation 沿血缘链向上追溯到 raw source。
+
+```text
+vlm_extracted_md ──追溯──► page_screenshot ──追溯──► raw
+```
+
+**2. 影响分析（Impact）**：当某个 representation 变化时，向下找出所有受影响的下游。
+
+```text
+page_screenshot 变了 → 影响 ocr_text, vlm_extracted_md, image_embedding
+canonical_md 变了    → 影响 mind_map, summary, graph_json, wiki_md
+```
+
+**3. 可视化（Visualize）**：在预览界面展示血缘 DAG，用户可点击任意节点跳转预览。
+
+**4. 重建（Rebuild）**：当上游 representation 变化或 pipeline 升级时，沿血缘链向下级联重建。
+
+```text
+raw 更新 → page_image 重建 → ocr_text 重建 → ocr chunks 重建 → ocr embedding 重建
+                       → vlm_extracted_md 重建 → ...
 ```
 
 ### 2.5 Pipeline 是一等公民
@@ -296,9 +321,10 @@ document · image · audio · video
 ```
 
 **关键设计**：
-- `derived_from` 指向另一个 `representation_id`（而非 OSS URI），形成 representation DAG。
-- `derived_chain` 记录完整溯源链，方便调试和重建。
+- `derived_from` 指向直接上游的 `representation_id`（而非 OSS URI），形成血缘链。
+- `derived_chain` 记录完整溯源链（从 raw 到当前），方便追溯和调试。
 - `pipeline_id` 标识由哪条流水线产出。
+- 更完整的血缘关系由 `lineage` 表维护（见 §4.6），支持多父节点和影响分析。
 
 **标准 rep_type（v0.1 落地集合）**：
 
@@ -479,6 +505,32 @@ status · quality_score · created_at · updated_at
 src_entity_id · dst_entity_id · edge_type · confidence · source · created_at
 ```
 
+#### `lineage`（辅助表，血缘关系）
+
+```text
+entity_id            string        # 所属 entity
+entity_version       int           # 所属版本
+src_representation_id string       # 上游 representation
+dst_representation_id string       # 下游 representation
+pipeline_id          string        # 由哪条 pipeline 产出这条边
+transform            string        # 转换动作（parse / ocr / vlm / llm_compile / ...）
+created_at           timestamp
+```
+
+> **Lineage 表 vs Representation 的 derived_from**：
+> - `derived_from` 是 Representation 自身的直接上游指针（1:1），方便快速追溯。
+> - `lineage` 表是完整的血缘边表（M:N），支持多父节点、影响分析、可视化。
+> - 两者数据一致，`lineage` 表是权威来源，`derived_from` 是冗余加速字段。
+
+**Lineage 查询能力**：
+
+| 查询 | 说明 |
+| --- | --- |
+| `GET /lineage/{entity_id}?direction=upstream&rep_type=ocr_text` | 从 ocr_text 向上追溯到 raw |
+| `GET /lineage/{entity_id}?direction=downstream&rep_type=page_image` | 从 page_image 向下找出所有受影响的下游 |
+| `GET /lineage/{entity_id}?direction=both` | 完整血缘 DAG |
+| `GET /lineage/{entity_id}/impact?rep_type=page_image` | 影响分析：如果 page_image 变了，哪些下游需要重建 |
+
 #### `pipeline_runs`（辅助表，运行历史）
 
 ```text
@@ -532,13 +584,14 @@ active · hidden · deleted · stale
 
 | 触发事件 | 联动动作 |
 | --- | --- |
-| raw object `content_hash` 变化 | entity.version++；触发所有 pipeline 重跑；旧 chunks 保持 active 直到新版本 publish |
+| raw object `content_hash` 变化 | entity.version++；触发所有 pipeline 重跑；沿 lineage 向下级联重建所有下游 representation + chunks；旧 chunks 保持 active 直到新版本 publish |
 | representation `ready` | 触发对应 chunks 的 embed + index |
 | representation `failed` | pipeline `partial_success`；已有 representation 的 chunks 仍可用 |
 | OSS tag → `hidden` | entity.status=hidden；所有 chunks 标 `hidden`（不进入默认检索） |
 | OSS tag → `deleted` | entity.status=deleted；chunks 软删除；OSS 原文件保留 |
 | embedding 模型升级 | 检测 `model_version` 过期；触发对应 chunks 重跑 embed |
 | pipeline 新增 | 对已有 entity 按需重跑新 pipeline；不影响已有 representation |
+| 上游 representation 变化 | 沿 lineage 向下级联重建所有下游 representation + chunks + embeddings |
 
 ### 5.8 内容寻址变更检测
 
@@ -730,6 +783,34 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
 
 用户可以在视角面板中**一键切换**不同 Representation 的预览，无需重新检索。
 
+#### 血缘可视化
+
+在预览界面中，展示当前 Entity 的血缘 DAG，用户可以：
+
+1. **查看血缘图**：看到所有 representation 之间的派生关系。
+2. **点击节点跳转**：点击 DAG 中的任意节点，切换到该 representation 的预览。
+3. **高亮当前路径**：当前预览的 representation 在 DAG 中高亮，其上游链路加粗显示。
+4. **影响分析**：右键某个节点 → "查看影响" → 高亮所有下游 representation。
+
+```text
+         ┌── raw ──┐
+         │         │
+         ▼         ▼
+   canonical_md  page_image ──────────┐
+      │    │       │    │             │
+      │    │       ▼    ▼             ▼
+      │    │    ocr_text vlm_md   image_emb
+      ▼    ▼
+  mind_map summary
+      │
+      ▼
+   graph_json
+
+   ← 点击 vlm_md → 预览 VLM 提取结果
+   ← 高亮 raw → page_image → vlm_md 链路
+   ← 右键 page_image → "查看影响" → 高亮 ocr_text, vlm_md, image_emb
+```
+
 ### 8.4 工具协议
 
 所有工具返回统一的 **evidence 包装**：
@@ -920,6 +1001,8 @@ semantic · lexical · hybrid · visual
 | `POST /tools/visual` | 图像检索 |
 | `GET /preview/{entity_id}` | 预览 representation（rep_type / page 参数） |
 | `GET /perspectives/{entity_id}` | 获取 Entity 的视角面板（所有可用 representation 列表） |
+| `GET /lineage/{entity_id}` | 查询血缘关系（direction=upstream/downstream/both） |
+| `GET /lineage/{entity_id}/impact` | 影响分析（某个 rep 变了会影响哪些下游） |
 | `POST /engine/ask` | 智能引擎（综合） |
 
 ### 12.3 统一响应
@@ -975,6 +1058,8 @@ semantic · lexical · hybrid · visual
 | **S9. Pipeline 追加** | 注册新 pipeline | 对已有 entity 按需重跑；不影响已有 representation |
 | **S10. 视角预览** | 检索命中 pricing.pdf 的 chunk | 点击 → 预览 canonical_md（定位到第7页）；切换 → 预览 page_image / ocr_text / mind_map |
 | **S11. 视角面板** | 打开 entity 详情 | 列出所有可用 representation + 状态 + preview_url；skipped/failed 的灰显 |
+| **S12. 血缘追溯** | 查看 ocr_text 的来源 | lineage API 返回 raw → page_image → ocr_text 链路；可视化 DAG 高亮该路径 |
+| **S13. 影响分析** | page_image 需要重建 | impact API 返回受影响下游：ocr_text, vlm_extracted_md, image_embedding；级联重建 |
 
 ---
 
