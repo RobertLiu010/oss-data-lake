@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取。
 
 ---
 
@@ -355,7 +355,7 @@ class Entity:
     entity_id: str                # 目录名 = entity_id
     workspace_id: str             # 从路径前缀解析
     collection_id: str            # 从路径前缀解析
-    entity_type: str              # document / image / audio / video（OSS Tag）
+    entity_type: str              # document / image / audio / video / table（OSS Tag）
     name: str                     # pricing.pdf（OSS Tag）
     content_hash: str             # raw SHA-256（OSS Tag）
     version: int                  # 单调递增（OSS Tag）
@@ -463,6 +463,25 @@ class Entity:
     def perspectives(self) -> PerspectivesView:
         """返回视角面板（所有可用 rep + 状态 + preview_url）。"""
 
+    # ===== 表格查询（基于 DuckDB + Parquet）=====
+    def to_parquet(self) -> str:
+        """将表格型 Entity 转为 Parquet 格式。
+        触发 Pipeline G（表格获取），产出 compile/table.parquet。
+        返回 OSS 路径。"""
+
+    def query_table(self, sql: str) -> list[dict]:
+        """通过 DuckDB 对该 Entity 的 table.parquet 执行 SQL 查询。
+        支持 SELECT / WHERE / GROUP BY / JOIN / 窗口函数。
+        返回 list of dicts。"""
+
+    def get_table_schema(self) -> dict:
+        """获取 table.parquet 的 schema（列名 + 类型 + 行数统计）。
+        通过 DuckDB 的 DESCRIBE + COUNT(*) 实现。"""
+
+    def get_table_stats(self) -> dict:
+        """获取 table.parquet 的统计信息（行数、列数、文件大小、空值率等）。
+        通过 DuckDB 的 SUMMARIZE 实现。"""
+
     # ===== 生命周期 =====
     def export(self) -> EntityBundle:
         """导出整个 Entity 目录为可迁移包。"""
@@ -484,6 +503,7 @@ class Entity:
 | **血缘** | `get_lineage*` / `cascade_invalidate` | 血缘 DAG |
 | **状态** | `hide` / `show` / `delete` / `restore` / `update_tags` | OSS Tag |
 | **检索** | `search` / `grep` | representations.lance + OSS |
+| **表格查询** | `to_parquet` / `query_table` / `get_table_schema` / `get_table_stats` | DuckDB + compile/table.parquet |
 | **预览** | `preview` / `perspectives` | VFS |
 | **生命周期** | `export` / `destroy` / `exists` | OSS 目录 |
 
@@ -637,6 +657,7 @@ transcript            recognize/transcript.md
 audio_segment         recognize/audio_segment/seg_{NNN}.wav
 table_md              compile/table.md
 table_json            compile/table.json
+table_parquet         compile/table.parquet
 mind_map              compile/mind_map.json
 wiki_md               compile/wiki.md
 graph_json            compile/graph.json
@@ -726,6 +747,7 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
 | transcript / transcript_segment | 按时间戳切 segment | text |
 | audio_segment | 每个 segment 一个 chunk，走 audio embedding | audio |
 | table_md / table_json | 每个表格一个 chunk | table |
+| table_parquet | 不切 chunk（由 DuckDB 直接查询） | table |
 | mind_map | 按节点切 chunk | text |
 | graph_json | 按 (subject, predicate, object) 三元组切 chunk | text |
 
@@ -824,7 +846,8 @@ vector-lake/{workspace_id}/{collection_id}/
 │   │   ├── mind_map.json                        ← rep 文件（带 Rep OSS Tag）
 │   │   ├── graph.json                           ← rep 文件（带 Rep OSS Tag）
 │   │   ├── summary.md                           ← rep 文件（带 Rep OSS Tag）
-│   │   └── wiki.md                              ← rep 文件（带 Rep OSS Tag）
+│   │   ├── wiki.md                              ← rep 文件（带 Rep OSS Tag）
+│   │   └── table.parquet                        ← table 型 Entity 的 Parquet（DuckDB 访问）
 │   └── _index/                                  ← 系统目录
 │       ├── staging/                             ← L1 写入层（Pipeline 产出）
 │       │   └── representations_v{N}.parquet     ← 可检索单元 + vectors
@@ -875,7 +898,7 @@ vector-lake/{workspace_id}/{collection_id}/
 | Key | 取值 | 说明 |
 | --- | --- | --- |
 | `rag_status` | `enabled` / `hidden` / `deleted` | 用户意图，VFS 过滤 |
-| `entity_type` | `document` / `image` / `audio` / `video` | Entity 类型 |
+| `entity_type` | `document` / `image` / `audio` / `video` / `table` | Entity 类型 |
 | `name` | `pricing.pdf` | 原始文件名 |
 | `content_hash` | `sha256_xxx` | raw 内容的 SHA-256 |
 | `version` | `1` | Entity 版本号 |
@@ -2390,6 +2413,7 @@ active · hidden · deleted · stale
 | **D. 知识编译** | canonical_md | mind_map, graph_json, wiki_md, summary | text chunks | `retrieval.passage` on summary/caption |
 | **E. 图片向量** | raw → page_image | page_image | image chunks | `image` on page_image |
 | **F. 音频转写** | raw → audio_segment | audio_segment, transcript, transcript_segment | audio chunks + text chunks | `audio` on segment; `retrieval.passage` on transcript |
+| **G. 表格获取** | raw (CSV / Excel / SQL) | table_parquet, table_md, table_json | table chunks | `retrieval.passage` on table_md/table_json text；table_parquet 供 DuckDB 查询 |
 
 ### 6.2 Pipeline 编排原则
 
@@ -2407,6 +2431,7 @@ active · hidden · deleted · stale
 | image | E (图片向量) | B (OCR), C (VLM), D (知识编译) |
 | audio | F (音频转写) | D (知识编译) |
 | video | F (音频转写) | E (图片向量), D (知识编译) |
+| table | G (表格获取) | D (知识编译) |
 
 ---
 
@@ -2483,6 +2508,7 @@ OSS 物理路径                                          VFS 虚拟路径
 {entity_id}/compile/graph.json                   →  /{name}/graph.json         # 关系图
 {entity_id}/compile/summary.md                   →  /{name}/summary.md         # 摘要
 {entity_id}/compile/wiki.md                      →  /{name}/wiki.md            # Wiki 页面
+{entity_id}/compile/table.parquet                →  /{name}/table.parquet      # Parquet 表格
 ```
 
 **用户看到的目录结构**：
@@ -2500,7 +2526,8 @@ OSS 物理路径                                          VFS 虚拟路径
 │   ├── mind_map.json               ← 脑图
 │   ├── graph.json                  ← 关系图
 │   ├── summary.md                  ← 摘要
-│   └── wiki.md                     ← Wiki 页面
+│   ├── wiki.md                     ← Wiki 页面
+│   └── table.parquet                ← Parquet 表格
 │
 ├── meeting.wav/                    ← Entity（目录）
 │   ├── original
@@ -2636,6 +2663,7 @@ grep "Q3 定价" /pricing.pdf/**
 | `visual` | Lance | representations.lance (modality=image) | image / text | top-k chunk |
 | `audio` | Lance | representations.lance (modality=audio) | audio / text | top-k chunk |
 | `table` | Lance | representations.lance (modality=table) | SQL-like / 关键词 | 表行 + 来源 |
+| `duckdb` | DuckDB | compile/table.parquet | SQL | 结构化查询结果 |
 | `graph` | Lance | edges | 实体 / 关系查询 | 邻居子图 |
 
 ### 8.3 Hybrid Search（v0.1 核心检索模式）
@@ -2692,7 +2720,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
 | `ocr_text` | Markdown 渲染 | 同 canonical_md |
 | `vlm_extracted_md` | Markdown 渲染 | 同 canonical_md |
 | `caption` | 文本卡片 | 图片描述文本 |
-| `table_md` / `table_json` | 表格渲染 | JSON 转 HTML 表格；Markdown 表格直接渲染 |
+| `table_md` / `table_json` / `table_parquet` | 表格渲染 | table_parquet：DuckDB 抽样 100 行转 HTML 表格；JSON 转 HTML 表格；Markdown 表格直接渲染 |
 | `transcript` | 时间轴 + 文本 | 带时间戳的转写文本，可点击跳转 |
 | `transcript_segment` | 时间轴 + 文本 | 同 transcript |
 | `audio_segment` | 音频播放器 | `<audio>` + 时间范围高亮 |
@@ -2793,6 +2821,198 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
   ]
 }
 ```
+
+### 8.7 DuckDB 统一访问 — 表格型 Entity 的 SQL 查询
+
+**适用场景**：`entity_type=table` 的 Entity（CSV / Excel / 数据库表），需要 SQL 灵活查询。
+
+#### 架构
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  DuckDB (进程内嵌入，无服务端)                                 │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │  Entity A     │  │  Entity B     │  │  Entity N     │       │
+│  │ compile/      │  │ compile/      │  │ compile/      │       │
+│  │ table.parquet │  │ table.parquet │  │ table.parquet │       │
+│  └──────────────┘  └──────────────┘  └──────────────┘       │
+│         │                 │                 │                │
+│         ▼                 ▼                 ▼                │
+│  ┌─────────────────────────────────────────────────┐       │
+│  │  DuckDB 注册多个 Parquet (httpfs + OSS)           │       │
+│  │  → 联邦查询 : SELECT ... FROM entities WHERE ...  │       │
+│  └─────────────────────────────────────────────────┘       │
+│                                                             │
+│  查询方式：                                                  │
+│  1. 单 Entity 查询 : Entity.query_table(sql)                │
+│  2. 跨 Entity 联邦 : DuckDB 注册多表，SQL JOIN/UNION         │
+│  3. 与 Lance 协同 : DuckDB 过滤 ID 集合 → Lance 语义检索     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 设计原则
+
+- **进程内嵌入**：DuckDB 以 Python binding 形式嵌入智能引擎进程，零运维。
+- **OSS 原生读取**：DuckDB `httpfs` 插件直接读 OSS Parquet，无需下载到本地。
+- **Schema 推断**：Pipeline G 写入 `compile/table.parquet` 时自动记录 schema（列名 / 类型）。
+- **列裁剪 + 谓词下推**：DuckDB 在 OSS 侧完成，只传输查询需要的列和行，节省带宽。
+
+#### 核心 API
+
+```python
+# ── 1. 单 Entity SQL 查询 ──────────────────────────────
+class Entity:
+    def query_table(self, sql: str) -> list[dict]:
+        """对该 Entity 的 table.parquet 执行 SQL。"""
+
+import duckdb
+
+conn = duckdb.connect()
+
+# 注册 OSS Parquet（通过 DuckDB httpfs）
+conn.execute("INSTALL httpfs; LOAD httpfs;")
+conn.execute(f"""
+    CREATE VIEW entity_{entity.entity_id} AS
+    SELECT * FROM read_parquet('s3://bucket/.../{entity.entity_id}/compile/table.parquet')
+""")
+
+# 执行用户 SQL（只读，安全沙箱）
+result = conn.execute(sql).fetchall()
+columns = [desc[0] for desc in conn.description]
+return [dict(zip(columns, row)) for row in result]
+
+
+# ── 2. 跨 Entity 联邦查询 ──────────────────────────────
+class Collection:
+    def query_tables(self, sql: str, entity_ids: list[str] = None) -> list[dict]:
+        """跨多个 table 型 Entity 执行 SQL 联邦查询。
+
+        SELECT a.quarter, a.revenue, b.cost
+        FROM entity_abc a JOIN entity_def b ON a.quarter = b.quarter
+        WHERE a.revenue > 1000000
+        """
+
+conn = duckdb.connect()
+
+# 批量注册多个 Entity 的 table.parquet
+for eid in entity_ids:
+    conn.execute(f"""
+        CREATE VIEW entity_{eid} AS
+        SELECT *, '{eid}' AS _entity_id
+        FROM read_parquet(
+            's3://bucket/vector-lake/{ws}/{col}/{eid}/compile/table.parquet'
+        )
+    """)
+
+return conn.execute(sql).fetchall()
+
+
+# ── 3. SQL 过滤 + Lance 语义检索协同 ───────────────────
+# DuckDB 先做结构化过滤（WHERE revenue > 1M），拿到 entity_id 集合
+# 再用 Lance 在这些 Entity 中做语义检索
+filtered_ids = duckdb.sql("""
+    SELECT DISTINCT _entity_id
+    FROM entities
+    WHERE revenue > 1000000
+""").fetchall()
+
+# 在过滤结果上做语义检索
+results = await cross_entity_semantic_search(query, entity_ids=filtered_ids)
+```
+
+#### 安全沙箱
+
+| 安全措施 | 实现 |
+| --- | --- |
+| **只读** | DuckDB 连接只注册 `read_parquet()`，不开放写入 |
+| **SQL 白名单** | 只允许 SELECT / WITH，禁止 INSERT / UPDATE / DELETE / DROP |
+| **资源限制** | Statement timeout（30s），memory limit（512MB） |
+| **OSS 鉴权** | DuckDB httpfs 用 STS 临时凭证，随 session 过期 |
+| **Schema 可见性** | 每个 Entity 只暴露自己的 `entity_{id}` 视图 |
+
+#### Pipeline G：表格获取（raw → table_parquet）
+
+```text
+Pipeline G 输入：raw (CSV / Excel / SQL dump / JSON array)
+Pipeline G 输出：compile/table.parquet + compile/table.md + compile/table.json
+
+Stage 1: Parse
+  ├─ 根据 raw 文件格式选择解析器
+  │   ├─ CSV → DuckDB read_csv_auto() → 自动推断 header + 类型
+  │   ├─ Excel → openpyxl / calamine → 第一个 sheet → DataFrame
+  │   ├─ SQL dump → sqlparse → 提取 CREATE TABLE + INSERT → DuckDB 重建
+  │   └─ JSON array → Pandas read_json → DataFrame
+  └─ 输出：内存 DataFrame
+
+Stage 2: Normalize
+  ├─ 列名标准化（去空格 / 小写 / 下划线）
+  ├─ 类型推断优化（日期列 → DATE；货币列 → DECIMAL）
+  └─ 空值规范化（空字符串 → NULL）
+
+Stage 3: Parquet Write
+  ├─ DataFrame → DuckDB COPY TO 'compile/table.parquet' (FORMAT PARQUET)
+  ├─ 使用 Snappy 压缩 + 列统计（min/max/null_count）供谓词下推
+  └─ 输出：compile/table.parquet（写入 OSS）
+
+Stage 4: Schema 记录
+  ├─ DuckDB DESCRIBE → 生成 table.json（schema 元数据，存到 compile/）
+  └─ 输出：compile/table.json
+
+Stage 5: Chunk + Index
+  ├─ table.md（rep_type=table_md）：Markdown 表格格式，进入 Lance chunk + embed
+  └─ table.json（rep_type=table_json）：供 tool 使用
+```
+
+#### table_parquet 的 schema 约定
+
+```python
+# compile/table.parquet 的隐含约束
+# 1. 每行 = 一条业务记录
+# 2. 列名标准化为 snake_case
+# 3. 自动添加 _row_id 列（全局唯一行号，用于 tool evidence 引用）
+# 4. Parquet 文件元数据中存储：
+#    - source_format: "csv" | "xlsx" | "sql"
+#    - source_hash: sha256 of raw
+#    - row_count: 行数
+#    - column_count: 列数
+#    - created_at: 生成时间
+```
+
+#### 与 Lance 检索的协作
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  Hybrid Query：SQL 过滤 + 语义检索                        │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  用户查询："revenue > 10M 的合同中，哪些提到定价策略？"    │
+│                                                         │
+│  Step 1: DuckDB 结构化过滤                                │
+│    SELECT _row_id, contract_name                         │
+│    FROM entity_finance                                  │
+│    WHERE revenue > 10000000                              │
+│    → 返回 15 行 (entity_id=_row_id)                      │
+│                                                         │
+│  Step 2: Lance 语义检索（在 DuckDB 过滤结果中）             │
+│    search("定价策略", entity_ids=filtered_entity_ids)     │
+│    → 返回 top 5 chunks                                  │
+│                                                         │
+│  Step 3: 融合返回                                        │
+│    evidence = [{table_row, chunk_snippet, score}, ...]  │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 性能参考
+
+| 场景 | 数据量 | DuckDB 耗时 | 说明 |
+| --- | --- | --- | --- |
+| 单表全表扫描 | 10M rows, 500MB Parquet | ~2s | 列裁剪 + 谓词下推后 < 0.5s |
+| GROUP BY 聚合 | 10M rows | ~1s | 列式存储列裁剪优化 |
+| 两表 JOIN（等值） | 1M × 100K | ~3s | 内存 hash join |
+| 联邦 10 Entity | 100K each | ~5s | httpfs 并行读取 |
+| SQL + Lance 协同 | 100K → 过滤 1K → 语义检索 | ~1s | 先缩范围再语义 |
 
 ---
 
