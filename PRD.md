@@ -131,29 +131,26 @@ raw ──► page_screenshot ──► vlm_extracted_md
 
 ### 2.5 Lineage 是一等公民
 
-Lineage 不只是 `derived_from` 字段，它是核心能力：
-
-**1. 追溯（Trace）**：从任意 representation 沿血缘链向上追溯到 raw source。
+Lineage 的核心目的是：**上游变动后，下游立即不可用并重新生成**。
 
 ```text
-vlm_extracted_md ──追溯──► page_screenshot ──追溯──► raw
+raw 更新
+  → page_image 立即 stale → ocr_text 立即 stale → ocr chunks 立即 stale
+                          → vlm_extracted_md 立即 stale → vlm chunks 立即 stale
+                          → image_embedding 立即 stale
+  → canonical_md 立即 stale → mind_map 立即 stale
+                            → summary 立即 stale
+                            → graph_json 立即 stale
 ```
 
-**2. 影响分析（Impact）**：当某个 representation 变化时，向下找出所有受影响的下游。
+**Lineage 驱动的级联规则**：
 
-```text
-page_screenshot 变了 → 影响 ocr_text, vlm_extracted_md, image_embedding
-canonical_md 变了    → 影响 mind_map, summary, graph_json, wiki_md
-```
+1. **上游变了 → 下游立即 stale**：沿 lineage 边向下遍历，所有下游 representation + chunk 标记 `stale`，检索不再命中。
+2. **stale → 自动触发重建**：pipeline orchestrator 检测到 stale 状态，自动重跑对应 pipeline 生成新 representation + chunks。
+3. **重建完成 → publish 切换**：新版本 ready 后，原子切换，检索恢复。
+4. **重建期间 → 旧版本仍可查**：stale 的 chunks 在新版本 publish 前仍保留，但标记为 stale（可选：检索是否包含 stale 结果）。
 
-**3. 可视化（Visualize）**：在预览界面展示血缘 DAG，用户可点击任意节点跳转预览。
-
-**4. 重建（Rebuild）**：当上游 representation 变化或 pipeline 升级时，沿血缘链向下级联重建。
-
-```text
-raw 更新 → page_image 重建 → ocr_text 重建 → ocr chunks 重建 → ocr embedding 重建
-                       → vlm_extracted_md 重建 → ...
-```
+> 追溯、可视化、影响分析都是 Lineage 的**辅助能力**，核心是"级联失效 + 自动重建"。
 
 ### 2.5 Pipeline 是一等公民
 
@@ -526,10 +523,10 @@ created_at           timestamp
 
 | 查询 | 说明 |
 | --- | --- |
-| `GET /lineage/{entity_id}?direction=upstream&rep_type=ocr_text` | 从 ocr_text 向上追溯到 raw |
-| `GET /lineage/{entity_id}?direction=downstream&rep_type=page_image` | 从 page_image 向下找出所有受影响的下游 |
-| `GET /lineage/{entity_id}?direction=both` | 完整血缘 DAG |
-| `GET /lineage/{entity_id}/impact?rep_type=page_image` | 影响分析：如果 page_image 变了，哪些下游需要重建 |
+| `GET /lineage/{entity_id}?direction=upstream&rep_type=ocr_text` | 从 ocr_text 向上追溯到 raw（辅助能力） |
+| `GET /lineage/{entity_id}?direction=downstream&rep_type=page_image` | 从 page_image 向下找出所有下游（级联失效目标） |
+| `GET /lineage/{entity_id}/impact?rep_type=page_image` | 影响分析：如果 page_image 变了，哪些下游需要 stale + 重建 |
+| `POST /lineage/{entity_id}/cascade` | 手动触发级联：将指定 rep 的所有下游标 stale 并触发重建 |
 
 #### `pipeline_runs`（辅助表，运行历史）
 
@@ -584,14 +581,15 @@ active · hidden · deleted · stale
 
 | 触发事件 | 联动动作 |
 | --- | --- |
-| raw object `content_hash` 变化 | entity.version++；触发所有 pipeline 重跑；沿 lineage 向下级联重建所有下游 representation + chunks；旧 chunks 保持 active 直到新版本 publish |
+| raw object `content_hash` 变化 | entity.version++；沿 lineage 向下级联：所有下游 representation 标 `stale`，对应 chunks 标 `stale`（检索不再命中）；自动触发 pipeline 重跑；新版本 ready 后 publish 切换 |
 | representation `ready` | 触发对应 chunks 的 embed + index |
+| representation `stale` | 沿 lineage 向下级联：所有下游 representation 标 `stale`，chunks 标 `stale`；自动触发下游 pipeline 重建 |
 | representation `failed` | pipeline `partial_success`；已有 representation 的 chunks 仍可用 |
 | OSS tag → `hidden` | entity.status=hidden；所有 chunks 标 `hidden`（不进入默认检索） |
 | OSS tag → `deleted` | entity.status=deleted；chunks 软删除；OSS 原文件保留 |
 | embedding 模型升级 | 检测 `model_version` 过期；触发对应 chunks 重跑 embed |
 | pipeline 新增 | 对已有 entity 按需重跑新 pipeline；不影响已有 representation |
-| 上游 representation 变化 | 沿 lineage 向下级联重建所有下游 representation + chunks + embeddings |
+| 上游 representation 变化 | 沿 lineage 向下级联：下游 representation 立即 stale → chunks stale → 自动重建 |
 
 ### 5.8 内容寻址变更检测
 
@@ -1058,8 +1056,9 @@ semantic · lexical · hybrid · visual
 | **S9. Pipeline 追加** | 注册新 pipeline | 对已有 entity 按需重跑；不影响已有 representation |
 | **S10. 视角预览** | 检索命中 pricing.pdf 的 chunk | 点击 → 预览 canonical_md（定位到第7页）；切换 → 预览 page_image / ocr_text / mind_map |
 | **S11. 视角面板** | 打开 entity 详情 | 列出所有可用 representation + 状态 + preview_url；skipped/failed 的灰显 |
-| **S12. 血缘追溯** | 查看 ocr_text 的来源 | lineage API 返回 raw → page_image → ocr_text 链路；可视化 DAG 高亮该路径 |
-| **S13. 影响分析** | page_image 需要重建 | impact API 返回受影响下游：ocr_text, vlm_extracted_md, image_embedding；级联重建 |
+| **S12. 血缘级联失效** | raw 更新（content_hash 变化） | 沿 lineage 级联：page_image/ocr_text/canonical_md 全部标 stale；对应 chunks 检索不再命中 |
+| **S13. 血缘级联重建** | S12 之后 | pipeline 自动重跑；新 representation ready → chunks active → 检索恢复 |
+| **S14. 中间节点失效** | page_image 重建失败 | 下游 ocr_text/vlm_md 保持 stale；上游 canonical_md 不受影响（不同 lineage 分支） |
 
 ---
 
