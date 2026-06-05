@@ -192,7 +192,7 @@ Entity: pricing.pdf
 │      graph                                                   │
 ├──────────────────────────────────────────────────────────────┤
 │  L3.5  Virtual File System (VFS)                             │
-│      迭代式 OSS prefix 扫描 → 目录树缓存                      │
+│      事件驱动 + 迭代式 OSS prefix 扫描 → 目录树                │
 │      路径 ↔ Entity/Representation 映射                       │
 │      glob / grep / ls / stat / read 基于此层                  │
 ├──────────────────────────────────────────────────────────────┤
@@ -229,44 +229,76 @@ Entity: pricing.pdf
 | **Indexer** | 构建 Lance 索引（IVF_PQ / HNSW / FTS） | 索引状态 |
 | **Compiler** | LLM 编译 wiki / summary / mind_map / graph | 高阶 representation |
 | **Publisher** | 版本标记 active、原子切换 | active 版本 |
-| **Reconciler** | 周期扫描 OSS / manifest / Lance / index | drift 报告 + 修复 |
-| **VFS Builder** | 迭代式扫描 OSS prefix，构建虚拟文件系统目录树 | 目录树缓存 + 路径映射 |
+| **Event Listener** | 订阅 OSS 事件，实时更新 VFS 目录树 + 触发血缘重算 | 增量 VFS 视图 + 事件队列 |
+| **Reconciler** | 周期全量扫描 OSS prefix，对账 VFS 视图与 OSS 实际状态 | drift 报告 + 修复 |
+| **VFS Builder** | 迭代式扫描 OSS prefix，构建虚拟文件系统目录树 | 目录树 + 路径映射 |
 | **Retrieval Gateway** | 暴露统一检索 API（含 VFS 工具） | tool 调用结果 |
 | **Intelligent Engine** | 理解 query、路由能力、融合、重排 | evidence pack |
 
-### 3.3 数据流
+### 3.3 数据流：事件驱动 + 实时 VFS
+
+**核心：OSS 事件是所有变更的唯一入口，VFS 是实时数据源。**
 
 ```text
-OSS Event
-   │
-   ▼
-Ingest + Detect  ────►  Entity (1 OSS Object = 1 Entity)
+┌──────────────────────────────────────────────────────────────┐
+│  OSS Bucket                                                  │
+│      ObjectCreated / ObjectRemoved / ObjectModified          │
+└───────────────────────────┬──────────────────────────────────┘
                             │
                             ▼
-                     Pipeline Dispatch
+                  ┌─────────────────────┐
+                  │   Event Listener     │  ← 订阅 OSS 事件流
+                  │   (实时)             │
+                  └─────────┬───────────┘
                             │
-        ┌───────────┬───────┼───────┬───────────┐
-        ▼           ▼       ▼       ▼           ▼
-    Pipeline A  Pipeline B  ...  Pipeline D  Pipeline E
-        │           │               │           │
-        ▼           ▼               ▼           ▼
-    Rep(canonical) Rep(page_img) Rep(mind_map) Rep(page_img)
-        │           │               │           │
-        ▼           ▼               ▼           ▼
-    Chunks      Chunks          Chunks      Chunks
-        │           │               │           │
-        ▼           ▼               ▼           ▼
-    Embed(text) Embed(ocr)    Embed(text)  Embed(image)
-        │           │               │           │
-        └───────────┴───────┬───────┴───────────┘
-                            ▼
-                    Lance chunks 主表
-                            │
-                            ▼
-                    Index + Publish
-                            │
-                            ▼
-                    Active (queryable)
+                ┌───────────┴───────────┐
+                ▼                       ▼
+         增量更新 VFS 树        触发血缘重算
+                │                       │
+                ▼                       ▼
+         VFS 目录树            受影响下游标 stale
+         (内存视图)                   │
+                                      ▼
+                              触发 pipeline 重跑
+                                      │
+                                      ▼
+                              写 staging Parquet
+                                      │
+                                      ▼
+                              汇聚 → representations.lance
+                                      │
+                                      ▼
+                              Active (queryable)
+```
+
+**事件类型与处理**：
+
+| 事件 | 触发条件 | VFS 更新 | 血缘动作 | 检索动作 |
+| --- | --- | --- | --- | --- |
+| `ObjectCreated` | 新文件上传 | 增量添加节点 | 推算新增边 | 触发对应 pipeline |
+| `ObjectModified` | 文件覆盖（raw 更新） | 更新节点属性 | 下游标 stale → 级联重建 | 触发重建 |
+| `ObjectRemoved` | 文件删除 | 移除节点 | 下游标 stale | 受影响 rep 从检索移除 |
+
+**VFS 与检索的协作**：
+
+```text
+VFS 目录树（内存，实时）
+  ├─ ls / stat / glob → 读目录树
+  ├─ grep → 迭代式读 OSS 文本文件
+  ├─ read → 读 OSS 文件内容
+  └─ 提供路径 ↔ Entity/Representation 映射，给 Lance 检索用
+```
+
+**Reconciler（兜底）**：
+
+事件可能丢失（网络抖动、Listener 宕机），所以 Reconciler 周期全量扫描 OSS prefix，与 VFS 视图对账：
+
+```text
+Reconciler 周期任务（每 15 min）
+  ├─ 全量扫描 vector-lake/{ws}/{col}/ prefix
+  ├─ 与 VFS 内存视图对比
+  ├─ 修复漂移（增删改）
+  └─ 触发漏掉的事件处理
 ```
 
 ---
