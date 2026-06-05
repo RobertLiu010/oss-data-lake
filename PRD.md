@@ -227,7 +227,7 @@ Entity: pricing.pdf
 | **Pipeline Orchestrator** | 根据 entity_type 选择 1..N 条 pipeline 并行调度 | pipeline_run 记录 |
 | **Pipeline Worker** | 执行单条 pipeline，产出 representation + chunks | representation + chunks |
 | **Embedder** | 调用 Embedding V5 多模态服务 | chunks 表的 vector 列 |
-| **Indexer** | 构建 Lance 索引（IVF_PQ / HNSW / FTS） | 索引状态 |
+| **Lance Watcher** | 监听 staging Parquet 变动，实时增量同步到 Lance；支持全量 rebuild | 同步后的 Lance 数据集 |
 | **Compiler** | LLM 编译 wiki / summary / mind_map / graph | 高阶 representation |
 | **Publisher** | 版本标记 active、原子切换 | active 版本 |
 | **Event Listener** | 订阅 OSS 事件，实时更新 VFS 目录树 + 触发血缘重算 | 增量 VFS 视图 + 事件队列 |
@@ -388,6 +388,11 @@ class Entity:
     def rebuild_index(self, index_type: str) -> None:
         """删除旧索引并重建。"""
 
+    def rebuild_lance(self) -> None:
+        """全量重建 Lance 数据集（从 OSS representation 文件 + staging Parquet）。
+        适用场景：schema 变更 / Lance 损坏 / 碎片率过高 / 索引失效。
+        支持 MVCC 回滚：重建失败自动回退到旧 version。"""
+
     def refresh_indexes(self) -> None:
         """representation 变动后增量更新索引。"""
 
@@ -474,7 +479,7 @@ class Entity:
 | 类别 | 方法 | 操作对象 |
 | --- | --- | --- |
 | **生成表现** | `generate_*` / `regenerate_*` | 触发 pipeline |
-| **生成索引** | `build_index*` / `rebuild_index*` | Lance 索引 |
+| **生成索引** | `build_index*` / `rebuild_index*` / `rebuild_lance` | Lance 索引 / Lance 数据集 |
 | **查询清单** | `list_*` / `get_*` | 表现 / 流水线 / 索引 / chunk |
 | **血缘** | `get_lineage*` / `cascade_invalidate` | 血缘 DAG |
 | **状态** | `hide` / `show` / `delete` / `restore` / `update_tags` | OSS Tag |
@@ -973,41 +978,355 @@ vector (list<float>) · status · entity_version · created_at
 - **立即可查**：staging 中的 Parquet 可被直接扫描（用于调试 / 预览），但无索引优化。
 - **版本化**：每次 pipeline 重跑产出新的 `representations_v{N}.parquet`。
 
-#### L2. 汇聚层：迭代式 Prefix Merge
+#### L2. 汇聚层：Lance Watcher（事件驱动 + 增量同步 + Rebuild）
 
-汇聚层定期扫描每个 Entity 目录下的 `staging/`，将 Parquet 转为 Lance：
+**核心设计**：Lance Watcher 是一个常驻服务，监听 staging Parquet 变动并实时同步到 Lance。同时支持全量 rebuild（从 OSS representation 文件重建整个 Lance 数据集）。
+
+##### Lance Watcher 架构
 
 ```text
-汇聚流程：
-
-1. 扫描所有 Entity 目录（VFS prefix 扫描）
-   ├─ 列出 vector-lake/{ws}/{col}/ 下的所有 {entity_id}/
-   └─ GetObjectTagging 读取 sync_state
-      └─ 找出 sync_state=idle 或 sync_state=stale 的 Entity
-   │
-   ▼
-2. 对每个 pending Entity，扫描其 staging/ 目录
-   ├─ 发现新 Parquet 文件
-   └─ 转换为 Lance 格式
-   │
-   ▼
-3. 写入 Entity 目录下的 representations.lance
-   ├─ 建索引（vector / FTS / scalar）
-   └─ 原子切换（Lance MVCC）
-   │
-   ▼
-4. 更新 OSS Tag（sync_state=ready）
-   │
-   ▼
-5. 清理 staging（已汇聚的 Parquet 可归档/删除）
+┌─────────────────────────────────────────────────────────────┐
+│  Lance Watcher（常驻服务）                                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐     ┌──────────────┐                     │
+│  │ Event Listener│────►│ Sync Queue   │                     │
+│  │ (OSS 事件)    │     │ (per Entity) │                     │
+│  └──────────────┘     └──────┬───────┘                     │
+│                              │                              │
+│                    ┌─────────┴─────────┐                    │
+│                    ▼                   ▼                    │
+│            ┌──────────────┐    ┌──────────────┐            │
+│            │ Incremental  │    │ Full Rebuild │            │
+│            │ Sync Worker  │    │ Worker       │            │
+│            └──────┬───────┘    └──────┬───────┘            │
+│                   │                   │                     │
+│                   ▼                   ▼                     │
+│            ┌─────────────────────────────────┐             │
+│            │  representations.lance           │             │
+│            │  (MVCC, 原子切换)                │             │
+│            └─────────────────────────────────┘             │
+│                                                             │
+│  ┌──────────────┐     ┌──────────────┐                     │
+│  │ Reconciler   │────►│ 补漏 + 碎片  │                     │
+│  │ (周期兜底)    │     │ 整理         │                     │
+│  └──────────────┘     └──────────────┘                     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**汇聚策略**：
+##### 两种同步模式
+
+| 模式 | 触发条件 | 数据来源 | 耗时 | 适用场景 |
+| --- | --- | --- | --- | --- |
+| **Incremental Sync** | staging Parquet 新增/修改 | staging/*.parquet | 秒级 | Pipeline 产出后实时同步 |
+| **Full Rebuild** | 手动触发 / schema 变更 / Lance 损坏 / 碎片率过高 | 所有 representation 文件 + staging | 分钟级 | 修复 / 重建 / 优化 |
+
+##### Incremental Sync：Parquet 变动即触发
+
+**触发源**：
+
+```text
+触发路径（优先级从高到低）：
+
+1. OSS 事件驱动（实时，主路径）
+   ├─ ObjectCreated: {entity_id}/staging/*.parquet  → 立即触发增量同步
+   ├─ ObjectModified: {entity_id}/staging/*.parquet  → 触发增量同步
+   └─ ObjectRemoved: {entity_id}/staging/*.parquet  → 触发增量同步（删除对应行）
+
+2. OSS Tag 变更驱动
+   ├─ representation 文件 status→stale  → 删除 Lance 中对应行
+   └─ representation 文件 status→ready  → 触发增量同步（如果 staging 有新 Parquet）
+
+3. 周期 reconcile（兜底，每 15 min）
+   ├─ 全量扫描 vector-lake/{ws}/{col}/ 下的所有 Entity
+   ├─ 比对 sync_state Tag
+   └─ 触发漏掉的事件处理
+
+4. 手动触发
+   └─ POST /entities/{id}/sync  → 强制增量同步
+```
+
+**增量同步流程**：
+
+```text
+OSS 事件: staging/representations_v3.parquet Created
+   │
+   ▼
+[1] 入队：将 {entity_id} 放入 Sync Queue
+   │
+   ▼
+[2] 获取同步锁（OSS Tag sync_state=idle→syncing）
+   │  失败 → 跳过（已有同步在进行）
+   │
+   ▼
+[3] Detect：扫描 staging/ 目录，找出未同步的 Parquet 文件
+   ├─ 对比 Lance manifest 中记录的已同步文件列表
+   └─ 计算变更集（新增 / 删除 / 替换）
+   │
+   ▼
+[4] Transform：Parquet → Lance
+   ├─ 读取新增 Parquet
+   ├─ Schema 对齐 + 类型转换
+   ├─ 去重（representation_id + chunk_index）
+   └─ 追加写入 Lance（append 模式）
+   │
+   ▼
+[5] Delete：处理被删除的 Parquet
+   ├─ 找出 Lance 中属于已删除 Parquet 的行
+   └─ 标记为 deleted（Lance deletion vector）
+   │
+   ▼
+[6] Index：增量更新索引
+   ├─ vector 索引：新增向量加入索引
+   ├─ FTS 索引：新增文本加入索引
+   └─ Scalar 索引：自动更新
+   │
+   ▼
+[7] Publish：原子切换
+   ├─ Lance commit 新 version
+   ├─ 更新 OSS Tag sync_state=ready, sync_version=N
+   └─ 记录已同步的 Parquet 文件列表到 Lance manifest metadata
+   │
+   ▼
+[8] Cleanup：清理已同步的 staging Parquet
+   └─ 保留最近 1 个版本（debug 用），删除更早版本
+```
+
+**增量同步的幂等性**：
+
+```python
+# Lance manifest metadata 记录已同步的 Parquet 文件
+synced_files = lance.get_manifest_metadata("synced_parquet_files")
+# e.g. ["representations_v1.parquet", "representations_v2.parquet"]
+
+# 新 Parquet 文件列表
+new_files = [f for f in staging_files if f not in synced_files]
+
+# 只同步新文件，重复触发不会重复写入
+if not new_files:
+    return  # 幂等：无新变更，跳过
+```
+
+**增量同步的延迟保证**：
+
+| 场景 | 触发方式 | 延迟 |
+| --- | --- | --- |
+| Pipeline 产出 Parquet | OSS 事件 | < 5s |
+| Representation stale | OSS Tag 变更 | < 10s |
+| 事件丢失 | Reconciler 兜底 | < 15min |
+| 手动触发 | API 调用 | 立即 |
+
+##### Full Rebuild：从 OSS 重建整个 Lance
+
+**触发条件**：
+
+| 触发条件 | 说明 |
+| --- | --- |
+| **手动触发** | `POST /entities/{id}/rebuild` 或 `Entity.rebuild_lance()` |
+| **Schema 变更** | Lance 表 schema 升级（新增/修改列），需要全量重写 |
+| **Lance 损坏** | Lance 数据文件损坏，无法正常读取 |
+| **碎片率过高** | fragment 数量 > 阈值，compact 无法有效优化 |
+| **索引失效** | vector/FTS 索引损坏或严重退化 |
+| **模型升级** | embedding 模型版本变更，需要全量重算向量 |
+| **版本回滚** | 需要回退到某个历史版本 |
+
+**Rebuild 流程**：
+
+```text
+POST /entities/{id}/rebuild
+   │
+   ▼
+[1] 获取重建锁（OSS Tag sync_state=idle→rebuilding）
+   │  失败 → 返回 409 Conflict
+   │
+   ▼
+[2] Snapshot：记录当前 Lance version（用于回滚）
+   └─ snapshot_version = current_lance_version
+   │
+   ▼
+[3] Scan：扫描 Entity 目录下所有 representation 文件
+   ├─ 读取每个 representation 文件的 OSS Tag
+   ├─ 获取 rep_type / status / entity_version / ...
+   └─ 过滤掉 status=deleted 的 representation
+   │
+   ▼
+[4] Read：读取所有可用的数据源
+   ├─ staging/*.parquet（最新 Parquet）
+   ├─ representation 文件本身（如果 Parquet 不可用，需要重新 chunk + embed）
+   └─ 旧 Lance 数据（如果只需 schema 变更，可直接迁移）
+   │
+   ▼
+[5] Rebuild：全量重写 Lance
+   ├─ 创建新的 Lance 数据集（新 version）
+   ├─ Schema 对齐 + 类型转换
+   ├─ 去重（representation_id + chunk_index）
+   ├─ 写入所有行
+   └─ 保留旧 version 的 Lance 数据（MVCC）
+   │
+   ▼
+[6] Index：重建所有索引
+   ├─ vector 索引（IVF_PQ / HNSW）
+   ├─ FTS 索引
+   └─ Scalar 索引（status / rep_type / modality）
+   │
+   ▼
+[7] Atomic Switch：原子切换到新 Lance version
+   ├─ Lance commit 新 version
+   ├─ 更新 OSS Tag sync_state=ready, sync_version=N
+   └─ 旧 version 保留 5 个（回滚窗口）
+   │
+   ▼
+[8] Verify：验证新 Lance 数据正确性
+   ├─ 行数对比（新 vs 旧）
+   ├─ 索引完整性检查
+   └─ 抽样查询验证
+   │
+   ▼
+[9] Cleanup：清理旧数据
+   ├─ 删除超过保留窗口的旧 Lance version
+   └─ 清理 staging 中已同步的 Parquet
+```
+
+**Rebuild 的回滚机制**：
+
+```python
+def rebuild_with_rollback(entity_id: str):
+    """全量重建，支持回滚。"""
+
+    # 1. 记录快照
+    snapshot_version = get_lance_version(entity_id)
+
+    try:
+        # 2-7. 执行 rebuild 流程
+        new_version = do_rebuild(entity_id)
+
+        # 8. 验证
+        if not verify_rebuild(entity_id, new_version):
+            raise RebuildVerificationError("Row count mismatch")
+
+        # 9. 成功，更新 Tag
+        put_object_tagging(entity_id, {
+            "sync_state": "ready",
+            "sync_version": new_version,
+        })
+
+    except Exception as e:
+        # 回滚：切回旧 version
+        log.error(f"Rebuild failed: {e}, rolling back to v{snapshot_version}")
+        lance.rollback(entity_id, snapshot_version)
+        put_object_tagging(entity_id, {
+            "sync_state": "failed",
+            "sync_error": f"rebuild_failed: {str(e)[:100]}",
+        })
+```
+
+**Rebuild vs Incremental Sync 选择策略**：
+
+```python
+def choose_sync_mode(entity_id: str) -> str:
+    """自动选择同步模式。"""
+
+    lance_stats = lance.get_stats(entity_id)
+
+    # 1. 碎片率检查
+    if lance_stats.num_fragments > 0:
+        avg_rows_per_fragment = lance_stats.num_rows / lance_stats.num_fragments
+        if avg_rows_per_fragment < 500:
+            return "rebuild"  # 碎片率过高
+
+    # 2. 累计增量次数检查
+    incremental_count = lance_stats.get_metadata("incremental_count", 0)
+    if incremental_count > 20:
+        return "rebuild"  # 增量次数过多，需要全量整理
+
+    # 3. 索引健康度检查
+    if not lance_stats.index_healthy:
+        return "rebuild"  # 索引退化
+
+    # 4. 默认增量
+    return "incremental"
+```
+
+##### 同步状态机（扩展版）
+
+每个 Entity 维护一个 `sync_state`（存在 OSS Tag 上）：
+
+```text
+sync_state = idle | syncing | rebuilding | ready | failed | stale
+```
+
+```text
+                    ┌──────┐
+                    │ idle │  ← 初始状态 / 同步完成
+                    └──┬───┘
+                       │
+            ┌──────────┼──────────┐
+            │ 增量触发  │ rebuild  │
+            ▼          ▼          │
+        ┌────────┐ ┌────────────┐│
+        │syncing │ │rebuilding  ││
+        └──┬─────┘ └──┬─────────┘│
+      ┌────┼─────┐  ┌──┼─────────┤
+      ▼    ▼     ▼  ▼  ▼         │
+  ┌─────┐┌─────┐┌───────┐       │
+  │ready││stale││failed │       │
+  └──┬──┘└──┬──┘└───┬───┘       │
+     │      │        │           │
+     └──────┘        │ retry     │
+          │          │           │
+          ▼          ▼           │
+       ┌────────┐               │
+       │syncing │◄──────────────┘
+       └────────┘  (stale/failed 可选 rebuild)
+```
+
+**状态转换规则**：
+
+| 当前状态 | 事件 | 目标状态 | 说明 |
+| --- | --- | --- | --- |
+| `idle` | Parquet 新增 | `syncing` | 增量同步 |
+| `idle` | rebuild 请求 | `rebuilding` | 全量重建 |
+| `syncing` | 同步完成 | `ready` | 成功 |
+| `syncing` | 同步失败 | `failed` | 记录失败原因 |
+| `syncing` | 上游 stale | `stale` | 血缘级联 |
+| `rebuilding` | 重建完成 | `ready` | 成功 |
+| `rebuilding` | 重建失败 | `failed` | 回滚到旧 version |
+| `ready` | Parquet 新增 | `syncing` | 新增量 |
+| `ready` | 上游 stale | `stale` | 血缘级联 |
+| `stale` | 自动/手动触发 | `syncing` | 增量修复 |
+| `stale` | rebuild 请求 | `rebuilding` | 全量修复 |
+| `failed` | 自动/手动重试 | `syncing` | 从断点恢复 |
+| `failed` | rebuild 请求 | `rebuilding` | 全量重建 |
+
+##### Lance Watcher 的并发控制
+
+```text
+并发规则：
+
+1. 每个 Entity 同一时刻只有一个同步操作（syncing 或 rebuilding）
+   ├─ 通过 OSS Tag sync_state 做分布式锁
+   └─ CAS 语义通过 CopyObject + x-oss-copy-source-if-match 实现
+
+2. 不同 Entity 的同步操作可并行
+   ├─ Sync Queue 按 entity_id 分片
+   └─ 每个 Worker 独立处理一个 Entity
+
+3. Incremental Sync 优先级高于 Rebuild
+   ├─ 如果 syncing 进行中，rebuild 请求排队等待
+   └─ syncing 完成后再执行 rebuild
+
+4. Rebuild 期间新的增量变更缓存到队列
+   ├─ rebuild 完成后检查队列
+   └─ 如果有新变更，再执行一次 incremental sync
+```
+
+##### 汇聚策略
 
 | 策略 | 触发条件 | 说明 |
 | --- | --- | --- |
-| **增量汇聚** | 新 Parquet 文件出现 | 只合并新增文件，不重写已有 Lance |
-| **全量重写** | Parquet 文件数 > 阈值 或 碎片率过高 | 重写整个 Lance 数据集，优化存储布局 |
+| **增量同步** | staging Parquet 新增/修改/删除 | 实时触发，秒级完成 |
+| **全量 Rebuild** | 手动 / schema 变更 / 碎片率过高 / Lance 损坏 | 从 OSS 重建，分钟级完成 |
+| **自动 Compact** | fragment 数 > 阈值 或 累计增量 > 20 次 | 合并 fragment，优化存储布局 |
 | **版本切换** | Entity 有新 version | 替换旧 version 的行，保留 lineage |
 
 #### OSS → Lance 同步协议
@@ -1018,6 +1337,7 @@ vector (list<float>) · status · entity_version · created_at
 2. **原子性**：sync 中断不留下半成品
 3. **可恢复性**：sync 失败后能从断点继续
 4. **实时性**：OSS 变更后 Lance 尽快更新
+5. **可重建**：任意时刻可从 OSS 全量重建 Lance
 
 ##### 同步触发源
 
@@ -1025,54 +1345,26 @@ vector (list<float>) · status · entity_version · created_at
 ┌─────────────────────────────────────────────────────────────┐
 │  触发源                                                      │
 ├─────────────────────────────────────────────────────────────┤
-│  1. OSS 事件驱动（主路径）                                    │
-│     ├─ ObjectCreated（原文件上传）→ 创建 Entity + 触发 pipeline │
-│     ├─ ObjectModified（staging Parquet 新增）→ 触发汇聚        │
+│  1. OSS 事件驱动（主路径，实时）                               │
+│     ├─ ObjectCreated（staging Parquet 新增）→ 增量同步        │
+│     ├─ ObjectModified（staging Parquet 修改）→ 增量同步       │
+│     ├─ ObjectRemoved（staging Parquet 删除）→ 增量同步        │
+│     ├─ ObjectCreated（原文件上传）→ 创建 Entity + 触发 pipeline│
 │     ├─ ObjectRemoved（原文件删除）→ cascade_invalidate        │
-│     └─ OSS Tag 变更（rag_status 切换）→ VFS 重扫 + 索引过滤   │
+│     └─ OSS Tag 变更（rep status 变化）→ Lance 行状态更新      │
 ├─────────────────────────────────────────────────────────────┤
-│  2. 周期 reconcile（兜底）                                    │
-│     ├─ 每 15 min 全量扫描 prefix                              │
-│     ├─ 比对 sync_state tag                               │
+│  2. 周期 reconcile（兜底，每 15 min）                         │
+│     ├─ 全量扫描 prefix                                        │
+│     ├─ 比对 sync_state Tag                                    │
 │     └─ 触发漏掉的事件处理                                     │
 ├─────────────────────────────────────────────────────────────┤
 │  3. 手动触发（运维）                                          │
-│     └─ POST /entities/{id}/sync 强制同步                    │
+│     ├─ POST /entities/{id}/sync  → 强制增量同步              │
+│     └─ POST /entities/{id}/rebuild → 强制全量重建            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-##### 同步状态机
-
-每个 Entity 维护一个 `sync_state`（存在 OSS Tag 上）：
-
-```text
-sync_state = idle | syncing | ready | failed | stale
-```
-
-```text
-                 ┌──────┐
-                 │ idle │  ← 初始状态
-                 └──┬───┘
-                    │ OSS 事件触发
-                    ▼
-                 ┌────────┐
-                 │syncing │  ← 正在同步
-                 └──┬─────┘
-              ┌─────┼─────┐
-              ▼     ▼     ▼
-         ┌─────┐ ┌─────┐ ┌───────┐
-         │ready│ │stale│ │failed │
-         └─────┘ └─────┘ └───┬───┘
-              │        │     │
-              └────────┘     │ retry
-                   │         │
-                   ▼         ▼
-                ┌────────┐
-                │syncing │
-                └────────┘
-```
-
-##### 同步协议细节
+##### Incremental Sync 协议细节
 
 **Stage 1：Detect（变更检测）**
 
@@ -1081,62 +1373,58 @@ def detect_changes(entity_id: str) -> ChangeSet:
     """检测 Entity 目录的变更，决定是否需要同步。"""
 
     oss_files = list_oss_files(entity_id)          # 实时扫
-    lance_files = list_lance_files(entity_id)      # 扫 Lance 目录
-    tag = get_object_tagging(entity_id)            # 读 OSS Tag
+    lance_meta = lance.get_manifest_metadata(entity_id)
+    tag = get_object_tagging(entity_id)            # 读 Entity OSS Tag
 
-    # 1. 找出新增的 staging Parquet
-    new_parquet = oss_files.staging_parquet - lance_files.source_parquet
+    # 1. 找出未同步的 staging Parquet
+    synced_files = lance_meta.get("synced_parquet_files", [])
+    new_parquet = [f for f in oss_files.staging_parquet if f not in synced_files]
 
-    # 2. 找出被删除的 staging Parquet
-    deleted_parquet = lance_files.source_parquet - oss_files.staging_parquet
+    # 2. 找出被删除的 staging Parquet（已同步但 OSS 上不存在）
+    deleted_parquet = [f for f in synced_files if f not in oss_files.staging_parquet]
 
     # 3. 找出 content_hash 变化的 raw（导致级联失效）
     if oss_files.raw_hash != tag.content_hash:
-        # content_hash 变了 → 整个 Entity 需要重新跑
         return ChangeSet(action="full_rebuild", reason="content_hash_changed")
 
-    # 4. 找出需要删除的 representation（被软删或物理删）
-    deleted_reps = lance_files.reps - oss_files.reps - oss_files.staging_reps
+    # 4. 找出需要更新状态的 representation（OSS Tag status 变化）
+    rep_status_changes = detect_rep_status_changes(entity_id)
 
     return ChangeSet(
         upsert=new_parquet,
-        delete=deleted_parquet | deleted_reps,
-        action="incremental" if new_parquet or deleted_parquet else "noop"
+        delete=deleted_parquet,
+        status_updates=rep_status_changes,
+        action="incremental" if new_parquet or deleted_parquet or rep_status_changes else "noop"
     )
 ```
 
 **Stage 2：Lock（防止并发同步）**
 
 ```python
-def acquire_sync_lock(entity_id: str) -> bool:
+def acquire_sync_lock(entity_id: str, mode: str = "syncing") -> bool:
     """原子获取同步锁，防止同一 Entity 并发同步。"""
 
-    # 用 OSS Tag 上的 sync_state 做分布式锁
     tag = get_object_tagging(entity_id)
-    if tag.sync_state == "syncing":
-        # 已有同步在进行，检查是否超时
+    if tag.sync_state in ("syncing", "rebuilding"):
         if is_sync_timeout(tag.sync_started_at, timeout=300):
             log.warning("Sync timeout, force unlock")
         else:
             return False  # 拒绝
 
-    # CAS 更新 sync_state
-    put_object_tagging(entity_id, {
-        "sync_state": "syncing",
-        "sync_started_at": now()
+    # CAS 更新 sync_state（通过 CopyObject + x-oss-copy-source-if-match）
+    cas_put_object_tagging(entity_id, {
+        "sync_state": mode,  # "syncing" 或 "rebuilding"
     })
     return True
 ```
-
-> **OSS Tag 不是原子 CAS**：`PutObjectTagging` API 不支持 compare-and-set 语义，两个 worker 可能同时读到 `sync_state=idle` 然后同时写入 `syncing`。v0.1 用 OSS `CopyObject` + `x-oss-copy-source-if-match`（基于 etag 的条件写）实现真正的 CAS；v0.2 评估引入外部分布式锁（Redis / etcd）。
 
 **Stage 3：Transform（Parquet → Lance）**
 
 ```python
 def transform_to_lance(entity_id: str, parquet_files: list[str]):
-    """把 staging Parquet 转为 Lance 格式。"""
+    """把 staging Parquet 增量转为 Lance 格式。"""
 
-    # 1. 读取所有待汇聚的 Parquet
+    # 1. 读取新增 Parquet
     dfs = [read_parquet(f) for f in parquet_files]
 
     # 2. Schema 对齐 + 类型转换（list<float> → fixed_size_list<float>）
@@ -1145,44 +1433,61 @@ def transform_to_lance(entity_id: str, parquet_files: list[str]):
     # 3. 去重（按 representation_id + chunk_index）
     combined = dedupe(combined, keys=["representation_id", "chunk_index"])
 
-    # 4. 写入 Lance（追加，不覆盖）
+    # 4. 追加写入 Lance
     lance_path = f"oss://.../{entity_id}/representations.lance/"
     lance.append(lance_path, combined, mode="append")
 ```
 
-**Stage 4：Index（建索引）**
+**Stage 4：Delete（处理删除）**
 
 ```python
-def build_indexes(entity_id: str):
-    """Lance 写入后建/更新索引。"""
+def delete_from_lance(entity_id: str, deleted_parquet: list[str]):
+    """删除 Lance 中属于已删除 Parquet 的行。"""
 
     lance_path = f"oss://.../{entity_id}/representations.lance/"
 
-    # 1. 检查现有索引
+    for parquet_file in deleted_parquet:
+        # 找出该 Parquet 文件中的所有行
+        rows = lance.search(lance_path) \
+            .where(f"source_parquet = '{parquet_file}'") \
+            .to_list()
+
+        # 标记为 deleted（Lance deletion vector）
+        row_ids = [r["row_id"] for r in rows]
+        lance.delete(lance_path, where=f"row_id in {row_ids}")
+```
+
+**Stage 5：Index（建/更新索引）**
+
+```python
+def update_indexes(entity_id: str):
+    """Lance 写入后建/更新索引。"""
+
+    lance_path = f"oss://.../{entity_id}/representations.lance/"
     existing = lance.list_indices(lance_path)
 
-    # 2. vector 索引（IVF_PQ 或 HNSW）
+    # vector 索引
     if "vector" not in existing:
-        lance.create_index(
-            lance_path, column="vector",
-            index_type="IVF_PQ", num_partitions=256, num_sub_vectors=64
-        )
+        lance.create_index(lance_path, column="vector",
+                          index_type="IVF_PQ", num_partitions=256, num_sub_vectors=64)
+    else:
+        lance.optimize_index(lance_path, column="vector")  # 增量优化
 
-    # 3. FTS 索引（text 列）
+    # FTS 索引
     if "text_fts" not in existing:
         lance.create_fts_index(lance_path, column="text")
 
-    # 4. Scalar 索引（status / rep_type / modality 过滤列）
+    # Scalar 索引
     for col in ["status", "rep_type", "modality"]:
         if col not in existing:
             lance.create_scalar_index(lance_path, column=col)
 ```
 
-**Stage 5：Compact（碎片整理，可选）**
+**Stage 6：Compact（碎片整理，自动触发）**
 
 ```python
 def maybe_compact(entity_id: str):
-    """碎片率过高时全量重写。"""
+    """碎片率过高时自动触发 compact 或 rebuild。"""
 
     lance_path = f"oss://.../{entity_id}/representations.lance/"
     stats = lance.get_stats(lance_path)
@@ -1190,59 +1495,60 @@ def maybe_compact(entity_id: str):
     fragment_count = stats.num_fragments
     row_count = stats.num_rows
 
-    # 阈值：平均每个 fragment 少于 1000 行就重写
-    if row_count / fragment_count < 1000:
-        log.info(f"Compacting {entity_id}: {fragment_count} fragments")
+    # 阈值：平均每个 fragment 少于 500 行就整理
+    if row_count / fragment_count < 500:
+        log.info(f"Compacting {entity_id}: {fragment_count} fragments, {row_count} rows")
         lance.compact(lance_path)  # 合并 fragment，物理重写
 ```
 
-**Stage 6：Atomic Switch（原子切换）**
+**Stage 7：Atomic Switch（原子切换）**
 
 ```python
-def atomic_publish(entity_id: str, new_version: int):
+def atomic_publish(entity_id: str, synced_parquet_files: list[str]):
     """Lance 原生 MVCC，原子切换版本。"""
 
-    # Lance 的 version 机制：每次 commit 产生新 version，旧 version 仍可读
     lance_path = f"oss://.../{entity_id}/representations.lance/"
 
-    # 1. commit 新 version（自动）
+    # 1. commit 新 version
     new_lance_version = lance.commit(lance_path)
 
-    # 2. 更新 OSS Tag（指向新 version）
+    # 2. 更新 Lance manifest metadata（记录已同步的 Parquet 文件）
+    lance.update_manifest_metadata(lance_path, {
+        "synced_parquet_files": synced_parquet_files,
+        "last_sync_at": now().isoformat(),
+    })
+
+    # 3. 更新 OSS Tag（指向新 version）
     put_object_tagging(entity_id, {
         "sync_state": "ready",
         "sync_version": new_lance_version,
-        "last_sync_at": now()
     })
 
-    # 3. 旧 Lance version 保留 N 小时后清理（保留回滚窗口）
+    # 4. 旧 Lance version 保留 5 个（回滚窗口）
     schedule_cleanup(lance_path, keep_versions=5)
 ```
 
-**Stage 7：Cleanup（清理，可选）**
+**Stage 8：Cleanup（清理 staging）**
 
 ```python
-def cleanup_staging(entity_id: str):
-    """已汇聚的 staging Parquet 可归档或删除。"""
+def cleanup_staging(entity_id: str, synced_files: list[str]):
+    """已同步的 staging Parquet 清理。"""
 
-    # 选项 A：归档到 cold storage（OSS 生命周期规则）
-    # 选项 B：直接删除（如果 Lance 是唯一真相源）
-    # 选项 C：保留最近 1 个版本（debug 用）
-
-    staging_files = list_oss_files(entity_id).staging
-    for f in staging_files:
-        if f.version < current_version - 1:
-            delete_object(f.oss_path)  # 删除旧版本
+    for f in synced_files:
+        # 保留最近 1 个版本（debug 用），删除更早版本
+        if not is_latest_version(f):
+            delete_object(f.oss_path)
 ```
 
 ##### 失败处理
 
 | 失败点 | 检测 | 恢复策略 |
 | --- | --- | --- |
-| **网络中断（Stage 3-4）** | sync timeout | OSS Tag 标 `failed`；下次 reconcile 重新检测 |
+| **网络中断（Stage 3-5）** | sync timeout | OSS Tag 标 `failed`；下次 reconcile 重新检测 |
 | **Lance 写入失败** | Lance 抛异常 | 回滚 OSS Tag 到 `failed`；不更新 `sync_version` |
-| **OSS Tag 写入失败（Stage 6）** | API 抛异常 | Lance 已更新但 tag 未更新 → 标记 `sync_state=stale`；reconcile 时对比 Lance version 和 OSS Tag version 修复 |
+| **OSS Tag 写入失败（Stage 7）** | API 抛异常 | Lance 已更新但 tag 未更新 → 标记 `sync_state=stale`；reconcile 时对比 Lance version 和 OSS Tag version 修复 |
 | **实体被删除（中间态）** | 扫不到 original | 触发 Entity 软删除流程；清理 Lance |
+| **Rebuild 失败** | 验证不通过 | 回滚到 snapshot_version；OSS Tag 标 `failed` |
 
 **幂等性保证**：
 
@@ -1251,20 +1557,19 @@ def cleanup_staging(entity_id: str):
 sync(entity_id, change_set)  # 第 1 次
 sync(entity_id, change_set)  # 第 2 次，幂等
 
-# 实现：每个 Lance row 用 (representation_id, chunk_index) 做主键
-# 重复 append 会触发 dedupe
+# 实现：
+# 1. Lance manifest metadata 记录已同步的 Parquet 文件列表
+# 2. 重复 append 会触发 dedupe（representation_id + chunk_index 主键）
+# 3. 重复 delete 是幂等的（Lance deletion vector 重复标记无副作用）
 ```
 
 **断点续传**：
 
 ```python
-# sync 失败后，下次 sync 从断点继续
 def resume_sync(entity_id: str):
     tag = get_object_tagging(entity_id)
     if tag.sync_state == "failed":
-        # 找出失败的 stage
         failed_stage = tag.sync_error  # e.g. "stage_4_index"
-        # 从 failed_stage 重新开始
         sync_from_stage(entity_id, failed_stage)
 ```
 
@@ -1272,21 +1577,25 @@ def resume_sync(entity_id: str):
 
 | 指标 | 说明 |
 | --- | --- |
-| `sync_duration_seconds{stage}` | 每个 stage 的耗时 |
-| `sync_total_duration_seconds` | 完整 sync 耗时 |
-| `sync_failures_total{stage, reason}` | 同步失败次数（按 stage + reason 分组） |
-| `sync_state_count{state}` | 各状态的 Entity 数（idle/syncing/ready/failed/stale） |
+| `sync_duration_seconds{stage, mode}` | 每个 stage 的耗时（mode=incremental/rebuild） |
+| `sync_total_duration_seconds{mode}` | 完整 sync 耗时 |
+| `sync_failures_total{stage, reason, mode}` | 同步失败次数 |
+| `sync_state_count{state}` | 各状态的 Entity 数 |
 | `lance_fragment_count{entity_id}` | Lance fragment 数（碎片率监控） |
 | `lance_lag_seconds{entity_id}` | OSS 变更到 Lance 同步的延迟 |
+| `rebuild_total` | Rebuild 执行次数 |
+| `rebuild_rollback_total` | Rebuild 回滚次数 |
 
 ##### 一致性保证总结
 
 | 场景 | 一致性级别 | 保证方式 |
 | --- | --- | --- |
 | **强一致** | 同一 Entity 内的 representation ↔ Lance | sync 协议 + 锁 + 原子切换 |
-| **最终一致** | OSS 事件 → Lance | 事件驱动 + reconcile 兜底（最大延迟 15 min） |
+| **近实时** | OSS 事件 → Lance 增量同步 | 事件驱动，< 5s 延迟 |
+| **最终一致** | 事件丢失 → Lance 滞后 | Reconciler 兜底（最大延迟 15 min） |
 | **可恢复** | 任意 sync 中断 | OSS Tag 持久化进度 + 断点续传 |
-| **可回滚** | Lance 索引异常 | 保留最近 5 个 Lance version（MVCC） |
+| **可回滚** | Lance 索引异常 / Rebuild 失败 | 保留最近 5 个 Lance version（MVCC） |
+| **可重建** | Lance 损坏 / Schema 变更 | Full Rebuild 从 OSS 全量重建 |
 
 #### L3. 查询层
 
@@ -2025,6 +2334,7 @@ semantic · lexical · hybrid · visual
 | `POST /entities/{id}/representations` | `generate_representation` | 生成单个 representation |
 | `POST /entities/{id}/representations/regenerate` | `regenerate` | 重新生成（血缘级联） |
 | `POST /entities/{id}/indexes` | `build_index` | 建索引 |
+| `POST /entities/{id}/rebuild` | `rebuild_lance` | 全量重建 Lance 数据集 |
 | `POST /entities/{id}/cascade` | `cascade_invalidate` | 级联失效 + 重建 |
 | `PATCH /entities/{id}/tags` | `update_tags` | 更新 OSS Tag |
 | `DELETE /entities/{id}` | `delete` | 软删除 |
