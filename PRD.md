@@ -332,6 +332,157 @@ document · image · audio · video
 
 > `document` 包含 pdf/docx/pptx/html/md 等；`image` 包含 png/jpg/svg 等；`audio` 包含 wav/mp3 等；`video` 包含 mp4 等。具体 subtype 由 detect 阶段的 mime_type 决定。
 
+#### Entity 作为类：方法抽象
+
+**Entity 是一个对象**，所有操作以 Entity 为入口组织。方法和属性在 OSS 上实时反映（无持久化元数据）。
+
+```python
+class Entity:
+    """一个知识对象 = 一个 OSS 目录 + 一个 OSS Tag。"""
+
+    # ===== 标识属性（从 OSS Tag 实时读取）=====
+    entity_id: str                # 目录名 = entity_id
+    workspace_id: str             # 从路径前缀解析
+    collection_id: str            # 从路径前缀解析
+    entity_type: str              # document / image / audio / video（OSS Tag）
+    name: str                     # pricing.pdf（OSS Tag）
+    content_hash: str             # raw SHA-256（OSS Tag）
+    version: int                  # 单调递增（OSS Tag）
+    status: str                   # enabled / hidden / deleted（OSS Tag）
+    labels: list[str]             # 业务标签（OSS Tag）
+    category: str                 # 分类（OSS Tag）
+    project: str                  # 项目归属（OSS Tag）
+    oss_path: str                 # oss://bucket/vector-lake/{ws}/{col}/{entity_id}/
+    created_at: datetime
+    updated_at: datetime
+
+    # ===== 表现管理（生成表现）=====
+    def generate_representation(self, rep_type: str) -> Representation:
+        """生成单个 representation。触发对应 pipeline，写入 staging。"""
+
+    def generate_all_representations(self) -> list[Representation]:
+        """生成所有该 entity_type 适用的 representations。"""
+
+    def regenerate(self, rep_type: str) -> Representation:
+        """重新生成单个 representation。血缘级联：标 stale → 重建 → publish。"""
+
+    def regenerate_all(self) -> list[Representation]:
+        """重新生成所有 representations。"""
+
+    # ===== 索引管理（生成索引）=====
+    def build_index(self, index_type: str) -> None:
+        """对 representations.lance 建指定索引（vector / fts / scalar）。"""
+
+    def build_all_indexes(self) -> None:
+        """建所有适用索引。"""
+
+    def rebuild_index(self, index_type: str) -> None:
+        """删除旧索引并重建。"""
+
+    def refresh_indexes(self) -> None:
+        """representation 变动后增量更新索引。"""
+
+    # ===== 查询表现清单 =====
+    def list_representations(self) -> list[Representation]:
+        """列出所有 representation（含 status / quality / mtime）。"""
+
+    def get_representation(self, rep_type: str) -> Representation:
+        """获取指定 rep_type 的 representation（含 content / metadata）。"""
+
+    def list_pipelines(self) -> list[Pipeline]:
+        """列出已执行过的 pipeline（含运行历史）。"""
+
+    def list_indexes(self) -> list[Index]:
+        """列出已构建的索引（含索引状态、文件大小）。"""
+
+    def list_chunks(self, rep_type: str = None) -> list[Chunk]:
+        """列出可检索单元（来自 representations.lance）。"""
+
+    # ===== 血缘（Lineage）=====
+    def get_lineage(self, rep_type: str = None) -> LineageDAG:
+        """获取血缘 DAG（实时从文件结构推算）。"""
+
+    def get_upstream(self, rep_type: str) -> list[Representation]:
+        """获取指定 rep 的所有上游。"""
+
+    def get_downstream(self, rep_type: str) -> list[Representation]:
+        """获取指定 rep 的所有下游。"""
+
+    def cascade_invalidate(self, rep_type: str) -> None:
+        """级联失效：从指定 rep 开始，所有下游标 stale → 触发重建。"""
+
+    # ===== 状态管理 =====
+    def hide(self) -> None:
+        """隐藏：OSS Tag rag_status=hidden。检索默认不可见。"""
+
+    def show(self) -> None:
+        """显示：OSS Tag rag_status=enabled。"""
+
+    def delete(self) -> None:
+        """软删除：OSS Tag rag_status=deleted。文件保留，永不返回。"""
+
+    def restore(self) -> None:
+        """恢复：OSS Tag rag_status=enabled。"""
+
+    def update_tags(self, **tags) -> None:
+        """更新任意 OSS Tag（labels / category / project / ...）。"""
+
+    # ===== 检索（基于 representations.lance）=====
+    def search(
+        self,
+        query: str = None,
+        query_vector: list[float] = None,
+        rep_types: list[str] = None,
+        modalities: list[str] = None,
+        top_k: int = 10,
+        reranker: str = "rrf"
+    ) -> list[Chunk]:
+        """在该 Entity 内执行 hybrid search。"""
+
+    def grep(self, pattern: str, rep_types: list[str] = None) -> list[GrepHit]:
+        """在该 Entity 内执行文本匹配（带 metadata）。"""
+
+    # ===== 预览（基于 VFS）=====
+    def preview(self, rep_type: str, page: int = None) -> PreviewContent:
+        """预览指定 representation 的内容。"""
+
+    def perspectives(self) -> PerspectivesView:
+        """返回视角面板（所有可用 rep + 状态 + preview_url）。"""
+
+    # ===== 生命周期 =====
+    def export(self) -> EntityBundle:
+        """导出整个 Entity 目录为可迁移包。"""
+
+    def destroy(self) -> None:
+        """物理删除：删除整个 OSS 目录。"""
+
+    def exists(self) -> bool:
+        """检查 Entity 是否存在（OSS 目录存在）。"""
+```
+
+**方法分组**：
+
+| 类别 | 方法 | 操作对象 |
+| --- | --- | --- |
+| **生成表现** | `generate_*` / `regenerate_*` | 触发 pipeline |
+| **生成索引** | `build_index*` / `rebuild_index*` | Lance 索引 |
+| **查询清单** | `list_*` / `get_*` | 表现 / 流水线 / 索引 / chunk |
+| **血缘** | `get_lineage*` / `cascade_invalidate` | 血缘 DAG |
+| **状态** | `hide` / `show` / `delete` / `restore` / `update_tags` | OSS Tag |
+| **检索** | `search` / `grep` | representations.lance + OSS |
+| **预览** | `preview` / `perspectives` | VFS |
+| **生命周期** | `export` / `destroy` / `exists` | OSS 目录 |
+
+**Entity vs LanceDB 行**：
+
+Entity 不是数据库行，而是**一个聚合根**，把以下资源聚合在一起：
+- 一个 OSS 目录（含 raw + 所有 representations + staging + Lance）
+- 一个 OSS Tag（含状态 / 标签 / 元数据）
+- 一个血缘 DAG（实时推算）
+- 一组可检索单元（representations.lance 行）
+
+所有方法都通过这个聚合根访问，调用方不需要直接操作 OSS 或 Lance。
+
 ### 4.2 Representation（认知视角）
 
 ```json
