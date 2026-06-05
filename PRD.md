@@ -865,31 +865,375 @@ ossutil put-object-tagging --bucket ... --key .../ocr.md --tagging '{"Tags":[{"K
 
 每行 = 一个可检索单元。一个 `canonical_md` representation 切成 50 行，每行有自己的 text + vector。`chunk_index` 区分同一 representation 的不同切分段。
 
-```text
-representation_id    string              # 全局唯一
-rep_type             string              # canonical_md / ocr_text / page_image / ...
-pipeline_id          string
-chunk_index          int                 # 同一 representation 的切分序号（0, 1, 2, ...）
-text                 string              # 原文（建 FTS 索引）
-embedding_text       string              # 向量化文本
-start_pos            int
-token_count          int
-chunk_chars          int
-page_number          int?
-section_header       string?
-section_level        int?
-anchor               string?
-doc_title            string?
-modality             string              # text / image / audio / table
-content_hash         string
-model_version        string
-vector               fixed_size_list<float>  # Lance 原生 vector 列
-status               string              # active / hidden / deleted / stale
-entity_version       int                 # 冗余加速字段（权威值在 OSS Tag）
-created_at           timestamp
+##### PyArrow Schema 定义
+
+```python
+import pyarrow as pa
+
+REPRESENTATIONS_SCHEMA = pa.schema([
+    # ── 主键 ──────────────────────────────────────────────
+    pa.field("representation_id", pa.utf8(), nullable=False),   # 全局唯一
+    pa.field("chunk_index", pa.int32(), nullable=False),        # 同一 rep 的切分序号
+
+    # ── Entity 关联 ───────────────────────────────────────
+    pa.field("entity_id", pa.utf8(), nullable=False),           # 所属 Entity
+    pa.field("entity_version", pa.int32(), nullable=False),     # 冗余加速（权威值在 OSS Tag）
+
+    # ── Representation 元数据 ─────────────────────────────
+    pa.field("rep_type", pa.utf8(), nullable=False),            # canonical_md / ocr_text / ...
+    pa.field("pipeline_id", pa.utf8(), nullable=False),         # 产出流水线
+    pa.field("transform", pa.utf8(), nullable=False),           # parse / ocr / vlm / llm_compile
+    pa.field("modality", pa.utf8(), nullable=False),            # text / image / audio / table
+    pa.field("derived_from", pa.utf8(), nullable=True),         # 直接上游 rep_type（血缘边）
+    pa.field("model_version", pa.utf8(), nullable=True),        # 产出该 rep 的模型版本
+
+    # ── 文本内容 ──────────────────────────────────────────
+    pa.field("text", pa.utf8(), nullable=False),                # 原文（建 FTS 索引）
+    pa.field("embedding_text", pa.utf8(), nullable=True),       # 向量化文本（可能与 text 不同）
+
+    # ── 定位信息 ──────────────────────────────────────────
+    pa.field("start_pos", pa.int32(), nullable=False),          # 在 rep 中的字符偏移
+    pa.field("end_pos", pa.int32(), nullable=False),            # 在 rep 中的字符结束偏移
+    pa.field("token_count", pa.int32(), nullable=False),        # token 数
+    pa.field("chunk_chars", pa.int32(), nullable=False),        # 字符数
+
+    # ── 文档结构（nullable，仅结构化文档有值）──────────────
+    pa.field("page_number", pa.int32(), nullable=True),         # 页码
+    pa.field("section_header", pa.utf8(), nullable=True),       # 章节标题
+    pa.field("section_level", pa.int32(), nullable=True),       # 章节层级
+    pa.field("anchor", pa.utf8(), nullable=True),               # 锚点（HTML/PDF）
+    pa.field("doc_title", pa.utf8(), nullable=True),            # 文档标题
+
+    # ── 多模态扩展（nullable，非文本模态有值）──────────────
+    pa.field("image_uri", pa.utf8(), nullable=True),            # 图片 OSS URI（modality=image）
+    pa.field("audio_uri", pa.utf8(), nullable=True),            # 音频 OSS URI（modality=audio）
+    pa.field("table_data", pa.utf8(), nullable=True),           # 表格 JSON（modality=table）
+
+    # ── 向量 ──────────────────────────────────────────────
+    pa.field("vector", pa.fixed_size_list(pa.float32(), 1024),  # Jina V5 维度
+             nullable=False),
+
+    # ── 状态 + 校验 ──────────────────────────────────────
+    pa.field("status", pa.utf8(), nullable=False),              # active / stale / hidden / deleted
+    pa.field("content_hash", pa.utf8(), nullable=True),         # chunk 内容的 SHA-256
+
+    # ── 时间戳 ────────────────────────────────────────────
+    pa.field("created_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    pa.field("updated_at", pa.timestamp("us", tz="UTC"), nullable=False),
+])
+
+# 主键约束（Lance 不强制，应用层保证）
+# PRIMARY KEY = (representation_id, chunk_index)
 ```
 
-> **Lance 索引**：`vector` 列建 IVF_PQ 或 HNSW；`text` 列建 FTS 索引；`modality` / `rep_type` / `status` 建 scalar 索引。
+##### Pydantic Model 定义
+
+```python
+from lancedb.pydantic import LanceModel, Vector
+from datetime import datetime
+
+class RepresentationChunk(LanceModel):
+    # 主键
+    representation_id: str
+    chunk_index: int
+
+    # Entity 关联
+    entity_id: str
+    entity_version: int
+
+    # Representation 元数据
+    rep_type: str
+    pipeline_id: str
+    transform: str
+    modality: str
+    derived_from: str | None = None
+    model_version: str | None = None
+
+    # 文本内容
+    text: str
+    embedding_text: str | None = None
+
+    # 定位信息
+    start_pos: int
+    end_pos: int
+    token_count: int
+    chunk_chars: int
+
+    # 文档结构
+    page_number: int | None = None
+    section_header: str | None = None
+    section_level: int | None = None
+    anchor: str | None = None
+    doc_title: str | None = None
+
+    # 多模态扩展
+    image_uri: str | None = None
+    audio_uri: str | None = None
+    table_data: str | None = None
+
+    # 向量
+    vector: Vector(1024)  # Jina V5 维度
+
+    # 状态 + 校验
+    status: str = "active"
+    content_hash: str | None = None
+
+    # 时间戳
+    created_at: datetime
+    updated_at: datetime
+```
+
+##### 字段分组与用途
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  representations.lance 字段分组                               │
+├──────────────┬──────────────────────────────────────────────┤
+│  主键         │ representation_id + chunk_index              │
+│              │ (应用层保证唯一，Lance 不强制)                 │
+├──────────────┼──────────────────────────────────────────────┤
+│  Entity 关联  │ entity_id + entity_version                   │
+│              │ (跨 Entity 检索时用于 fan-out 路由)            │
+├──────────────┼──────────────────────────────────────────────┤
+│  Rep 元数据   │ rep_type + pipeline_id + transform +         │
+│              │ modality + derived_from + model_version       │
+│              │ (与 OSS Tag 同构，用于过滤 + 血缘)             │
+├──────────────┼──────────────────────────────────────────────┤
+│  文本内容     │ text + embedding_text                        │
+│              │ (text 建 FTS，embedding_text 记录向量化原文)    │
+├──────────────┼──────────────────────────────────────────────┤
+│  定位信息     │ start_pos + end_pos + token_count +          │
+│              │ chunk_chars                                  │
+│              │ (用于高亮 + 预览定位)                          │
+├──────────────┼──────────────────────────────────────────────┤
+│  文档结构     │ page_number + section_header +               │
+│  (nullable)  │ section_level + anchor + doc_title            │
+│              │ (结构化文档才有值)                             │
+├──────────────┼──────────────────────────────────────────────┤
+│  多模态扩展   │ image_uri + audio_uri + table_data            │
+│  (nullable)  │ (非文本模态才有值)                             │
+├──────────────┼──────────────────────────────────────────────┤
+│  向量         │ vector (fixed_size_list<float, 1024>)         │
+│              │ (Jina V5 Omni，文本/图像/音频同一空间)         │
+├──────────────┼──────────────────────────────────────────────┤
+│  状态 + 校验  │ status + content_hash                        │
+│              │ (status 驱动过滤，content_hash 驱动去重)       │
+├──────────────┼──────────────────────────────────────────────┤
+│  时间戳       │ created_at + updated_at                      │
+│              │ (Lance timestamp，UTC 微秒精度)               │
+└──────────────┴──────────────────────────────────────────────┘
+```
+
+##### 索引设计
+
+```python
+def create_all_indexes(table: lancedb.table.Table):
+    """为 representations.lance 创建所有索引。"""
+
+    # ── 1. 向量索引 ──────────────────────────────────────
+    # IVF_HNSW_SQ：IVF 分区 + HNSW 图 + 标量量化
+    # 适合：中等规模（1K-1M 行），低延迟，高召回
+    table.create_index(
+        column="vector",
+        index_type="IVF_HNSW_SQ",
+        metric="cosine",             # Jina V5 推荐 cosine
+        num_partitions=256,          # IVF 分区数（行数 / 1000 为参考）
+        replace=True,
+    )
+
+    # ── 2. 全文检索索引 ──────────────────────────────────
+    # BM25 + 分词，支持中英文
+    table.create_fts_index(
+        column="text",
+        replace=True,
+    )
+
+    # ── 3. 标量索引（过滤加速）───────────────────────────
+    for col in ["status", "rep_type", "modality", "entity_version"]:
+        table.create_scalar_index(
+            column=col,
+            replace=True,
+        )
+```
+
+**索引选择策略**：
+
+| 行数 | 向量索引 | num_partitions | 说明 |
+| --- | --- | --- | --- |
+| < 10K | 不建索引（暴力搜索） | - | Lance 自动全量扫描，延迟 < 50ms |
+| 10K - 100K | `IVF_HNSW_SQ` | 32 | 小规模，SQ 量化足够 |
+| 100K - 1M | `IVF_HNSW_SQ` | 256 | 中等规模，推荐默认配置 |
+| > 1M | `IVF_HNSW_PQ` | 1024 | 大规模，PQ 压缩节省内存 |
+
+> v0.1 每个 Entity 的 Lance 表通常 < 10K 行（1个文档 × 5个rep × 50个chunk = 250行），不需要建向量索引，暴力搜索即可。索引在跨 Entity 汇聚查询时才需要。
+
+##### 查询模式
+
+```python
+# ── 模式 1：语义检索（向量搜索）─────────────────────────
+results = table.search(query_vector) \
+    .where("status = 'active'") \
+    .where("modality = 'text'") \
+    .limit(20) \
+    .to_pandas()
+
+# ── 模式 2：全文检索（BM25）────────────────────────────
+results = table.search("定价策略", query_type="fts") \
+    .where("status = 'active'") \
+    .limit(20) \
+    .to_pandas()
+
+# ── 模式 3：混合检索（语义 + BM25 + RRF）───────────────
+from lancedb.rerankers import RRFReranker
+
+vector_results = table.search(query_vector).limit(50).to_list()
+fts_results = table.search(query_text, query_type="fts").limit(50).to_list()
+
+reranker = RRFReranker()
+results = reranker.rerank(vector_results, fts_results)
+
+# ── 模式 4：按 representation 过滤 ─────────────────────
+results = table.search(query_vector) \
+    .where("rep_type = 'ocr_text'") \
+    .where("status = 'active'") \
+    .limit(10) \
+    .to_pandas()
+
+# ── 模式 5：按血缘过滤（只查直接提取的，不含 OCR/VLM）──
+results = table.search(query_vector) \
+    .where("transform = 'parse'") \
+    .where("status = 'active'") \
+    .limit(10) \
+    .to_pandas()
+
+# ── 模式 6：按页码定位 ─────────────────────────────────
+results = table.search(query_vector) \
+    .where("page_number = 3") \
+    .where("status = 'active'") \
+    .limit(5) \
+    .to_pandas()
+
+# ── 模式 7：多模态检索（文本 + 图片同一空间）────────────
+results = table.search(query_vector) \
+    .where("status = 'active'") \
+    .where("modality IN ('text', 'image')") \
+    .limit(20) \
+    .to_pandas()
+```
+
+##### 数据生命周期
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  representations.lance 数据生命周期                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Pipeline 产出                                               │
+│     │                                                       │
+│     ▼                                                       │
+│  staging/representations_v{N}.parquet                        │
+│     │                                                       │
+│     ▼  Lance Watcher 增量同步                                │
+│  representations.lance (status=active)                       │
+│     │                                                       │
+│     ├── 上游变动 → status=stale（检索不命中）                  │
+│     │       │                                               │
+│     │       ▼  Pipeline 重建                                 │
+│     │   新 chunk 写入 → status=active                        │
+│     │   旧 chunk 标记 → status=stale（deletion vector）       │
+│     │       │                                               │
+│     │       ▼  Compact / Rebuild                             │
+│     │   物理删除 stale 行                                     │
+│     │                                                       │
+│     ├── 用户隐藏 → status=hidden（检索不命中）                 │
+│     │       │                                               │
+│     │       ▼  用户恢复 → status=active                       │
+│     │                                                       │
+│     └── 用户删除 → status=deleted（检索不命中）                │
+│             │                                               │
+│             ▼  Compact / Rebuild                             │
+│         物理删除 deleted 行                                   │
+│                                                             │
+│  MVCC 版本保留策略：                                          │
+│  ├─ 保留最近 5 个 Lance version                              │
+│  ├─ 超过 5 个 → Compact 时物理删除旧 version 数据文件         │
+│  └─ 回滚窗口 = 5 个 version 内                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+##### 跨 Entity 检索（fan-out + merge）
+
+```text
+每个 Entity 一个 representations.lance，跨 Entity 检索流程：
+
+1. VFS 扫描 → 获取所有 enabled Entity 列表
+2. 按 OSS Tag 路由 → 过滤 entity_type / labels / sync_state
+3. fan-out → 并行查询 N 个 Entity 的 Lance 表
+4. merge → 按 distance/score 排序，取 top_k
+5. 补充 Entity 元数据 → 从 OSS Tag 读取 name / labels 等
+```
+
+```python
+async def cross_entity_search(
+    query_vector: list[float],
+    workspace_id: str,
+    collection_id: str,
+    entity_types: list[str] | None = None,
+    labels: list[str] | None = None,
+    rep_types: list[str] | None = None,
+    top_k: int = 20,
+) -> list[dict]:
+    """跨 Entity 混合检索。"""
+
+    # 1. VFS 扫描 → 获取 enabled Entity 列表
+    entities = await vfs.list_entities(
+        workspace_id, collection_id,
+        filters={"rag_status": "enabled", "sync_state": "ready",
+                 "entity_type": entity_types, "labels": labels}
+    )
+
+    # 2. fan-out → 并行查询
+    import asyncio
+    tasks = []
+    for entity in entities:
+        lance_path = f"oss://.../{entity.entity_id}/representations.lance/"
+        table = lancedb.open_table(lance_path)
+        task = table.search(query_vector) \
+            .where(f"status = 'active'") \
+            .where(f"rep_type IN {rep_types}" if rep_types else "true") \
+            .limit(top_k) \
+            .to_list_async()
+        tasks.append(task)
+
+    all_results = await asyncio.gather(*tasks)
+
+    # 3. merge → 按 _distance 排序
+    merged = []
+    for entity, results in zip(entities, all_results):
+        for r in results:
+            r["entity_id"] = entity.entity_id
+            r["entity_name"] = entity.name
+            r["entity_labels"] = entity.labels
+            merged.append(r)
+
+    merged.sort(key=lambda x: x["_distance"])
+    return merged[:top_k]
+```
+
+##### Schema 演进策略
+
+Lance 原生支持 schema evolution（加列不改列），演进规则：
+
+| 操作 | 支持 | 说明 |
+| --- | --- | --- |
+| **新增 nullable 列** | 原生支持 | `table.add_columns({"new_col": "null"})`，旧行读出 null |
+| **新增非 null 列** | 原生支持 | 需提供默认值 |
+| **删除列** | 原生支持 | `table.drop_columns(["old_col"])`，元数据级删除 |
+| **修改列类型** | 不支持 | 需 Full Rebuild（重建 Lance 数据集） |
+| **修改向量维度** | 不支持 | 需 Full Rebuild + 重新 embedding |
+| **重命名列** | 原生支持 | `table.rename_columns({"old": "new"})` |
+
+> **v0.2 预留演进空间**：所有 nullable 列（page_number / section_header / image_uri 等）都是未来可扩展的方向。新增列不需要 Rebuild，Lance 原生支持。
 
 #### Lineage 实时重建（从 OSS Tag）
 
