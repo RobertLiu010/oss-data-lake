@@ -415,95 +415,117 @@ mind_map · wiki_md · graph_json · summary
 }
 ```
 
-### 4.6 存储模型：Parquet 写入 → Prefix 汇聚 → Lance 统一索引
+### 4.6 存储模型：Entity 目录自包含 + Parquet 写入 → Lance 索引
 
-**核心决策：三层存储架构，写入用 Parquet，查询用 Lance，中间通过迭代式汇聚衔接。**
+**核心决策**：
+
+1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
+2. **写入用 Parquet**（快写、隔离），**查询用 Lance**（索引、hybrid search），中间通过迭代式汇聚衔接。
+3. **3 张 Lance 表**：`catalog.lance`（全局）+ `representations.lance`（Entity 目录内）+ `lineage.lance`（Entity 目录内）。
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │  L1  写入层（Parquet）                                       │
-│      每 Entity 一个 Parquet 文件，小文件快写，天然隔离         │
+│      每 Entity 目录下写入 Parquet，小文件快写，天然隔离         │
 │      pipeline 产出直接落盘，无需全局协调                       │
 ├─────────────────────────────────────────────────────────────┤
 │  L2  汇聚层（Prefix Merge）                                  │
-│      迭代式扫描 prefix，将多个 Entity 的 Parquet 合并          │
-│      按 workspace / collection / entity_type 分组            │
-│      产出 Lance 格式数据集                                    │
+│      迭代式扫描 Entity 目录，将 Parquet 转为 Lance             │
+│      每 Entity 目录内独立转换，无需跨 Entity 协调              │
 ├─────────────────────────────────────────────────────────────┤
 │  L3  查询层（Lance）                                         │
-│      统一 hybrid search（vector + FTS + scalar filter）       │
+│      每 Entity 目录内的 representations.lance 支持检索         │
+│      跨 Entity 检索通过 catalog 路由 + fan-out               │
 │      Lance 原生索引（IVF_PQ / HNSW / FTS）                   │
-│      全局 Catalog 路由                                       │
 └─────────────────────────────────────────────────────────────┘
 ```
-
-#### 为什么三层？
-
-| 维度 | 纯 Parquet | 纯 Lance 大表 | 三层（Parquet → 汇聚 → Lance） |
-| --- | --- | --- | --- |
-| **写入延迟** | 最低（追加写） | 高（需建索引） | 低（先写 Parquet） |
-| **写入隔离** | 天然隔离 | 需全局锁 | 天然隔离（Entity 级） |
-| **查询性能** | 差（无索引） | 好 | 好（Lance 索引） |
-| **跨 Entity 检索** | 需 fan-out N 个文件 | 单表查询 | Lance 统一查询 |
-| **版本管理** | 文件级 | 行级 | Lance 原生 MVCC |
-| **Lineage 级联** | 单文件内 | 跨行扫描 | 单 Entity Parquet 内 + Lance 内 |
-| **小文件问题** | 严重 | 无 | 汇聚层解决 |
 
 #### OSS 目录结构
 
 ```text
 vector-lake/{workspace_id}/{collection_id}/
-├── raw/
-│   └── {entity_id}/original
 │
-├── representations/
-│   └── {entity_id}/v{version}/
-│       ├── canonical.md
-│       ├── page_image/
-│       ├── ocr.md
-│       └── ...
+├── catalog.lance                                ← 全局 Entity 注册
 │
-├── staging/                                    ← L1 写入层
-│   └── {entity_id}/
-│       ├── chunks_v{version}.parquet           ← chunks + vectors
-│       ├── representations.parquet             ← representation 注册
-│       └── lineage.parquet                     ← 血缘边
-│
-├── indexes/                                    ← L3 查询层
-│   ├── chunks.lance/                           ← 全局 chunks 索引（汇聚后）
+├── {entity_id}/                                 ← Entity 目录（自包含）
+│   ├── original                                 ← raw 文件
+│   ├── canonical.md                             ← representation 文件
+│   ├── ocr.md
+│   ├── vlm_extracted.md
+│   ├── page_image/
+│   │   ├── page_001.png
+│   │   └── page_007.png
+│   ├── mind_map.json
+│   ├── graph.json
+│   ├── summary.md
+│   ├── wiki.md
+│   ├── ...
+│   ├── staging/                                 ← L1 写入层（Pipeline 产出）
+│   │   ├── representations_v{N}.parquet         ← 可检索单元 + vectors
+│   │   └── lineage_v{N}.parquet                 ← 血缘边
+│   ├── representations.lance/                   ← L3 查询层（汇聚后）
 │   │   ├── data/
-│   │   │   ├── part-0.lance
-│   │   │   └── part-1.lance
 │   │   └── _indices/
-│   │       ├── vector.idx                      ← IVF_PQ / HNSW
-│   │       └── fts.idx                         ← FTS 索引
-│   │
-│   ├── {entity_id}.lance/                      ← Entity 级索引（单 Entity 精细查询）
-│   │   ├── chunks.lance
-│   │   ├── representations.lance
-│   │   └── lineage.lance
-│   │
-│   ├── catalog.lance                           ← 全局 Entity 注册
-│   ├── edges.lance                             ← 全局跨 Entity 关系
-│   └── pipeline_runs.lance                     ← 全局运行历史
+│   │       ├── vector.idx
+│   │       └── fts.idx
+│   └── lineage.lance/                           ← 血缘索引
 │
-└── wiki/
-    └── {entity_id}.md
+├── {entity_id_2}/                               ← 另一个 Entity
+│   ├── original
+│   ├── ...
+│   ├── staging/
+│   ├── representations.lance/
+│   └── lineage.lance/
 ```
 
-#### L1. 写入层：每 Entity 一个 Parquet
+**关键设计**：
+- Entity 目录 = 该 Entity 的完整知识单元，包含所有 representation 文件 + Lance 索引。
+- 迁移/复制/删除 = 操作整个 Entity 目录。
+- 不同 Entity 之间完全隔离，无并发写入冲突。
 
-Pipeline 产出的 chunks + vectors 直接写入 Entity 独立的 Parquet 文件：
+#### 3 张 Lance 表
 
-`staging/{entity_id}/chunks_v{version}.parquet`：
+| # | 表 | 位置 | 用途 |
+| --- | --- | --- | --- |
+| 1 | `catalog.lance` | 全局 | Entity 注册 + 检索路由 |
+| 2 | `representations.lance` | Entity 目录内 | 该 Entity 的所有可检索单元（含 vector + text） |
+| 3 | `lineage.lance` | Entity 目录内 | 该 Entity 的血缘边 |
+
+#### `catalog.lance`（全局）
 
 ```text
-chunk_id             string
-representation_id    string
+entity_id            string
+entity_type          string              # document / image / audio / video
+workspace_id         string
+collection_id        string
+name                 string              # pricing.pdf
+source_uri           string              # oss://.../{entity_id}/original
+source_version       string              # etag
+content_hash         string              # SHA-256
+version              int                 # 单调递增
+status               string              # enabled / hidden / deleted
+entity_uri           string              # oss://.../{entity_id}/
+representation_types list<string>        # [canonical_md, ocr_text, page_image, ...]
+modalities           list<string>        # [text, image]
+chunk_count          int                 # 可检索单元数
+model_version        string              # 最新 embedding 模型版本
+staging_status       string              # pending / merged / stale
+created_at           timestamp
+updated_at           timestamp
+```
+
+> `staging_status`：`pending` = 有新 Parquet 未汇聚；`merged` = 已汇聚到 Lance；`stale` = staging 有更新但未重新汇聚。
+
+#### `representations.lance`（Entity 目录内，核心检索表）
+
+每行 = 一个可检索单元。一个 `canonical_md` representation 切成 50 行，每行有自己的 text + vector。`chunk_index` 区分同一 representation 的不同切分段。
+
+```text
+representation_id    string              # 全局唯一
 rep_type             string              # canonical_md / ocr_text / page_image / ...
 pipeline_id          string
-chunk_index          int
-text                 string              # 中心块原文
+chunk_index          int                 # 同一 representation 的切分序号（0, 1, 2, ...）
+text                 string              # 原文（建 FTS 索引）
 embedding_text       string              # 向量化文本
 start_pos            int
 token_count          int
@@ -516,55 +538,74 @@ doc_title            string?
 modality             string              # text / image / audio / table
 content_hash         string
 model_version        string
-vector               list<float>         # Parquet 用 list<float>，汇聚时转 Lance fixed_size_list
+vector               fixed_size_list<float>  # Lance 原生 vector 列
 status               string              # active / hidden / deleted / stale
+entity_version       int
 created_at           timestamp
 ```
 
-`staging/{entity_id}/representations.parquet`：
+> **Lance 索引**：`vector` 列建 IVF_PQ 或 HNSW；`text` 列建 FTS 索引；`modality` / `rep_type` / `status` 建 scalar 索引。
+
+#### `lineage.lance`（Entity 目录内）
 
 ```text
-representation_id · rep_type · uri · mime_type
-derived_from · derived_chain · pipeline_id
-status · quality_score · created_at · updated_at
+src_representation_id string             # 上游 representation
+dst_representation_id string             # 下游 representation
+pipeline_id           string             # 由哪条 pipeline 产出
+transform             string             # parse / ocr / vlm / llm_compile / ...
+created_at            timestamp
 ```
 
-`staging/{entity_id}/lineage.parquet`：
+#### L1. 写入层：Pipeline 产出 Parquet
+
+Pipeline 产出直接写入 Entity 目录下的 `staging/`：
+
+`{entity_id}/staging/representations_v{N}.parquet`：
 
 ```text
-src_representation_id · dst_representation_id
-pipeline_id · transform · created_at
+representation_id · rep_type · pipeline_id · chunk_index
+text · embedding_text · start_pos · token_count · chunk_chars
+page_number · section_header · section_level · anchor · doc_title
+modality · content_hash · model_version
+vector (list<float>) · status · entity_version · created_at
+```
+
+`{entity_id}/staging/lineage_v{N}.parquet`：
+
+```text
+src_representation_id · dst_representation_id · pipeline_id · transform · created_at
 ```
 
 **写入层特点**：
 - **追加写**：pipeline 产出直接 append，无需建索引。
-- **天然隔离**：不同 Entity 写不同文件，无并发冲突。
+- **天然隔离**：不同 Entity 写不同目录，无并发冲突。
 - **立即可查**：staging 中的 Parquet 可被直接扫描（用于调试 / 预览），但无索引优化。
-- **版本化**：每次 pipeline 重跑产出新的 `chunks_v{N}.parquet`，旧版本保留。
+- **版本化**：每次 pipeline 重跑产出新的 `representations_v{N}.parquet`。
 
 #### L2. 汇聚层：迭代式 Prefix Merge
 
-汇聚层定期扫描 `staging/` prefix，将多个 Entity 的 Parquet 合并为 Lance 数据集：
+汇聚层定期扫描每个 Entity 目录下的 `staging/`，将 Parquet 转为 Lance：
 
 ```text
 汇聚流程：
 
-1. 扫描 staging/ prefix
-   ├─ 发现新增/更新的 Parquet 文件
-   └─ 按 workspace_id + collection_id 分组
-
-2. 按 prefix 汇聚
-   ├─ 将同 prefix 下的多个 Entity Parquet 合并
-   ├─ 产出 Lance 格式数据集
-   └─ 建索引（vector / FTS / scalar）
-
-3. 原子切换
-   ├─ 新 Lance 数据集 ready
-   ├─ 切换查询层指向新数据集
-   └─ 保留旧版本（Lance MVCC）
-
-4. 清理 staging
-   └─ 已汇聚的 Parquet 可归档/删除
+1. 扫描 catalog.lance 中 staging_status = pending 的 Entity
+   │
+   ▼
+2. 对每个 Entity，扫描其 staging/ 目录
+   ├─ 发现新 Parquet 文件
+   └─ 转换为 Lance 格式
+   │
+   ▼
+3. 写入 Entity 目录下的 representations.lance / lineage.lance
+   ├─ 建索引（vector / FTS / scalar）
+   └─ 原子切换（Lance MVCC）
+   │
+   ▼
+4. 更新 catalog.lance（staging_status = merged）
+   │
+   ▼
+5. 清理 staging（已汇聚的 Parquet 可归档/删除）
 ```
 
 **汇聚策略**：
@@ -573,76 +614,35 @@ pipeline_id · transform · created_at
 | --- | --- | --- |
 | **增量汇聚** | 新 Parquet 文件出现 | 只合并新增文件，不重写已有 Lance |
 | **全量重写** | Parquet 文件数 > 阈值 或 碎片率过高 | 重写整个 Lance 数据集，优化存储布局 |
-| **版本切换** | Entity 有新 version | 替换旧 version 的 chunks，保留 lineage |
+| **版本切换** | Entity 有新 version | 替换旧 version 的行，保留 lineage |
 
-#### L3. 查询层：Lance 统一索引
+#### L3. 查询层
 
-**全局 `chunks.lance`**（核心检索入口，汇聚后）：
+**单 Entity 查询**：直接打开 `{entity_id}/representations.lance`，hybrid search。
 
-```text
-chunk_id             string
-entity_id            string              # 汇聚时从文件名/路径注入
-entity_version       int
-representation_id    string
-rep_type             string
-pipeline_id          string
-chunk_index          int
-text                 string              # FTS 索引
-embedding_text       string
-start_pos            int
-token_count          int
-chunk_chars          int
-page_number          int?
-section_header       string?
-section_level        int?
-anchor               string?
-doc_title            string?
-modality             string
-content_hash         string
-model_version        string
-vector               fixed_size_list<float>  # Lance 原生 vector 列
-status               string
-workspace_id         string              # 汇聚时注入，安全隔离
-collection_id        string              # 汇聚时注入
-created_at           timestamp
-```
-
-> **Lance 索引**：`vector` 列建 IVF_PQ 或 HNSW；`text` 列建 FTS 索引；`workspace_id` / `collection_id` / `modality` / `rep_type` / `status` 建 scalar 索引。
-
-**Entity 级 `{entity_id}.lance/`**（可选，用于单 Entity 精细查询）：
-
-- `chunks.lance` — 该 Entity 的 chunks + vectors
-- `representations.lance` — 该 Entity 的 representation 注册
-- `lineage.lance` — 该 Entity 的血缘边
-
-> 全局 `chunks.lance` 用于跨 Entity 检索；Entity 级 Lance 用于预览 / lineage / 单文件调试。
-
-#### 全局 Catalog
+**跨 Entity 查询**：
 
 ```text
-catalog.lance (全局)
-  entity_id            string
-  entity_type          string
-  workspace_id         string
-  collection_id        string
-  name                 string
-  source_uri           string
-  source_version       string
-  content_hash         string
-  version              int
-  status               string              # enabled / hidden / deleted
-  staging_uri          string              # oss://.../staging/{entity_id}/
-  lance_uri            string              # oss://.../indexes/{entity_id}.lance/
-  chunk_count          int
-  representation_types list<string>
-  modalities           list<string>
-  model_version        string
-  staging_status       string              # pending / merged / stale
-  created_at           timestamp
-  updated_at           timestamp
+用户查询 "Q3 定价策略"
+   │
+   ▼
+[1] 查 catalog.lance
+    ├─ 过滤：workspace_id + collection_id + status=enabled
+    └─ 可选：按 entity_type / modalities 预筛选
+   │
+   ▼
+[2] Fan-out 检索
+    ├─ 对每个候选 Entity 的 representations.lance 并行执行 hybrid search
+    └─ 每个文件返回 top-k
+   │
+   ▼
+[3] 全局 Merge
+    ├─ 合并所有文件的 top-k 结果
+    ├─ RRF / CrossEncoder 重排
+    └─ 返回全局 top-k
 ```
 
-> `staging_status`：`pending` = 有新 Parquet 未汇聚；`merged` = 已汇聚到 Lance；`stale` = staging 有更新但未重新汇聚。
+> **优化**：v0.1 简单 fan-out；v0.2 可引入全局 ANN 索引做粗排，减少 fan-out 数量。
 
 #### 数据流全链路
 
@@ -650,22 +650,19 @@ catalog.lance (全局)
 Pipeline 产出
    │
    ▼
-[L1] 写入 staging/{entity_id}/chunks_v{N}.parquet
+[L1] 写入 {entity_id}/staging/representations_v{N}.parquet
    │
    ▼
-[L2] 汇聚层扫描 staging/ prefix
-   ├─ 发现新 Parquet
-   ├─ 按 workspace/collection 分组
-   ├─ 合并 → Lance 格式
+[L2] 汇聚层扫描 Entity 目录的 staging/
+   ├─ 转换为 Lance 格式
+   ├─ 写入 {entity_id}/representations.lance
    ├─ 建索引 (vector / FTS / scalar)
-   ├─ 原子切换查询层指向
    └─ 更新 catalog (staging_status = merged)
    │
    ▼
-[L3] 查询层读 chunks.lance
-   ├─ hybrid search (vector + FTS + scalar filter)
-   ├─ RRF / CrossEncoder rerank
-   └─ 返回 evidence pack
+[L3] 查询层
+   ├─ 单 Entity → 直接读 representations.lance
+   └─ 跨 Entity → catalog 路由 + fan-out + merge
 ```
 
 #### Lineage 级联在三层中的体现
@@ -674,19 +671,19 @@ Pipeline 产出
 raw 更新 (content_hash 变化)
    │
    ▼
-[L1] Pipeline 重跑 → 新 chunks_v{N+1}.parquet 写入 staging
-     旧 representation/chunks 标 stale（在 Parquet 内标记）
+[L1] Pipeline 重跑 → 新 representations_v{N+1}.parquet 写入 staging
+     旧 representation 行标 stale（在 Parquet 内标记）
    │
    ▼
 [L2] 汇聚层检测到新 Parquet
-     → 增量合并到 chunks.lance
-     → 旧 version chunks 标 stale（检索不再命中）
-     → 新 version chunks 标 active
+     → 增量合并到 representations.lance
+     → 旧 version 行标 stale（检索不再命中）
+     → 新 version 行标 active
    │
    ▼
-[L3] 查询层读新 chunks.lance
-     → stale chunks 不参与检索
-     → active chunks 可被检索
+[L3] 查询层读新 representations.lance
+     → stale 行不参与检索
+     → active 行可被检索
 ```
 
 #### Lineage 查询能力
@@ -697,14 +694,6 @@ raw 更新 (content_hash 变化)
 | `GET /lineage/{entity_id}?direction=downstream&rep_type=page_image` | 从 page_image 向下找出所有下游（级联失效目标） |
 | `GET /lineage/{entity_id}/impact?rep_type=page_image` | 影响分析：如果 page_image 变了，哪些下游需要 stale + 重建 |
 | `POST /lineage/{entity_id}/cascade` | 手动触发级联：将指定 rep 的所有下游标 stale 并触发重建 |
-
-#### 全局辅助表
-
-| 表 | 存储位置 | 用途 |
-| --- | --- | --- |
-| `catalog.lance` | 全局 indexes/ | Entity 注册 + 检索路由 + staging 状态 |
-| `edges.lance` | 全局 indexes/ | 跨 Entity 关系（cites/mentions/...） |
-| `pipeline_runs.lance` | 全局 indexes/ | Pipeline 运行历史 |
 
 ---
 
