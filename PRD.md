@@ -433,6 +433,45 @@ vector-lake/{workspace_id}/{collection_id}/
 │       ├── graph.json
 │       └── preview.png
 │
+├── indexes/
+│   └── {entity_id}.lance/          ← 每 Entity 一个 Lance 数据集
+│       ├── chunks-{version}.lance   ← 所有 chunks + vectors
+│       ├── representations.lance    ← representation 注册
+│       └── lineage.lance            ← 血缘边
+│
+├── wiki/
+│   └── {entity_id}.md
+│
+├── catalog.lance                    ← 全局 Entity 注册
+├── edges.lance                      ← 全局跨 Entity 关系
+└── pipeline_runs.lance              ← 全局运行历史
+```
+
+**关键变化**：增加 `v{version}/` 路径，支持多版本共存。
+
+### 4.7 存储模型：每 Entity 一个 Lance 文件
+
+**核心决策：每个 Entity 拥有独立的 Lance 数据集（Parquet 格式 + 向量索引），存储该 Entity 所有模态的可检索资料。**
+
+```text
+vector-lake/{workspace_id}/{collection_id}/
+├── raw/
+│   └── {entity_id}/original
+│
+├── representations/
+│   └── {entity_id}/v{version}/
+│       ├── canonical.md
+│       ├── page_image/
+│       ├── ocr.md
+│       └── ...
+│
+├── indexes/
+│   └── {entity_id}.lance/          ← 每个 Entity 一个 Lance 数据集
+│       ├── data/
+│       │   └── chunks-{version}.lance   ← 所有 chunks + vectors
+│       ├── representations.lance        ← 该 entity 的 representation 注册
+│       └── lineage.lance                ← 该 entity 的血缘边
+│
 ├── wiki/
 │   └── {entity_id}.md
 │
@@ -440,23 +479,28 @@ vector-lake/{workspace_id}/{collection_id}/
     └── {entity_id}.json
 ```
 
-**关键变化**：增加 `v{version}/` 路径，支持多版本共存。
+#### 为什么每 Entity 一个文件？
 
-### 4.7 Lance 表设计
+| 维度 | 全局大表 | 每 Entity 一个文件 |
+| --- | --- | --- |
+| **隔离性** | 共享表，需 workspace_id 过滤 | 天然隔离，删除/归档 = 删文件 |
+| **版本管理** | 需要行级 version + publish | 文件级版本，Lance 原生 MVCC |
+| **Lineage 级联** | 需跨行扫描 lineage 表 | 单文件内级联，重建 = 重写文件 |
+| **并发写入** | 全局锁 / 分区锁 | 无冲突，不同 Entity 并行写入 |
+| **迁移/复制** | 需导出导入 | 复制文件即可 |
+| **跨 Entity 检索** | 单表查询，快 | 需 fan-out，需 catalog |
 
-**核心检索表 = chunks（内嵌 vector）**，辅助表 = entities / representations / edges / pipelines。
+#### Entity Lance 文件内部结构
 
-#### `chunks`（Lance 主表，检索入口）
+**`chunks-{version}.lance`**（核心检索数据，每 Entity 一个）：
 
 ```text
 chunk_id             string
-entity_id            string
-entity_version       int
 representation_id    string
-rep_type             string
+rep_type             string              # canonical_md / ocr_text / page_image / ...
 pipeline_id          string
 chunk_index          int
-text                 string              # 中心块原文（同时建 FTS 索引）
+text                 string              # 中心块原文（建 FTS 索引）
 embedding_text       string              # 向量化文本
 start_pos            int
 token_count          int
@@ -468,58 +512,30 @@ anchor               string?             # 可 null
 doc_title            string?             # 可 null
 modality             string              # text / image / audio / table
 content_hash         string              # chunk 文本的 SHA-256
-workspace_id         string              # 安全隔离
-collection_id        string
-source_uri           string              # raw object URI
-source_version       string              # etag
 model_version        string              # embedding 模型版本
 vector               fixed_size_list<float>  # Lance 原生 vector 列
 status               string              # active / hidden / deleted / stale
 created_at           timestamp
 ```
 
-> **Lance 索引**：`vector` 列建 IVF_PQ 或 HNSW；`text` 列建 FTS 索引；`workspace_id` / `collection_id` / `entity_type` / `modality` / `status` 建 scalar 索引。
+> **Lance 索引**：`vector` 列建 IVF_PQ 或 HNSW；`text` 列建 FTS 索引；`modality` / `rep_type` / `status` 建 scalar 索引。
 
-#### `entities`（辅助表，元数据查询）
-
-```text
-entity_id · entity_type · workspace_id · collection_id · name
-source_uri · source_version · content_hash · version
-status · created_at · updated_at
-```
-
-#### `representations`（辅助表，表现注册）
+**`representations.lance`**（该 Entity 的 representation 注册）：
 
 ```text
-representation_id · entity_id · entity_version · rep_type · uri
-mime_type · derived_from · derived_chain · pipeline_id
+representation_id · rep_type · uri · mime_type
+derived_from · derived_chain · pipeline_id
 status · quality_score · created_at · updated_at
 ```
 
-#### `edges`（辅助表，图遍历）
+**`lineage.lance`**（该 Entity 的血缘边）：
 
 ```text
-src_entity_id · dst_entity_id · edge_type · confidence · source · created_at
+src_representation_id · dst_representation_id
+pipeline_id · transform · created_at
 ```
 
-#### `lineage`（辅助表，血缘关系）
-
-```text
-entity_id            string        # 所属 entity
-entity_version       int           # 所属版本
-src_representation_id string       # 上游 representation
-dst_representation_id string       # 下游 representation
-pipeline_id          string        # 由哪条 pipeline 产出这条边
-transform            string        # 转换动作（parse / ocr / vlm / llm_compile / ...）
-created_at           timestamp
-```
-
-> **Lineage 表 vs Representation 的 derived_from**：
-> - `derived_from` 是 Representation 自身的直接上游指针（1:1），方便快速追溯。
-> - `lineage` 表是完整的血缘边表（M:N），支持多父节点、影响分析、可视化。
-> - 两者数据一致，`lineage` 表是权威来源，`derived_from` 是冗余加速字段。
-
-**Lineage 查询能力**：
+**Lineage 查询能力**（操作在 Entity 的 Lance 文件内）：
 
 | 查询 | 说明 |
 | --- | --- |
@@ -528,12 +544,66 @@ created_at           timestamp
 | `GET /lineage/{entity_id}/impact?rep_type=page_image` | 影响分析：如果 page_image 变了，哪些下游需要 stale + 重建 |
 | `POST /lineage/{entity_id}/cascade` | 手动触发级联：将指定 rep 的所有下游标 stale 并触发重建 |
 
-#### `pipeline_runs`（辅助表，运行历史）
+#### 全局 Catalog
+
+跨 Entity 检索需要一个 **Catalog** 来定位所有 Entity 的 Lance 文件：
 
 ```text
-run_id · entity_id · entity_version · pipeline_id · status
-started_at · finished_at · error_message
+catalog.lance (全局)
+  entity_id            string
+  entity_type          string
+  workspace_id         string
+  collection_id        string
+  name                 string
+  source_uri           string
+  source_version       string
+  content_hash         string
+  version              int
+  status               string              # enabled / hidden / deleted
+  lance_uri            string              # oss://.../indexes/{entity_id}.lance
+  chunk_count          int                 # 可检索 chunk 数
+  representation_types list<string>        # 可用 rep_type 列表
+  modalities           list<string>        # 可用 modality 列表
+  model_version        string              # 最新 embedding 模型版本
+  created_at           timestamp
+  updated_at           timestamp
 ```
+
+> Catalog 是**只读缓存**，由 publish 阶段写入。检索时先查 Catalog 定位 entity，再打开对应 Lance 文件做精细检索。
+
+#### 跨 Entity 检索流程
+
+```text
+用户查询 "Q3 定价策略"
+   │
+   ▼
+[1] 查 Catalog
+    ├─ 过滤：workspace_id + collection_id + status=enabled
+    └─ 可选：按 entity_type / modalities 预筛选
+   │
+   ▼
+[2] Fan-out 检索
+    ├─ 对每个候选 entity 的 Lance 文件并行执行 hybrid search
+    └─ 每个文件返回 top-k chunks
+   │
+   ▼
+[3] 全局 Merge
+    ├─ 合并所有文件的 top-k 结果
+    ├─ RRF / CrossEncoder 重排
+    └─ 返回全局 top-k
+```
+
+> **优化**：v0.1 简单 fan-out；v0.2 可引入全局 ANN 索引（如 IVF-PQ on Catalog 的 centroid vectors）做粗排，减少 fan-out 数量。
+
+#### 全局辅助表
+
+| 表 | 存储位置 | 用途 |
+| --- | --- | --- |
+| `catalog.lance` | 全局 | Entity 注册 + 检索路由 |
+| `edges.lance` | 全局 | 跨 Entity 关系（cites/mentions/...） |
+| `pipeline_runs.lance` | 全局 | Pipeline 运行历史 |
+
+> `edges` 和 `pipeline_runs` 是跨 Entity 的，必须全局存储。其余数据（chunks / representations / lineage）都在 Entity 的 Lance 文件内。
 
 ---
 
