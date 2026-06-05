@@ -938,14 +938,67 @@ grep "Q3 定价" /pricing.pdf/**
    └─ 收集命中行 + 上下文
    │
    ▼
-[4] 返回结果
-   └─ 每个命中：file_path / line_number / line_text / context
+[4] 附加 metadata
+   ├─ 从 VFS 路径反查 entity_id / rep_type / entity_version
+   ├─ 从 catalog 补充 entity 元数据（name / entity_type / status / source_uri）
+   └─ 从 representations 补充 representation 元数据（pipeline_id / derived_from / quality）
+   │
+   ▼
+[5] 返回结果（带 metadata 的 evidence）
 ```
+
+**grep 返回格式**（与其他 tool 的 evidence 包装对齐）：
+
+```json
+{
+  "tool": "grep",
+  "results": [
+    {
+      "file_path": "/pricing.pdf/canonical.md",
+      "line_number": 42,
+      "line_text": "Q3 定价策略：Enterprise $4.2B, Consumer $1.8B",
+      "context_before": ["line 40...", "line 41..."],
+      "context_after": ["line 43...", "line 44..."],
+      "metadata": {
+        "entity_id": "abc123",
+        "entity_type": "document",
+        "entity_version": 1,
+        "name": "pricing.pdf",
+        "rep_type": "canonical_md",
+        "representation_id": "rep_xxx",
+        "pipeline_id": "pipeline_a",
+        "derived_from": "raw",
+        "derived_chain": ["raw", "canonical_md"],
+        "page_number": 7,
+        "section_header": "Q3 Pricing",
+        "mime_type": "text/markdown",
+        "status": "active",
+        "source_uri": "oss://bucket/raw/pricing.pdf",
+        "content_hash": "sha256_xxx",
+        "quality": { "confidence": 0.96, "source": "parser" }
+      }
+    }
+  ]
+}
+```
+
+**metadata 来源映射**：
+
+| metadata 字段 | 来源 | 说明 |
+| --- | --- | --- |
+| `entity_id` | VFS 路径反查 | 从虚拟路径 → entity_id |
+| `entity_type` / `name` / `status` | catalog.lance | entity 元数据 |
+| `rep_type` / `representation_id` | VFS 路径反查 | 从虚拟路径 → representation |
+| `pipeline_id` / `derived_from` / `derived_chain` / `quality` | representations.parquet | representation 元数据 |
+| `page_number` / `section_header` | 行号 → chunk 定位 | 从 start_pos 反查最近的 chunk |
+| `source_uri` / `content_hash` | catalog.lance | 原始文件信息 |
+| `mime_type` | VFS 目录树缓存 | 文件类型 |
 
 **优化**：
 - 先用 `glob` 缩小范围，避免扫描所有文件。
 - 对已缓存在本地的 representation（如 staging 中的 Parquet），直接本地 grep。
 - 大文件分块流式读取，不全部加载到内存。
+- metadata 附加在命中后批量查询，避免逐行查 catalog。
 
 #### VFS 与 Lance 检索的协作
 
