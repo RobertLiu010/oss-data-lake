@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是检索最小单元，提升为一等公民；(5) Lance 主表 = chunks（内嵌 vector）。
+> **修订说明**：基于 v0.1 review + 架构讨论，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector）；(6) 零持久化元数据，全部从 OSS Tag + VFS 扫描实时获取。
 
 ---
 
@@ -68,7 +68,7 @@
 | **Entity** | 知识对象，1 个 OSS Object = 1 个 Entity | 标识稳定，属性可演进 | 文件级知识单元 |
 | **Representation** | Entity 的一种"认知视角"（markdown / 截图 / OCR / 脑图 / 关系图 / ...） | **可重建** | 派生产物，可互为 derived_from |
 | **Pipeline** | 从 raw 或已有 representation 生成新 representation 的过程 | — | 一等公民，同一 Entity 可走多条并行流水线 |
-| **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 一等公民，检索命中的原子粒度 |
+| **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 索引方法，检索命中的原子粒度 |
 | **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 `representations.lance` 的 vector 列 |
 | **Index** | 某类检索能力（semantic/lexical/grep/visual/...） | 可演进 | 检索入口 |
 | **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，从文件命名 + staging Parquet 实时推算，支持级联失效 / 影响分析 |
@@ -152,7 +152,7 @@ raw 更新
 
 > 追溯、可视化、影响分析都是 Lineage 的**辅助能力**，核心是"级联失效 + 自动重建"。
 
-### 2.5 Pipeline 是一等公民
+### 2.6 Pipeline 是一等公民
 
 同一 Entity 可以走多条并行流水线，每条产出不同的 Representation：
 
@@ -197,9 +197,8 @@ Entity: pricing.pdf
 │      glob / grep / ls / stat / read 基于此层                  │
 ├──────────────────────────────────────────────────────────────┤
 │  L3  Indexing Layer (LanceDB)                                │
-│      chunks 主表 (vector + FTS + scalar filter)              │
+│      representations.lance (vector + FTS + scalar filter)     │
 │      Hybrid Search (RRF / CrossEncoder rerank)               │
-│      Graph index (edges 表)                                  │
 ├──────────────────────────────────────────────────────────────┤
 │  L2  Representation Layer                                    │
 │      Pipeline A → canonical_md → chunks → embeddings         │
@@ -221,7 +220,7 @@ Entity: pricing.pdf
 
 | 模块 | 职责 | 关键产出 |
 | --- | --- | --- |
-| **Ingest Service** | 监听 OSS 新对象、登记 entity | entity 行 + manifest |
+| **Ingest Service** | 监听 OSS 新对象、登记 entity | OSS Tag + Entity 目录 |
 | **Detect Worker** | mime / language / content_hash / size | detect 结果 |
 | **Pipeline Orchestrator** | 根据 entity_type 选择 1..N 条 pipeline 并行调度 | pipeline_run 记录 |
 | **Pipeline Worker** | 执行单条 pipeline，产出 representation + chunks | representation + chunks |
@@ -307,22 +306,26 @@ Reconciler 周期任务（每 15 min）
 
 ### 4.1 Entity（1 OSS Object = 1 Entity）
 
+**Entity 属性视图（从 OSS Tag + 路径实时组装，非持久化文件）**：
+
 ```json
 {
-  "entity_id": "abc123",
-  "entity_type": "document",
-  "workspace_id": "ws_001",
-  "collection_id": "kb_001",
-  "name": "pricing.pdf",
-  "source_uri": "oss://bucket/raw/pricing.pdf",
-  "source_version": "etag_xxx",
-  "content_hash": "sha256_xxx",
-  "version": 1,
-  "status": "enabled",
-  "created_at": "2026-06-05T10:00:00Z",
-  "updated_at": "2026-06-05T10:00:00Z"
+  "entity_id": "abc123",              // ← 从 OSS 目录名解析
+  "entity_type": "document",          // ← OSS Tag: entity_type
+  "workspace_id": "ws_001",           // ← 从 OSS 路径前缀解析
+  "collection_id": "kb_001",          // ← 从 OSS 路径前缀解析
+  "name": "pricing.pdf",              // ← OSS Tag: name
+  "source_uri": "oss://bucket/.../abc123/original",  // ← 从 OSS 路径组装
+  "content_hash": "sha256_xxx",       // ← OSS Tag: content_hash
+  "version": 1,                       // ← OSS Tag: version
+  "status": "enabled",                // ← OSS Tag: rag_status
+  "labels": ["pricing", "finance"],   // ← OSS Tag: labels（逗号分隔解析）
+  "created_at": "...",                // ← OSS 对象的 LastModified
+  "updated_at": "..."                 // ← OSS Tag 变更时间
 }
 ```
+
+> **注意**：不存在 entity.json 文件。所有属性从 OSS Tag + 路径实时读取。
 
 **entity_type 取值（v0.1）**：
 
@@ -331,6 +334,12 @@ document · image · audio · video
 ```
 
 > `document` 包含 pdf/docx/pptx/html/md 等；`image` 包含 png/jpg/svg 等；`audio` 包含 wav/mp3 等；`video` 包含 mp4 等。具体 subtype 由 detect 阶段的 mime_type 决定。
+
+**entity_id 生成规则**：
+
+- `entity_id = UUIDv7`（时间排序，可读性好，避免 hash 碰撞）。
+- 目录名即 entity_id，VFS 扫描时直接从目录名解析。
+- 同一 raw object 重复上传时，content_hash 检测到相同则复用已有 entity_id。
 
 #### Entity 作为类：方法抽象
 
@@ -349,9 +358,7 @@ class Entity:
     content_hash: str             # raw SHA-256（OSS Tag）
     version: int                  # 单调递增（OSS Tag）
     status: str                   # enabled / hidden / deleted（OSS Tag）
-    labels: list[str]             # 业务标签（OSS Tag）
-    category: str                 # 分类（OSS Tag）
-    project: str                  # 项目归属（OSS Tag）
+    labels: list[str]             # 业务标签（OSS Tag，合并 category/project）
     oss_path: str                 # oss://bucket/vector-lake/{ws}/{col}/{entity_id}/
     created_at: datetime
     updated_at: datetime
@@ -425,7 +432,7 @@ class Entity:
         """恢复：OSS Tag rag_status=enabled。"""
 
     def update_tags(self, **tags) -> None:
-        """更新任意 OSS Tag（labels / category / project / ...）。"""
+        """更新任意 OSS Tag（labels / ...）。"""
 
     # ===== 检索（基于 representations.lance）=====
     def search(
@@ -507,10 +514,9 @@ Entity 不是数据库行，而是**一个聚合根**，把以下资源聚合在
 ```
 
 **关键设计**：
-- `derived_from` 指向直接上游的 `representation_id`（而非 OSS URI），形成血缘链。
-- `derived_chain` 记录完整溯源链（从 raw 到当前），方便追溯和调试。
+- `derived_from` 指向直接上游的 `rep_type`（如 `"page_image"`），是**冗余加速字段**。权威血缘从 pipeline 拓扑 + 文件命名实时推算（见 §4.6 Lineage 实时推算）。
+- `derived_chain` 记录完整溯源链（从 raw 到当前），是**冗余加速字段**，方便快速追溯和调试。
 - `pipeline_id` 标识由哪条流水线产出。
-- 更完整的血缘关系由 `lineage` 表维护（见 §4.6），支持多父节点和影响分析。
 
 **标准 rep_type（v0.1 落地集合）**：
 
@@ -522,11 +528,10 @@ audio_segment · transcript · transcript_segment
 mind_map · wiki_md · graph_json · summary
 ```
 
-### 4.3 Chunk（检索最小单元，一等公民）
+### 4.3 Chunk（检索粒度，索引方法）
 
 ```json
 {
-  "chunk_id": "chk_xxx",
   "entity_id": "abc123",
   "entity_version": 1,
   "representation_id": "rep_xxx",
@@ -563,22 +568,26 @@ mind_map · wiki_md · graph_json · summary
 | mind_map | 按节点切 chunk | text |
 | graph_json | 按 (subject, predicate, object) 三元组切 chunk | text |
 
-### 4.4 Edge（跨 Entity 关系）
+### 4.4 跨 Entity 关系（作为 graph_json representation）
+
+跨 Entity 关系不独立建表，而是作为 `graph_json` representation 存储在 representations.lance 中。
 
 ```json
 {
-  "src_entity_id": "abc123",
-  "dst_entity_id": "def456",
-  "edge_type": "cites",
-  "confidence": 0.95,
-  "source": "llm_compiler",
-  "created_at": "2026-06-05T10:00:00Z"
+  "representation_id": "rep_graph",
+  "entity_id": "abc123",
+  "rep_type": "graph_json",
+  "edges": [
+    { "dst_entity_id": "def456", "edge_type": "cites", "confidence": 0.95, "source": "llm_compiler" },
+    { "dst_entity_id": "ghi789", "edge_type": "mentions", "confidence": 0.88, "source": "llm_compiler" }
+  ]
 }
 ```
 
 **edge_type**：`cites · mentions · same_as · contradicts · supports · related_to`
 
 > 注意：不再有 `contains` edge。因为 1 OSS Object = 1 Entity，不存在父子实体关系。
+> 跨 Entity 关系由 Pipeline D（知识编译）产出，存储为 graph_json representation。
 
 ### 4.5 Pipeline（流水线定义）
 
@@ -597,6 +606,11 @@ mind_map · wiki_md · graph_json · summary
   "priority": 2
 }
 ```
+
+**Pipeline 定义的存储位置**：
+
+- v0.1：代码内注册（Python dataclass / YAML config），随服务部署。
+- v0.2：支持动态注册（Pipeline 定义存 OSS，运行时加载）。
 
 ### 4.6 存储模型：Entity 目录自包含 + Parquet 写入 → Lance 索引
 
@@ -628,7 +642,7 @@ mind_map · wiki_md · graph_json · summary
 **核心决策**：
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
 2. **零持久化元数据** — 不需要 `catalog.lance`、不需要 `lineage.json`、不需要 `entity.json`。
-3. **OSS Object Tagging** 作为唯一的状态/标签存储层（`rag_status` / `labels` / `category` / `project`）。
+3. **OSS Object Tagging** 作为唯一的状态/标签存储层（`rag_status` / `labels` / `sync_state`）。
 4. **VFS 实时扫描 prefix** 重建目录树 + 血缘图，所有元数据从 OSS 实时获取。
 5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。
 
@@ -674,7 +688,7 @@ vector-lake/{workspace_id}/{collection_id}/
 | # | 文件 | 位置 | 用途 |
 | --- | --- | --- | --- |
 | 1 | `representations.lance` | Entity 目录内 | 该 Entity 的所有可检索单元（含 vector + text） |
-| — | OSS Object Tagging | raw 对象 | Entity 的状态/标签（rag_status / labels / category / project） |
+| — | OSS Object Tagging | raw 对象 | Entity 的状态/标签（rag_status / labels / sync_state） |
 
 **为什么只用 1 张 Lance 表**：
 - `catalog.lance` 不需要 — VFS 扫描 prefix 即可获取所有 Entity 目录。
@@ -695,11 +709,11 @@ vector-lake/{workspace_id}/{collection_id}/
 | `name` | `pricing.pdf` | 原始文件名 |
 | `content_hash` | `sha256_xxx` | raw 内容的 SHA-256 |
 | `version` | `1` | Entity 版本号 |
-| `labels` | `pricing,finance,Q3` | 业务标签（逗号分隔） |
-| `category` | `strategy` | 分类 |
-| `project` | `Q3-review` | 项目归属 |
+| `labels` | `pricing,finance,Q3,strategy,Q3-review` | 业务标签（合并 category/project，逗号分隔） |
 | `model_version` | `embedding-v5-retrieval` | 最新 embedding 模型版本 |
-| `staging_status` | `pending` / `merged` / `stale` | staging 汇聚状态 |
+| `sync_state` | `idle` / `syncing` / `ready` / `failed` / `stale` | 同步状态（替代 staging_status） |
+| `sync_version` | `42` | Lance MVCC version 号 |
+| `sync_error` | `oom` | 失败原因（failed 时才有） |
 
 **示例**：
 
@@ -711,11 +725,11 @@ oss://bucket/vector-lake/ws_001/kb_001/abc123/original
     name=pricing.pdf
     content_hash=sha256_abc...
     version=1
-    labels=pricing,finance,Q3
-    category=strategy
-    project=Q3-review
+    labels=pricing,finance,Q3,strategy,Q3-review
     model_version=embedding-v5-retrieval
-    staging_status=merged
+    sync_state=ready
+    sync_version=42
+    sync_error=
 ```
 
 **VFS + OSS Tag 协作**：
@@ -725,7 +739,7 @@ VFS 扫描 vector-lake/{ws}/{col}/ prefix
   ├─ ListObjectsV2（带 Tagging 过滤）
   │   └─ 只返回 rag_status=enabled 的对象
   ├─ 对每个 enabled 对象 GetObjectTagging
-  │   └─ 获取 entity_type / labels / category / ...
+  │   └─ 获取 entity_type / labels / ...
   └─ 内存中构建完整目录树 + 实体视图
 ```
 
@@ -747,7 +761,7 @@ ossutil put-object-tagging --bucket ... --key ... --tagging '{"Tags":[{"Key":"ra
 ```
 
 **OSS Tag 的限制**：
-- 最多 10 个 tag → 我们用 10 个，刚好
+- 最多 10 个 tag → 我们用 10 个，刚好满
 - 只能打在具体对象上 → 打在 `original` 上代表整个 Entity
 - 列表过滤只能精确匹配 → 业务标签过滤在 VFS 内存中做
 
@@ -775,7 +789,7 @@ content_hash         string
 model_version        string
 vector               fixed_size_list<float>  # Lance 原生 vector 列
 status               string              # active / hidden / deleted / stale
-entity_version       int
+entity_version       int                 # 冗余加速字段（权威值在 OSS Tag）
 created_at           timestamp
 ```
 
@@ -856,8 +870,8 @@ vector (list<float>) · status · entity_version · created_at
 
 1. 扫描所有 Entity 目录（VFS prefix 扫描）
    ├─ 列出 vector-lake/{ws}/{col}/ 下的所有 {entity_id}/
-   └─ GetObjectTagging 读取 staging_status
-      └─ 找出 staging_status=pending 的 Entity
+   └─ GetObjectTagging 读取 sync_state
+      └─ 找出 sync_state=idle 或 sync_state=stale 的 Entity
    │
    ▼
 2. 对每个 pending Entity，扫描其 staging/ 目录
@@ -870,7 +884,7 @@ vector (list<float>) · status · entity_version · created_at
    └─ 原子切换（Lance MVCC）
    │
    ▼
-4. 更新 OSS Tag（staging_status=merged）
+4. 更新 OSS Tag（sync_state=ready）
    │
    ▼
 5. 清理 staging（已汇聚的 Parquet 可归档/删除）
@@ -907,7 +921,7 @@ vector (list<float>) · status · entity_version · created_at
 ├─────────────────────────────────────────────────────────────┤
 │  2. 周期 reconcile（兜底）                                    │
 │     ├─ 每 15 min 全量扫描 prefix                              │
-│     ├─ 比对 staging_status tag                               │
+│     ├─ 比对 sync_state tag                               │
 │     └─ 触发漏掉的事件处理                                     │
 ├─────────────────────────────────────────────────────────────┤
 │  3. 手动触发（运维）                                          │
@@ -945,15 +959,6 @@ sync_state = idle | syncing | ready | failed | stale
                 │syncing │
                 └────────┘
 ```
-
-**OSS Tag 扩展**（新增 sync_state）：
-
-| Key | 取值 | 说明 |
-| --- | --- | --- |
-| `sync_state` | `idle` / `syncing` / `ready` / `failed` / `stale` | 同步状态 |
-| `sync_started_at` | `2026-06-05T10:00:00Z` | 同步开始时间 |
-| `sync_version` | `42` | Lance MVCC version 号 |
-| `sync_error` | `oom` | 失败原因（failed 时） |
 
 ##### 同步协议细节
 
@@ -1011,6 +1016,8 @@ def acquire_sync_lock(entity_id: str) -> bool:
     return True
 ```
 
+> **OSS Tag 不是原子 CAS**：`PutObjectTagging` API 不支持 compare-and-set 语义，两个 worker 可能同时读到 `sync_state=idle` 然后同时写入 `syncing`。v0.1 用 OSS `CopyObject` + `x-oss-copy-source-if-match`（基于 etag 的条件写）实现真正的 CAS；v0.2 评估引入外部分布式锁（Redis / etcd）。
+
 **Stage 3：Transform（Parquet → Lance）**
 
 ```python
@@ -1059,7 +1066,7 @@ def build_indexes(entity_id: str):
             lance.create_scalar_index(lance_path, column=col)
 ```
 
-**Stage 5：Compact（碎片整理）**
+**Stage 5：Compact（碎片整理，可选）**
 
 ```python
 def maybe_compact(entity_id: str):
@@ -1093,7 +1100,6 @@ def atomic_publish(entity_id: str, new_version: int):
     put_object_tagging(entity_id, {
         "sync_state": "ready",
         "sync_version": new_lance_version,
-        "staging_status": "merged",
         "last_sync_at": now()
     })
 
@@ -1101,7 +1107,7 @@ def atomic_publish(entity_id: str, new_version: int):
     schedule_cleanup(lance_path, keep_versions=5)
 ```
 
-**Stage 7：Cleanup（清理）**
+**Stage 7：Cleanup（清理，可选）**
 
 ```python
 def cleanup_staging(entity_id: str):
@@ -1183,7 +1189,7 @@ def resume_sync(entity_id: str):
 [1] VFS 扫描 + OSS Tag 过滤
    ├─ ListObjectsV2（prefix=vector-lake/{ws}/{col}/, tag rag_status=enabled）
    └─ 对每个 enabled 对象 GetObjectTagging
-      └─ 可选：按 entity_type / labels / category 预筛选
+      └─ 可选：按 entity_type / labels 预筛选
    │
    ▼
 [2] Fan-out 检索
@@ -1212,7 +1218,7 @@ Pipeline 产出
    ├─ 转换为 Lance 格式
    ├─ 写入 {entity_id}/representations.lance
    ├─ 建索引 (vector / FTS / scalar)
-   └─ 更新 OSS Tag (staging_status = merged)
+   └─ 更新 OSS Tag (sync_state = ready)
    │
    ▼
 [L3] 查询层
@@ -1413,12 +1419,15 @@ VFS 将 OSS 路径映射为语义化的虚拟路径：
 ```text
 OSS 物理路径                                          VFS 虚拟路径
 ─────────────────────────────────────────────────────────────────────
-raw/{entity_id}/original                         →  /{name}                    # 原始文件
-representations/{entity_id}/v1/canonical.md      →  /{name}/canonical.md       # 视角文件
-representations/{entity_id}/v1/page_image/       →  /{name}/pages/             # 页面图片
-representations/{entity_id}/v1/ocr.md            →  /{name}/ocr.md             # OCR 结果
-representations/{entity_id}/v1/mind_map.json     →  /{name}/mind_map.json      # 脑图
-wiki/{entity_id}.md                              →  /{name}/wiki.md            # Wiki 页面
+{entity_id}/original                             →  /{name}                    # 原始文件
+{entity_id}/canonical.md                         →  /{name}/canonical.md       # 视角文件
+{entity_id}/page_image/                          →  /{name}/pages/             # 页面图片
+{entity_id}/ocr.md                               →  /{name}/ocr.md             # OCR 结果
+{entity_id}/vlm_extracted.md                     →  /{name}/vlm_extracted.md   # VLM 结果
+{entity_id}/mind_map.json                        →  /{name}/mind_map.json      # 脑图
+{entity_id}/graph.json                           →  /{name}/graph.json         # 关系图
+{entity_id}/summary.md                           →  /{name}/summary.md         # 摘要
+{entity_id}/wiki.md                              →  /{name}/wiki.md            # Wiki 页面
 ```
 
 **用户看到的目录结构**：
@@ -1570,12 +1579,12 @@ grep "Q3 定价" /pricing.pdf/**
 | `read` | VFS | OSS 文件 | entity_id + rep_type | 文件内容 |
 | `grep` | VFS | OSS 文本文件（迭代式扫描） | pattern + path | 行级命中 |
 | `glob` | VFS | 目录树缓存 | pattern | 匹配文件/目录 |
-| `semantic` | Lance | chunks.vector | 自然语言 | top-k chunk + score |
-| `lexical` | Lance | chunks.text (FTS) | 关键词 | top-k chunk + BM25 |
-| `hybrid` | Lance | chunks.vector + chunks.text | 自然语言 | top-k chunk + 融合 score |
-| `visual` | Lance | chunks.vector (modality=image) | image / text | top-k chunk |
-| `audio` | Lance | chunks.vector (modality=audio) | audio / text | top-k chunk |
-| `table` | Lance | chunks (modality=table) | SQL-like / 关键词 | 表行 + 来源 |
+| `semantic` | Lance | representations.lance vector 列 | 自然语言 | top-k chunk + score |
+| `lexical` | Lance | representations.lance text (FTS) | 关键词 | top-k chunk + BM25 |
+| `hybrid` | Lance | representations.lance vector + text | 自然语言 | top-k chunk + 融合 score |
+| `visual` | Lance | representations.lance (modality=image) | image / text | top-k chunk |
+| `audio` | Lance | representations.lance (modality=audio) | audio / text | top-k chunk |
+| `table` | Lance | representations.lance (modality=table) | SQL-like / 关键词 | 表行 + 来源 |
 | `graph` | Lance | edges | 实体 / 关系查询 | 邻居子图 |
 
 ### 8.3 Hybrid Search（v0.1 核心检索模式）
@@ -1599,7 +1608,7 @@ grep "Q3 定价" /pricing.pdf/**
 
 ```python
 results = (
-    chunks_table.search(query_type="hybrid")
+    reps_table.search(query_type="hybrid")
     .vector(query_vector)
     .text(query_text)
     .where(f"workspace_id = 'ws_001' AND status = 'active'")
@@ -1712,7 +1721,8 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
   "tool": "hybrid",
   "results": [
     {
-      "chunk_id": "chk_xxx",
+      "representation_id": "rep_xxx",
+      "chunk_index": 3,
       "entity_id": "abc123",
       "entity_version": 1,
       "representation_id": "rep_xxx",
@@ -1897,7 +1907,23 @@ semantic · lexical · hybrid · visual
 | `GET /lineage/{entity_id}/impact` | 影响分析（某个 rep 变了会影响哪些下游） |
 | `POST /engine/ask` | 智能引擎（综合） |
 
-### 12.3 统一响应
+### 12.3 Entity 操作 API（对应 Entity 类方法）
+
+| API | 对应 Entity 方法 | 说明 |
+| --- | --- | --- |
+| `POST /entities/{id}/representations` | `generate_representation` | 生成单个 representation |
+| `POST /entities/{id}/representations/regenerate` | `regenerate` | 重新生成（血缘级联） |
+| `POST /entities/{id}/indexes` | `build_index` | 建索引 |
+| `POST /entities/{id}/cascade` | `cascade_invalidate` | 级联失效 + 重建 |
+| `PATCH /entities/{id}/tags` | `update_tags` | 更新 OSS Tag |
+| `DELETE /entities/{id}` | `delete` | 软删除 |
+| `POST /entities/{id}/restore` | `restore` | 恢复 |
+| `POST /entities/{id}/sync` | 手动触发 | 强制同步 OSS → Lance |
+| `GET /entities/{id}/lineage` | `get_lineage` | 血缘 DAG |
+| `GET /entities/{id}/perspectives` | `perspectives` | 视角面板 |
+| `GET /entities/{id}/preview` | `preview` | 预览 |
+
+### 12.4 统一响应
 
 ```json
 {
@@ -1932,6 +1958,7 @@ semantic · lexical · hybrid · visual
 | **可扩展** | 横向扩展 | Pipeline Worker / Embedder / Indexer 各自独立扩缩容 |
 | **安全** | workspace 隔离 | 所有查询强制带 `workspace_id`；跨 ws 默认拒绝 |
 | **存储** | 1K 文档估算 | ~7 GB（向量 ~2 GB + FTS ~200 MB + OSS ~5 GB） |
+| | **fan-out 上限** | 单次跨 Entity 检索 ≤ 100 个 Entity（v0.1 简单 fan-out） |
 
 ---
 
@@ -1986,7 +2013,7 @@ semantic · lexical · hybrid · visual
 | R7 | Embedding 模型升级 | model_version 字段 + reconcile 检测过期 + 按需重跑 |
 | Q1 | entity 是否需要"跨 collection 合并"？ | v0.1 不做；v0.2 讨论 `same_as` edge |
 | Q2 | wiki_md / mind_map 的 LLM 编译成本 | v0.2 实现；异步、按需、按版本 |
-| Q3 | graph index 用什么存储 | v0.1 用 Lance `edges` 表 + 内存 join；v0.2 评估 Neo4j |
+| Q3 | graph index 用什么存储 | v0.1 用 graph_json representation + 内存遍历；v0.2 评估 Neo4j |
 | Q4 | 检索结果"高亮 / 片段截取" | v0.1 给 snippet；v0.2 接 highlighter |
 | Q5 | multimodal embedding 与文本是否真的同空间 | V5 明确支持，但需回归测试 |
 | Q6 | VLM pipeline 的模型选型 | v0.2 评估 Qwen2-VL / GPT-4o / Gemini |
@@ -2002,11 +2029,11 @@ semantic · lexical · hybrid · visual
 | **OSS Data Lake** | 直接读写；raw 路径即 source of truth |
 | **Embedding V5** | 调 `/v1/embeddings`；按 §7.1 task 映射表选 task |
 | **Chunking UseCase** | Pipeline A/B 的 chunk 阶段调用 `ChunkingWithSlidingWindowUseCase`；字段映射见下表 |
-| **LanceDB** | chunks 主表（vector + FTS + scalar filter）；hybrid search 原生支持 |
+| **LanceDB** | representations.lance（vector + FTS + scalar filter）；hybrid search 原生支持 |
 
 ### 17.2 Chunking UseCase 字段映射
 
-| Chunk 字段 | Lance chunks 表字段 | 用途 |
+| Chunk 字段 | Lance representations.lance 字段 | 用途 |
 | --- | --- | --- |
 | `text` | `text` | 中心块原文，用于 snippet / FTS 索引 |
 | `embedding_text` | `embedding_text` | 向量化输入文本 |
@@ -2026,7 +2053,7 @@ semantic · lexical · hybrid · visual
 - **Representation**：Entity 的一种"认知视角"，可互为 derived_from。
 - **Pipeline**：从 raw 或已有 representation 生成新 representation 的过程，是一等公民。
 - **Chunk**：某个 Representation 下的检索最小单元，是一等公民。
-- **Embedding**：Chunk 的向量索引，内嵌于 Lance chunks 表。
+- **Embedding**：Chunk 的向量索引，内嵌于 representations.lance。
 - **Index**：某类检索能力。
 - **Manifest**：某次处理产物的注册清单。
 - **Provenance**：结果可追溯到来源 + 版本 + pipeline。
@@ -2038,7 +2065,7 @@ semantic · lexical · hybrid · visual
 - [ ] Representation 的 derived_from DAG 是否满足可重建？
 - [ ] Chunk 作为检索粒度是否能定位到页/段/时间戳？
 - [ ] Pipeline 并行调度是否满足 partial success？
-- [ ] Lance chunks 主表（vector + FTS + scalar filter）是否满足 hybrid search？
+- [ ] Lance representations.lance（vector + FTS + scalar filter）是否满足 hybrid search？
 - [ ] 状态模型 + version 是否能区分"用户意图"与"处理状态"？
 - [ ] content_hash 变更检测是否比 etag 更可靠？
 - [ ] v0.1 范围是否足够小、足够完整？
