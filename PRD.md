@@ -20,7 +20,7 @@
 
 当前仓库已具备以下能力：
 
-- **OSS Data Lake**：原始对象（pdf、docx、pptx、image、audio…）通过 `vector-lake/{workspace}/{collection}/raw/...` 落地，文件不可变。
+- **OSS Data Lake**：原始对象（pdf、docx、pptx、image、audio…）通过 `vector-lake/{workspace}/{collection}/{entity_id}/...` 落地，文件不可变。
 - **Embedding V5 服务**：基于 Jina V5 Omni 的多模态 embedding（文本/图像/音频/视频在同一向量空间），支持 `retrieval.query` / `retrieval.passage` / `text-matching` / `image` / `audio` / `video`，支持 MRL 维度截断。
 - **Chunking Use Case**：基于 Markdown 标题 + 表格保护 + token 阈值 + 滑动窗口的成熟文本切分实现。
 
@@ -214,7 +214,7 @@ Entity: pricing.pdf
 │      Edge registry (跨 Entity 关系) · Manifest               │
 ├──────────────────────────────────────────────────────────────┤
 │  L0  Raw Object Store (OSS Data Lake)                        │
-│      oss://vector-lake/{ws}/{col}/raw/{entity_id}/original   │
+│      oss://vector-lake/{ws}/{col}/{entity_id}/original       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -656,9 +656,9 @@ mind_map · wiki_md · graph_json · summary
 │      每 Entity 目录下写入 Parquet，小文件快写，天然隔离         │
 │      pipeline 产出直接落盘，无需全局协调                       │
 ├─────────────────────────────────────────────────────────────┤
-│  L2  汇聚层（Prefix Merge）                                  │
-│      迭代式扫描 Entity 目录，将 Parquet 转为 Lance             │
-│      每 Entity 目录内独立转换，无需跨 Entity 协调              │
+│  L2  汇聚层（Lance Watcher）                                   │
+│      事件驱动 + 增量同步 + 全量 Rebuild                       │
+│      每 Entity 目录内独立同步，无需跨 Entity 协调              │
 ├─────────────────────────────────────────────────────────────┤
 │  L3  查询层（Lance）                                         │
 │      每 Entity 目录内的 representations.lance 支持检索         │
@@ -747,7 +747,7 @@ vector-lake/{workspace_id}/{collection_id}/
 | `version` | `1` | Entity 版本号 |
 | `labels` | `pricing,finance,Q3,strategy,Q3-review` | 业务标签（合并 category/project，逗号分隔） |
 | `model_version` | `embedding-v5-retrieval` | 最新 embedding 模型版本 |
-| `sync_state` | `idle` / `syncing` / `ready` / `failed` / `stale` | 同步状态（替代 staging_status） |
+| `sync_state` | `idle` / `syncing` / `rebuilding` / `ready` / `failed` / `stale` | 同步状态（覆盖增量/全量/重试/级联/失败） |
 | `sync_version` | `42` | Lance MVCC version 号 |
 | `sync_error` | `oom` | 失败原因（failed 时才有） |
 
@@ -1309,12 +1309,17 @@ Pipeline 产出直接写入 Entity 目录下的 `staging/`：
 `{entity_id}/staging/representations_v{N}.parquet`：
 
 ```text
-representation_id · rep_type · pipeline_id · chunk_index
-text · embedding_text · start_pos · token_count · chunk_chars
+representation_id · entity_id · chunk_index
+rep_type · pipeline_id · transform · modality · derived_from · model_version
+text · embedding_text · start_pos · end_pos · token_count · chunk_chars
 page_number · section_header · section_level · anchor · doc_title
-modality · content_hash · model_version
-vector (list<float>) · status · entity_version · created_at
+image_uri · audio_uri · table_data
+content_hash · model_version
+vector (list<float>) · status · entity_version
+created_at · updated_at
 ```
+
+> Parquet 与 `representations.lance` 共享同一逻辑 schema（L1 写入后由 L2 汇聚层负责类型对齐到 `fixed_size_list<float, 1024>`）。
 
 **写入层特点**：
 - **追加写**：pipeline 产出直接 append，无需建索引。
@@ -1786,20 +1791,48 @@ def transform_to_lance(entity_id: str, parquet_files: list[str]):
 
 ```python
 def delete_from_lance(entity_id: str, deleted_parquet: list[str]):
-    """删除 Lance 中属于已删除 Parquet 的行。"""
+    """删除 Lance 中属于已删除 Parquet 的行。
+
+    实现思路：
+    Lance schema 中不存 source_parquet 字段（避免冗余），
+    而是用 Lance manifest metadata 记录"每个 Parquet 文件 → 行 ID 范围"的映射。
+    删除某个 Parquet 时，从 manifest metadata 查行范围，再做 deletion。
+    """
 
     lance_path = f"oss://.../{entity_id}/representations.lance/"
 
-    for parquet_file in deleted_parquet:
-        # 找出该 Parquet 文件中的所有行
-        rows = lance.search(lance_path) \
-            .where(f"source_parquet = '{parquet_file}'") \
-            .to_list()
+    # 1. 从 manifest metadata 读取 Parquet → 行范围映射
+    manifest_meta = lance.get_manifest_metadata(lance_path)
+    parquet_to_rows = manifest_meta.get("parquet_to_row_ranges", {})
+    # e.g. {
+    #   "representations_v1.parquet": {"fragment_id": 1, "row_offset": 0, "row_count": 250},
+    #   "representations_v2.parquet": {"fragment_id": 2, "row_offset": 0, "row_count": 50},
+    # }
 
-        # 标记为 deleted（Lance deletion vector）
-        row_ids = [r["row_id"] for r in rows]
-        lance.delete(lance_path, where=f"row_id in {row_ids}")
+    # 2. 对每个被删除的 Parquet，按行范围做 Lance deletion
+    for parquet_file in deleted_parquet:
+        if parquet_file in parquet_to_rows:
+            range_info = parquet_to_rows[parquet_file]
+            # Lance 支持按 fragment_id + offset 范围删除
+            lance.delete_rows(
+                lance_path,
+                fragment_id=range_info["fragment_id"],
+                row_offset=range_info["row_offset"],
+                row_count=range_info["row_count"],
+            )
+
+    # 3. 更新 manifest metadata（移除已删除 Parquet 的记录）
+    for parquet_file in deleted_parquet:
+        parquet_to_rows.pop(parquet_file, None)
+    lance.update_manifest_metadata(lance_path, {
+        "parquet_to_row_ranges": parquet_to_rows,
+    })
 ```
+
+> **为什么不用 `source_parquet` 字段做查询**：
+> 1. Lance schema 不存 source_parquet 字段，避免冗余。
+> 2. 用 manifest metadata 记录行范围，删除时按范围操作更高效。
+> 3. Manifest metadata 在 Stage 3 写入时由 L1 → L2 同步流程更新。
 
 **Stage 5：Index（建/更新索引）**
 
@@ -1810,10 +1843,12 @@ def update_indexes(entity_id: str):
     lance_path = f"oss://.../{entity_id}/representations.lance/"
     existing = lance.list_indices(lance_path)
 
-    # vector 索引
+    # vector 索引（与 §4.6 索引设计保持一致：IVF_HNSW_SQ）
     if "vector" not in existing:
         lance.create_index(lance_path, column="vector",
-                          index_type="IVF_PQ", num_partitions=256, num_sub_vectors=64)
+                          index_type="IVF_HNSW_SQ",
+                          num_partitions=256,
+                          metric="cosine")
     else:
         lance.optimize_index(lance_path, column="vector")  # 增量优化
 
@@ -2290,7 +2325,7 @@ grep "Q3 定价" /pricing.pdf/**
         "section_header": "Q3 Pricing",
         "mime_type": "text/markdown",
         "status": "active",
-        "source_uri": "oss://bucket/raw/pricing.pdf",
+        "source_uri": "oss://bucket/vector-lake/ws_001/kb_001/abc123/original",
         "content_hash": "sha256_xxx",
         "quality": { "confidence": 0.96, "source": "parser" }
       }
@@ -2485,11 +2520,11 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
   "tool": "hybrid",
   "results": [
     {
+      "chunk_id": "rep_xxx_chunk_3",
       "representation_id": "rep_xxx",
       "chunk_index": 3,
       "entity_id": "abc123",
       "entity_version": 1,
-      "representation_id": "rep_xxx",
       "rep_type": "canonical_md",
       "pipeline_id": "pipeline_a",
       "modality": "text",
@@ -2498,7 +2533,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
       "page_number": 7,
       "section_header": "Q3 Pricing",
       "provenance": {
-        "source_uri": "oss://bucket/raw/pricing.pdf",
+        "source_uri": "oss://bucket/vector-lake/ws_001/kb_001/abc123/original",
         "source_version": "etag_xxx",
         "content_hash": "sha256_xxx",
         "model_version": "embedding-v5-retrieval"
@@ -2817,7 +2852,7 @@ semantic · lexical · hybrid · visual
 - **Entity**：知识对象，1 个 OSS Object = 1 个 Entity。
 - **Representation**：Entity 的一种"认知视角"，可互为 derived_from。
 - **Pipeline**：从 raw 或已有 representation 生成新 representation 的过程，是一等公民。
-- **Chunk**：某个 Representation 下的检索最小单元，是一等公民。
+- **Chunk**：某个 Representation 下的检索最小单元，是索引方法（不是存储概念）。
 - **Embedding**：Chunk 的向量索引，内嵌于 representations.lance。
 - **Index**：某类检索能力。
 - **Manifest**：某次处理产物的注册清单。
