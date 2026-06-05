@@ -69,9 +69,9 @@
 | **Representation** | Entity 的一种"认知视角"（markdown / 截图 / OCR / 脑图 / 关系图 / ...） | **可重建** | 派生产物，可互为 derived_from |
 | **Pipeline** | 从 raw 或已有 representation 生成新 representation 的过程 | — | 一等公民，同一 Entity 可走多条并行流水线 |
 | **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 一等公民，检索命中的原子粒度 |
-| **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 Lance chunks 表的 vector 列 |
+| **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 `representations.lance` 的 vector 列 |
 | **Index** | 某类检索能力（semantic/lexical/grep/visual/...） | 可演进 | 检索入口 |
-| **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，支持追溯 / 可视化 / 影响分析 |
+| **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，存为 `lineage.json`，支持级联失效 / 影响分析 |
 | **Edge** | 跨 Entity 关系（cites/mentions/same_as/...） | 可演进 | 图检索基础 |
 
 ### 2.2 核心链路
@@ -421,7 +421,7 @@ mind_map · wiki_md · graph_json · summary
 
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
 2. **写入用 Parquet**（快写、隔离），**查询用 Lance**（索引、hybrid search），中间通过迭代式汇聚衔接。
-3. **3 张 Lance 表**：`catalog.lance`（全局）+ `representations.lance`（Entity 目录内）+ `lineage.lance`（Entity 目录内）。
+3. **2 张 Lance 表**：`catalog.lance`（全局）+ `representations.lance`（Entity 目录内）。血缘用 `lineage.json`（JSON 文件，内存操作，无需 Lance 索引）。
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -461,21 +461,20 @@ vector-lake/{workspace_id}/{collection_id}/
 │   ├── wiki.md
 │   ├── ...
 │   ├── staging/                                 ← L1 写入层（Pipeline 产出）
-│   │   ├── representations_v{N}.parquet         ← 可检索单元 + vectors
-│   │   └── lineage_v{N}.parquet                 ← 血缘边
+│   │   └── representations_v{N}.parquet         ← 可检索单元 + vectors
 │   ├── representations.lance/                   ← L3 查询层（汇聚后）
 │   │   ├── data/
 │   │   └── _indices/
 │   │       ├── vector.idx
 │   │       └── fts.idx
-│   └── lineage.lance/                           ← 血缘索引
+│   └── lineage.json                             ← 血缘（JSON，内存操作）
 │
 ├── {entity_id_2}/                               ← 另一个 Entity
 │   ├── original
 │   ├── ...
 │   ├── staging/
 │   ├── representations.lance/
-│   └── lineage.lance/
+│   └── lineage.json
 ```
 
 **关键设计**：
@@ -483,13 +482,13 @@ vector-lake/{workspace_id}/{collection_id}/
 - 迁移/复制/删除 = 操作整个 Entity 目录。
 - 不同 Entity 之间完全隔离，无并发写入冲突。
 
-#### 3 张 Lance 表
+#### 2 张 Lance 表 + 1 个 JSON 文件
 
-| # | 表 | 位置 | 用途 |
+| # | 文件 | 位置 | 用途 |
 | --- | --- | --- | --- |
 | 1 | `catalog.lance` | 全局 | Entity 注册 + 检索路由 |
 | 2 | `representations.lance` | Entity 目录内 | 该 Entity 的所有可检索单元（含 vector + text） |
-| 3 | `lineage.lance` | Entity 目录内 | 该 Entity 的血缘边 |
+| — | `lineage.json` | Entity 目录内 | 该 Entity 的血缘边（JSON，内存操作，无需 Lance 索引） |
 
 #### `catalog.lance`（全局）
 
@@ -546,15 +545,32 @@ created_at           timestamp
 
 > **Lance 索引**：`vector` 列建 IVF_PQ 或 HNSW；`text` 列建 FTS 索引；`modality` / `rep_type` / `status` 建 scalar 索引。
 
-#### `lineage.lance`（Entity 目录内）
+#### `lineage.json`（Entity 目录内）
 
-```text
-src_representation_id string             # 上游 representation
-dst_representation_id string             # 下游 representation
-pipeline_id           string             # 由哪条 pipeline 产出
-transform             string             # parse / ocr / vlm / llm_compile / ...
-created_at            timestamp
+血缘边用 JSON 存储，无需 Lance 索引。Lineage 的操作（遍历上游/下游、影响分析、级联 stale）都是小图内存操作，不需要向量检索或 FTS。
+
+```json
+{
+  "entity_id": "abc123",
+  "entity_version": 1,
+  "updated_at": "2026-06-05T10:00:00Z",
+  "edges": [
+    { "src": "raw", "dst": "canonical_md", "pipeline": "pipeline_a", "transform": "parse" },
+    { "src": "raw", "dst": "page_image", "pipeline": "pipeline_b", "transform": "render" },
+    { "src": "page_image", "dst": "ocr_text", "pipeline": "pipeline_b", "transform": "ocr" },
+    { "src": "page_image", "dst": "vlm_extracted_md", "pipeline": "pipeline_c", "transform": "vlm" },
+    { "src": "canonical_md", "dst": "mind_map", "pipeline": "pipeline_d", "transform": "llm_compile" },
+    { "src": "canonical_md", "dst": "summary", "pipeline": "pipeline_d", "transform": "llm_compile" },
+    { "src": "canonical_md", "dst": "graph_json", "pipeline": "pipeline_d", "transform": "llm_compile" }
+  ]
+}
 ```
+
+**为什么用 JSON 而不是 Lance**：
+- 一个 Entity 的血缘边通常 5-10 条，加载到内存就是一个 dict，遍历比查 Lance 快。
+- Lineage 不需要向量检索、FTS、scalar filter — Lance 的核心能力用不上。
+- JSON 直接可读、可调试，和 representation 文件放在一起，天然自包含。
+- Pipeline 产出时直接写 JSON，不需要经过汇聚层。
 
 #### L1. 写入层：Pipeline 产出 Parquet
 
@@ -570,17 +586,12 @@ modality · content_hash · model_version
 vector (list<float>) · status · entity_version · created_at
 ```
 
-`{entity_id}/staging/lineage_v{N}.parquet`：
-
-```text
-src_representation_id · dst_representation_id · pipeline_id · transform · created_at
-```
-
 **写入层特点**：
 - **追加写**：pipeline 产出直接 append，无需建索引。
 - **天然隔离**：不同 Entity 写不同目录，无并发冲突。
 - **立即可查**：staging 中的 Parquet 可被直接扫描（用于调试 / 预览），但无索引优化。
 - **版本化**：每次 pipeline 重跑产出新的 `representations_v{N}.parquet`。
+- **lineage 直接写 JSON**：pipeline 产出时直接写 `{entity_id}/lineage.json`，不需要经过汇聚层。
 
 #### L2. 汇聚层：迭代式 Prefix Merge
 
@@ -597,7 +608,7 @@ src_representation_id · dst_representation_id · pipeline_id · transform · cr
    └─ 转换为 Lance 格式
    │
    ▼
-3. 写入 Entity 目录下的 representations.lance / lineage.lance
+3. 写入 Entity 目录下的 representations.lance
    ├─ 建索引（vector / FTS / scalar）
    └─ 原子切换（Lance MVCC）
    │
