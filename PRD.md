@@ -66,7 +66,7 @@
 | --- | --- | --- | --- |
 | **Raw Object** | OSS 上的原始文件 | **不可变** | source of truth |
 | **Entity** | 知识对象，1 个 OSS Object = 1 个 Entity | 标识稳定，属性可演进 | 文件级知识单元 |
-| **Representation** | Entity 的一种"认知视角"（markdown / 截图 / OCR / 脑图 / 关系图 / ...） | **可重建** | 派生产物，可互为 derived_from |
+| **Representation** | Entity 的"认知视角"（canonical_md / ocr_text / vlm_md / mind_map / graph_json / page_image / ...） | **派生产物**，血缘关系从目录层级推导 |
 | **Pipeline** | 从 raw 或已有 representation 生成新 representation 的过程 | — | 一等公民，同一 Entity 可走多条并行流水线 |
 | **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 索引方法，检索命中的原子粒度 |
 | **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 `representations.lance` 的 vector 列 |
@@ -888,7 +888,7 @@ vector-lake/{workspace_id}/{collection_id}/
 **示例**：
 
 ```text
-oss://bucket/vector-lake/ws_001/kb_001/abc123/original
+oss://bucket/vector-lake/ws_001/kb_001/abc123/source/original
   x-oss-tagging:
     rag_status=enabled
     entity_type=document
@@ -1564,8 +1564,8 @@ Pipeline 产出直接写入 Entity 目录下的 `staging/`：
 `{entity_id}/staging/representations_v{N}.parquet`：
 
 ```text
-representation_id · entity_id · chunk_index
-rep_type · pipeline_id · transform · modality · derived_from · model_version
+entity_id · rep_type · chunk_index
+pipeline_id · transform · modality · model_version
 text · embedding_text · start_pos · end_pos · token_count · chunk_chars
 page_number · section_header · section_level · anchor · doc_title
 image_uri · audio_uri · table_data
@@ -1671,7 +1671,7 @@ OSS 事件: staging/representations_v3.parquet Created
 [4] Transform：Parquet → Lance
    ├─ 读取新增 Parquet
    ├─ Schema 对齐 + 类型转换
-   ├─ 去重（representation_id + chunk_index）
+   ├─ 去重（entity_id + rep_type + chunk_index）
    └─ 追加写入 Lance（append 模式）
    │
    ▼
@@ -1763,7 +1763,7 @@ POST /entities/{id}/rebuild
 [5] Rebuild：全量重写 Lance
    ├─ 创建新的 Lance 数据集（新 version）
    ├─ Schema 对齐 + 类型转换
-   ├─ 去重（representation_id + chunk_index）
+   ├─ 去重（entity_id + rep_type + chunk_index）
    ├─ 写入所有行
    └─ 保留旧 version 的 Lance 数据（MVCC）
    │
@@ -2035,7 +2035,7 @@ def transform_to_lance(entity_id: str, parquet_files: list[str]):
     combined = align_schema(concat(dfs))
 
     # 3. 去重（按 representation_id + chunk_index）
-    combined = dedupe(combined, keys=["representation_id", "chunk_index"])
+    combined = dedupe(combined, keys=["entity_id", "rep_type", "chunk_index"])
 
     # 4. 追加写入 Lance
     lance_path = f"oss://.../{entity_id}/representations.lance/"
@@ -2193,7 +2193,7 @@ sync(entity_id, change_set)  # 第 2 次，幂等
 
 # 实现：
 # 1. Lance manifest metadata 记录已同步的 Parquet 文件列表
-# 2. 重复 append 会触发 dedupe（representation_id + chunk_index 主键）
+# 2. 重复 append 会触发 dedupe（entity_id + rep_type + chunk_index 主键）
 # 3. 重复 delete 是幂等的（Lance deletion vector 重复标记无副作用）
 ```
 
@@ -2474,15 +2474,15 @@ VFS 将 OSS 路径映射为语义化的虚拟路径：
 ```text
 OSS 物理路径                                          VFS 虚拟路径
 ─────────────────────────────────────────────────────────────────────
-{entity_id}/original                             →  /{name}                    # 原始文件
-{entity_id}/canonical.md                         →  /{name}/canonical.md       # 视角文件
-{entity_id}/page_image/                          →  /{name}/pages/             # 页面图片
-{entity_id}/ocr.md                               →  /{name}/ocr.md             # OCR 结果
-{entity_id}/vlm_extracted.md                     →  /{name}/vlm_extracted.md   # VLM 结果
-{entity_id}/mind_map.json                        →  /{name}/mind_map.json      # 脑图
-{entity_id}/graph.json                           →  /{name}/graph.json         # 关系图
-{entity_id}/summary.md                           →  /{name}/summary.md         # 摘要
-{entity_id}/wiki.md                              →  /{name}/wiki.md            # Wiki 页面
+{entity_id}/source/original                      →  /{name}                    # 原始文件
+{entity_id}/extract/canonical.md                 →  /{name}/canonical.md       # 视角文件
+{entity_id}/extract/page_image/                  →  /{name}/pages/             # 页面图片
+{entity_id}/recognize/ocr.md                     →  /{name}/ocr.md             # OCR 结果
+{entity_id}/recognize/vlm_extracted.md           →  /{name}/vlm_extracted.md   # VLM 结果
+{entity_id}/compile/mind_map.json                →  /{name}/mind_map.json      # 脑图
+{entity_id}/compile/graph.json                   →  /{name}/graph.json         # 关系图
+{entity_id}/compile/summary.md                   →  /{name}/summary.md         # 摘要
+{entity_id}/compile/wiki.md                      →  /{name}/wiki.md            # Wiki 页面
 ```
 
 **用户看到的目录结构**：
@@ -2548,7 +2548,7 @@ grep "Q3 定价" /pricing.pdf/**
 [4] 附加 metadata
    ├─ 从 VFS 路径反查 entity_id / rep_type / entity_version
    ├─ 从 OSS Tag 补充 entity 元数据（name / entity_type / rag_status / labels）
-   └─ 从 representations 补充 representation 元数据（pipeline_id / derived_from / quality）
+   └─ 从 representations 补充 representation 元数据（pipeline_id / transform / quality）
    │
    ▼
 [5] 返回结果（带 metadata 的 evidence）
@@ -2572,15 +2572,12 @@ grep "Q3 定价" /pricing.pdf/**
         "entity_version": 1,
         "name": "pricing.pdf",
         "rep_type": "canonical_md",
-        "representation_id": "rep_xxx",
         "pipeline_id": "pipeline_a",
-        "derived_from": "raw",
-        "derived_chain": ["raw", "canonical_md"],
         "page_number": 7,
         "section_header": "Q3 Pricing",
         "mime_type": "text/markdown",
         "status": "active",
-        "source_uri": "oss://bucket/vector-lake/ws_001/kb_001/abc123/original",
+        "source_uri": "oss://bucket/vector-lake/ws_001/kb_001/abc123/source/original",
         "content_hash": "sha256_xxx",
         "quality": { "confidence": 0.96, "source": "parser" }
       }
@@ -2594,8 +2591,8 @@ grep "Q3 定价" /pricing.pdf/**
 | metadata 字段 | 来源 | 说明 |
 | --- | --- | --- |
 | `entity_id` | VFS 路径反查 | 从虚拟路径 → entity_id |
-| `entity_type` / `name` / `rag_status` / `labels` | Entity OSS Tag（original 对象） | entity 元数据 |
-| `rep_type` / `pipeline_id` / `derived_from` / `transform` / `modality` / `status` | Representation OSS Tag | representation 血缘元数据 |
+| `entity_type` / `name` / `rag_status` / `labels` | Entity OSS Tag（source/original 对象） | entity 元数据 |
+| `rep_type` / `pipeline_id` / `transform` / `modality` / `status` | Representation OSS Tag | representation 业务元数据 |
 | `page_number` / `section_header` | 行号 → chunk 定位 | 从 start_pos 反查最近的 chunk |
 | `content_hash` | Entity OSS Tag | 原始文件信息 |
 | `mime_type` | VFS 目录树缓存 | 文件类型 |
@@ -2776,7 +2773,6 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
   "results": [
     {
       "chunk_id": "rep_xxx_chunk_3",
-      "representation_id": "rep_xxx",
       "chunk_index": 3,
       "entity_id": "abc123",
       "entity_version": 1,
@@ -2788,7 +2784,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
       "page_number": 7,
       "section_header": "Q3 Pricing",
       "provenance": {
-        "source_uri": "oss://bucket/vector-lake/ws_001/kb_001/abc123/original",
+        "source_uri": "oss://bucket/vector-lake/ws_001/kb_001/abc123/source/original",
         "source_version": "etag_xxx",
         "content_hash": "sha256_xxx",
         "model_version": "embedding-v5-retrieval"
@@ -3105,7 +3101,7 @@ semantic · lexical · hybrid · visual
 ### 17.3 名词表
 
 - **Entity**：知识对象，1 个 OSS Object = 1 个 Entity。
-- **Representation**：Entity 的一种"认知视角"，可互为 derived_from。
+- **Representation**：Entity 的一种"认知视角"，血缘关系从目录层级推导。
 - **Pipeline**：从 raw 或已有 representation 生成新 representation 的过程，是一等公民。
 - **Chunk**：某个 Representation 下的检索最小单元，是索引方法（不是存储概念）。
 - **Embedding**：Chunk 的向量索引，内嵌于 representations.lance。
@@ -3137,7 +3133,7 @@ semantic · lexical · hybrid · visual
 ### 17.6 评审清单（Review Checklist）
 
 - [ ] 1 OSS Object = 1 Entity 是否覆盖所有 v0.1 场景？
-- [ ] Representation 的 derived_from DAG 是否满足可重建？
+- [ ] Representation 的血缘 DAG 是否满足可重建？
 - [ ] Chunk 作为检索粒度是否能定位到页/段/时间戳？
 - [ ] Pipeline 并行调度是否满足 partial success？
 - [ ] Lance representations.lance（vector + FTS + scalar filter）是否满足 hybrid search？
