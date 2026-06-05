@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector）；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag + Representation Tag）+ VFS 扫描实时获取；(7) 血缘从 OSS Tag（derived_from）实时重建，每个 representation 文件自带 8 个 Tag 携带血缘元数据。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**路径约定 + Pipeline 注册表**实时推导（OSS 路径即 Representation 唯一身份，Pipeline 注册表即血缘唯一真相源）。
 
 ---
 
@@ -71,7 +71,7 @@
 | **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 索引方法，检索命中的原子粒度 |
 | **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 `representations.lance` 的 vector 列 |
 | **Index** | 某类检索能力（semantic/lexical/grep/visual/...） | 可演进 | 检索入口 |
-| **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，从 OSS Tag（derived_from）实时重建，支持级联失效 / 影响分析 |
+| **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，从**路径约定 + Pipeline 注册表**实时推导，支持级联失效 / 影响分析 |
 | **Edge** | 跨 Entity 关系（cites/mentions/same_as/...） | 可演进 | 图检索基础 |
 
 ### 2.2 核心链路
@@ -133,7 +133,7 @@ raw ──► page_screenshot ──► vlm_extracted_md
 
 Lineage 的核心目的是：**上游变动后，下游立即不可用并重新生成**。
 
-**Lineage 元数据存储方式**：每个 representation 文件通过 OSS Tag 的 `derived_from` 字段显式声明其直接上游。血缘 DAG 从 OSS Tag 实时重建（详见 §4.6）。
+**Lineage 元数据存储方式**：血缘关系**不存于任何字段或 OSS Tag**，完全从**路径约定**和**Pipeline 注册表**实时推导。每个 representation 的派生关系 = 它的生产 Pipeline 声明的上游（见 §4.6）。
 
 ```text
 raw 更新
@@ -254,10 +254,10 @@ Entity: pricing.pdf
                             │
                 ┌───────────┴───────────┐
                 ▼                       ▼
-         增量更新 VFS 树        从 OSS Tag 重建血缘 DAG
+         增量更新 VFS 树        从路径+Pipeline注册表推导血缘 DAG
                 │                       │
                 ▼                       ▼
-         VFS 目录树            沿 derived_from 边级联标 stale
+         VFS 目录树            沿 Pipeline input_rep 边级联标 stale
          (内存视图)                   │
                                       ▼
                               触发 pipeline 重跑
@@ -276,8 +276,8 @@ Entity: pricing.pdf
 
 | 事件 | 触发条件 | VFS 更新 | 血缘动作 | 检索动作 |
 | --- | --- | --- | --- | --- |
-| `ObjectCreated` | 新文件上传 | 增量添加节点 | 从 OSS Tag 重建血缘 | 触发对应 pipeline |
-| `ObjectModified` | 文件覆盖（raw 更新） | 更新节点属性 | 下游 OSS Tag status→stale → 级联重建 | 触发重建 |
+| `ObjectCreated` | 新文件上传 | 增量添加节点 | 从路径推导血缘（无新增） | 触发对应 pipeline |
+| `ObjectModified` | 文件覆盖（raw 更新） | 更新节点属性 | 沿 Pipeline 边级联下游 OSS Tag status→stale → 重建 | 触发重建 |
 | `ObjectRemoved` | 文件删除 | 移除节点 | 下游标 stale | 受影响 rep 从检索移除 |
 
 **VFS 与检索的协作**：
@@ -499,45 +499,68 @@ Entity 不是数据库行，而是**一个聚合根**，把以下资源聚合在
 
 ### 4.2 Representation（认知视角）
 
+**核心洞察**：**OSS 路径就是 Representation 的唯一身份标识（Primary Key）**。不需要 `representation_id`、`derived_from`、`derived_chain` 等字段——这些信息都可以从路径 + OSS Tag 实时推导出来。
+
 ```json
 {
-  "representation_id": "rep_xxx",
-  "entity_id": "abc123",
-  "entity_version": 1,
-  "rep_type": "vlm_extracted_md",
-  "uri": "oss://bucket/.../abc123/vlm_extracted.md",
-  "mime_type": "text/markdown",
-  "derived_from": "page_image",
-  "derived_chain": ["raw", "page_image", "vlm_extracted_md"],
-  "pipeline_id": "pipeline_c",
-  "transform": "vlm",
-  "modality": "text",
-  "status": "ready",
-  "model_version": "qwen2vl_v3",
-  "quality": {
-    "confidence": 0.92,
-    "source": "vlm_qwen2vl"
-  },
-  "created_at": "2026-06-05T10:00:00Z",
-  "updated_at": "2026-06-05T10:00:00Z"
+  "oss_path": "oss://bucket/vector-lake/{ws}/{col}/{entity_id}/vlm_extracted.md",
+  "entity_id": "abc123",                           // ← 从路径前缀解析
+  "entity_version": 1,                             // ← OSS Tag: entity_version
+  "rep_type": "vlm_extracted_md",                  // ← OSS Tag: rep_type（从路径后缀也可推导）
+  "mime_type": "text/markdown",                    // ← 从文件后缀推导
+  "pipeline_id": "pipeline_c",                     // ← OSS Tag: pipeline_id
+  "transform": "vlm",                              // ← OSS Tag: transform
+  "modality": "text",                              // ← OSS Tag: modality
+  "status": "ready",                               // ← OSS Tag: status
+  "model_version": "qwen2vl_v3",                   // ← OSS Tag: model_version
+  "created_at": "...",                             // ← OSS 对象的 LastModified
+  "updated_at": "..."                              // ← OSS Tag 变更时间
 }
 ```
 
 **关键设计**：
-- `derived_from` 指向直接上游的 `rep_type`（如 `"page_image"`），是**冗余加速字段**。权威血缘从 representation 文件的 OSS Tag 实时重建（见 §4.6 Lineage 实时重建）。
-- `derived_chain` 记录完整溯源链（从 raw 到当前），是**冗余加速字段**，方便快速追溯和调试。
-- `pipeline_id` 标识由哪条流水线产出。
-- `transform` 标识具体变换方法（如 `ocr` / `vlm` / `llm_compile`）。
-- `modality` 标识该 representation 的模态（`text` / `image` / `audio` / `table`）。
+- **路径即身份**：`oss_path` 是 Representation 的全局唯一 PK。两个不同路径 = 两个不同 Representation。
+- **`rep_type` 是路径后缀的语义化**：从 `canonical.md` / `ocr.md` / `vlm_extracted.md` 等路径即可识别类型，OSS Tag 冗余存储加速过滤。
+- **没有 `derived_from` 字段**：血缘关系不存于任何字段，从**路径前缀**和**命名约定**实时推导（见 §4.6 Lineage 实时推导）。
+- **没有 `derived_chain` 字段**：完整溯源链通过路径前缀树 + 命名约定的递归查询实时组装。
+
+**路径结构（Representation 身份的根基）**：
+
+```text
+vector-lake/{ws}/{col}/{entity_id}/{rep_basename}[.meta.json]
+
+# 同一 Entity 的多种 Representation 用不同 rep_basename 区分
+{entity_id}/
+├── original                       ← rep_type: raw
+├── canonical.md                   ← rep_type: canonical_md
+├── ocr.md                         ← rep_type: ocr_text
+├── vlm_extracted.md               ← rep_type: vlm_extracted_md
+├── page_image/
+│   ├── page_001.png               ← rep_type: page_image（多文件型）
+│   ├── page_002.png
+│   └── ...
+├── audio_segment/
+│   ├── seg_001.wav                ← rep_type: audio_segment
+│   └── seg_002.wav
+├── transcript.md                  ← rep_type: transcript
+├── mind_map.json                  ← rep_type: mind_map
+├── graph.json                     ← rep_type: graph_json
+└── summary.md                     ← rep_type: summary
+```
+
+**多文件 Representation**（如 `page_image/`, `audio_segment/`）的特殊处理：
+
+- 整个 `page_image/` 目录视为**一个逻辑 Representation**（rep_type=page_image）。
+- 目录内每个文件是该 rep 的一个分片。
+- 血缘和 OSS Tag 应用在**目录**上（OSS 目录本身无 Tag 能力，需打在目录的占位文件 `.meta` 上，见 §4.2 演进路径）。
 
 **Representation 元数据存储方式**：
 
-每个 representation 文件通过 **OSS Object Tagging** 携带血缘元数据，无需额外持久化文件：
+每个 representation 文件通过 **OSS Object Tagging** 携带业务元数据，**不再存血缘元数据**（血缘从路径推导）：
 
 | Tag Key | 示例值 | 说明 |
 | --- | --- | --- |
-| `rep_type` | `vlm_extracted_md` | 认知视角类型 |
-| `derived_from` | `page_image` | 直接上游 rep_type |
+| `rep_type` | `vlm_extracted_md` | 认知视角类型（与路径后缀冗余，用于过滤） |
 | `pipeline_id` | `pipeline_c` | 产出该 rep 的流水线 |
 | `transform` | `vlm` | 具体变换方法 |
 | `modality` | `text` | 模态 |
@@ -545,32 +568,60 @@ Entity 不是数据库行，而是**一个聚合根**，把以下资源聚合在
 | `model_version` | `qwen2vl_v3` | 产出该 rep 的模型版本 |
 | `entity_version` | `3` | 所属 Entity 版本 |
 
-> 共 8 个 Tag，在 OSS 10 个 Tag 限制内，预留 2 个空位用于 evolution。
+> 共 7 个 Tag，在 OSS 10 个 Tag 限制内，预留 3 个空位用于 evolution。
+> 与之前 8 个 Tag 方案相比，去掉了 `derived_from`（从路径推导）。
 > 若未来需要复杂元数据（超过 10 个 Tag 或嵌套 JSON），可在同目录放 `.meta.json` sidecar，并用 Tag `status=meta_extended` 标记"查看 sidecar 获取完整元数据"。此为 v0.2+ 演进路径。
 
-**标准 rep_type（v0.1 落地集合）**：
+**Representation 身份三元组（用于跨系统引用）**：
 
-```text
-raw · canonical_md · plain_text · layout_json · page_image
-ocr_text · vlm_extracted_md · caption
-table_md · table_json
-audio_segment · transcript · transcript_segment
-mind_map · wiki_md · graph_json · summary
+```python
+# 三元组 = (entity_id, rep_type, rep_basename) 唯一确定一个 Representation
+# 但因为 rep_basename 与 rep_type 一一对应（约定），实际只需 (entity_id, rep_type)
+representation_id = f"{entity_id}/{rep_type}"  # 不需要额外 ID 字段
+
+# 多文件 rep（如 page_image/）的内部文件用 chunk_index 区分
+chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"  # 用于 Lance 表 PK
 ```
 
+**标准 rep_type 与路径约定（v0.1 落地集合）**：
+
+```text
+rep_type              路径约定
+──────────────────   ──────────────────────────────────────
+raw                   {entity_id}/original
+canonical_md          {entity_id}/canonical.md
+plain_text            {entity_id}/plain_text.txt
+layout_json           {entity_id}/layout.json
+page_image            {entity_id}/page_image/page_{NNN}.png
+ocr_text              {entity_id}/ocr.md
+vlm_extracted_md      {entity_id}/vlm_extracted.md
+caption               {entity_id}/caption.md
+table_md              {entity_id}/table.md
+table_json            {entity_id}/table.json
+audio_segment         {entity_id}/audio_segment/seg_{NNN}.wav
+transcript            {entity_id}/transcript.md
+transcript_segment    {entity_id}/transcript_segment/seg_{NNN}.md
+mind_map              {entity_id}/mind_map.json
+wiki_md               {entity_id}/wiki.md
+graph_json            {entity_id}/graph.json
+summary               {entity_id}/summary.md
+```
+
+> 新增 rep_type 只需：(1) 写文件到约定路径；(2) 写 OSS Tag；(3) 命名约定注册到 VFS 路径解析器。**无需修改任何血缘字段或代码。**
+
 ### 4.3 Chunk（检索粒度，索引方法）
+
+**核心设计**：Chunk 是"在某个 Representation 内部的某个切分段"，其身份由 `(entity_id, rep_type, chunk_index)` 三元组唯一确定。**没有独立的 `representation_id` 字段**——这是从 §4.2 的路径即身份原则延伸。
 
 ```json
 {
   "entity_id": "abc123",
-  "entity_version": 1,
-  "representation_id": "rep_xxx",
   "rep_type": "canonical_md",
-  "pipeline_id": "pipeline_a",
   "chunk_index": 3,
   "text": "## Q3 Pricing\nEnterprise: $4.2B, Consumer: $1.8B...",
   "embedding_text": "Heading Levels：Q3 Pricing。Content：Enterprise: $4.2B...",
   "start_pos": 1200,
+  "end_pos": 2224,
   "token_count": 256,
   "chunk_chars": 1024,
   "page_number": 7,
@@ -580,9 +631,53 @@ mind_map · wiki_md · graph_json · summary
   "doc_title": "pricing.pdf",
   "modality": "text",
   "status": "active",
-  "created_at": "2026-06-05T10:00:00Z"
+  "pipeline_id": "pipeline_a",
+  "transform": "parse",
+  "model_version": "parser_v3",
+  "content_hash": "sha256_xxx",
+  "entity_version": 1,
+  "vector": [...],
+  "created_at": "2026-06-05T10:00:00Z",
+  "updated_at": "2026-06-05T10:00:00Z"
 }
 ```
+
+**Chunk 身份（PK）**：
+
+```python
+# PK = (entity_id, rep_type, chunk_index)
+# 等价于 §4.2 的路径拼接：f"{entity_id}/{rep_type}/#{chunk_index}"
+chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
+# 例子："abc123/canonical_md/#3"
+
+# 引用一个 Chunk 时，给出三元组 + 路径即可
+# 上层 RAG/Agent 调用：
+#   "Get chunk abc123/canonical_md/#3"  → 通过路径直接定位到 OSS 文件
+#   "Get chunks of vlm_extracted_md in abc123"  → chunk_index 是变量
+```
+
+**没有 `representation_id` 字段的原因**：
+
+- `representation_id` 是个中间概念，从 `entity_id + rep_type` 即可推导。
+- 直接用 `(entity_id, rep_type, chunk_index)` 三元组做 PK 更直观，与 OSS 路径对齐。
+- 减少字段 = 减少数据冗余 + 减少同步问题。
+
+**Chunk 字段与 OSS Tag 的关系**：
+
+| Chunk 字段 | 来源 | 说明 |
+| --- | --- | --- |
+| `entity_id` | Lance manifest metadata + VFS 路径 | Entity 标识 |
+| `rep_type` | **OSS Tag**（从文件也可用路径后缀推导） | 来源视角 |
+| `chunk_index` | Pipeline chunk 阶段产出 | 切分序号 |
+| `text` / `embedding_text` / `start_pos` 等 | Pipeline chunk 阶段产出 | 切分内容 |
+| `pipeline_id` / `transform` / `model_version` | **OSS Tag** | 产出流水线信息（可冗余存于 chunk 用于过滤） |
+| `modality` | **OSS Tag** | 模态（可冗余存于 chunk 用于过滤） |
+| `status` | Pipeline 阶段写入 | active / stale / hidden / deleted |
+| `entity_version` | **OSS Tag** | 所属 Entity 版本 |
+| `vector` | Pipeline embed 阶段产出 | 向量 |
+| `content_hash` | Pipeline chunk 阶段计算 | chunk 内容哈希 |
+
+> 注：`pipeline_id` / `transform` / `model_version` / `modality` / `entity_version` 等字段在 chunk 行中**冗余**自 OSS Tag，存储目的是**让 chunk 行能独立做过滤**（避免每次都 join OSS Tag）。可通过 v0.2+ 的列裁剪或物化视图优化。
 
 **modality 取值**：`text | image | audio | table`
 
@@ -648,7 +743,7 @@ mind_map · wiki_md · graph_json · summary
 
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
 2. **写入用 Parquet**（快写、隔离），**查询用 Lance**（索引、hybrid search），中间通过迭代式汇聚衔接。
-3. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。血缘从 OSS Tag 实时重建，元数据用两套 OSS Tag（Entity Tag + Representation Tag）。
+3. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。血缘从**路径约定 + Pipeline 注册表**实时推导，元数据用两套 OSS Tag（Entity Tag + Representation Tag）。
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -672,25 +767,25 @@ mind_map · wiki_md · graph_json · summary
 **核心决策**：
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
 2. **零持久化元数据** — 不需要 `catalog.lance`、不需要 `lineage.json`、不需要 `entity.json`。
-3. **两套 OSS Object Tagging** — Entity Tag（10个，打在 original 上）+ Representation Tag（8个，打在每个 rep 文件上），作为唯一的元数据存储层。
-4. **VFS 实时扫描 prefix** 重建目录树 + 从 OSS Tag 重建血缘 DAG，所有元数据从 OSS 实时获取。
-5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。
+3. **两套 OSS Object Tagging** — Entity Tag（10个，打在 original 上）+ Representation Tag（7个，打在每个 rep 文件上），作为唯一的业务元数据存储层。
+4. **VFS 实时扫描 prefix** 重建目录树 + 从**路径约定 + Pipeline 注册表**推导血缘 DAG，所有元数据从 OSS 实时获取。
+5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。每行 = 一个可检索单元（chunk），PK = `(entity_id, rep_type, chunk_index)`。
 
 ```text
 vector-lake/{workspace_id}/{collection_id}/
 │
 ├── {entity_id}/                                 ← Entity 目录（自包含）
 │   ├── original                                 ← raw 文件（带 Entity OSS Tag，10个）
-│   ├── canonical.md                             ← representation 文件（带 Rep OSS Tag，8个）
-│   ├── ocr.md                                   ← representation 文件（带 Rep OSS Tag）
-│   ├── vlm_extracted.md                         ← representation 文件（带 Rep OSS Tag）
+│   ├── canonical.md                             ← rep 文件（带 Rep OSS Tag，7个）
+│   ├── ocr.md                                   ← rep 文件（带 Rep OSS Tag）
+│   ├── vlm_extracted.md                         ← rep 文件（带 Rep OSS Tag）
 │   ├── page_image/
-│   │   ├── page_001.png                         ← representation 文件（带 Rep OSS Tag）
-│   │   └── page_007.png                         ← representation 文件（带 Rep OSS Tag）
-│   ├── mind_map.json                            ← representation 文件（带 Rep OSS Tag）
-│   ├── graph.json                               ← representation 文件（带 Rep OSS Tag）
-│   ├── summary.md                               ← representation 文件（带 Rep OSS Tag）
-│   ├── wiki.md                                  ← representation 文件（带 Rep OSS Tag）
+│   │   ├── page_001.png                         ← rep 文件（带 Rep OSS Tag）
+│   │   └── page_007.png                         ← rep 文件（带 Rep OSS Tag）
+│   ├── mind_map.json                            ← rep 文件（带 Rep OSS Tag）
+│   ├── graph.json                               ← rep 文件（带 Rep OSS Tag）
+│   ├── summary.md                               ← rep 文件（带 Rep OSS Tag）
+│   ├── wiki.md                                  ← rep 文件（带 Rep OSS Tag）
 │   ├── ...
 │   ├── staging/                                 ← L1 写入层（Pipeline 产出）
 │   │   └── representations_v{N}.parquet         ← 可检索单元 + vectors
@@ -723,7 +818,7 @@ vector-lake/{workspace_id}/{collection_id}/
 
 **为什么只用 1 张 Lance 表**：
 - `catalog.lance` 不需要 — VFS 扫描 prefix 即可获取所有 Entity 目录。
-- `lineage.json` 不需要 — 从 representation 文件的 OSS Tag（derived_from）实时重建血缘。
+- `lineage.json` 不需要 — 血缘从**路径约定 + Pipeline 注册表**实时推导（每个 rep 的派生关系 = 生产 Pipeline 声明的上游）。
 - `entity.json` 不需要 — Entity 元数据从 OSS Tag 实时读取。
 - 所有元数据都可以从 OSS 实时重建，零持久化 → 没有同步问题。
 
@@ -1235,72 +1330,160 @@ Lance 原生支持 schema evolution（加列不改列），演进规则：
 
 > **v0.2 预留演进空间**：所有 nullable 列（page_number / section_header / image_uri 等）都是未来可扩展的方向。新增列不需要 Rebuild，Lance 原生支持。
 
-#### Lineage 实时重建（从 OSS Tag）
+#### Lineage 实时推导（从路径约定 + 命名约定）
 
-血缘不持久化，**每次从 representation 文件的 OSS Tag 实时重建**：
+**核心洞察**：血缘关系**不存于任何字段或 OSS Tag**，完全从**路径约定**和**Pipeline 命名约定**实时推导。Representation 的"派生关系" = 它的"生产 Pipeline 声明的上游"。
 
 ```text
-重建方法：
+推导方法：
 
-1. 扫描 Entity 目录内的 representation 文件
-   ├─ canonical.md, ocr.md, page_image/, vlm_extracted.md, mind_map.json, ...
-   └─ 对每个文件调用 GetObjectTagging
+1. 扫描 Entity 目录内的所有文件
+   ├─ VFS 列举 {entity_id}/ 下的所有文件和子目录
+   ├─ 对每个文件，按路径后缀识别 rep_type（依据 §4.2 路径约定表）
+   └─ 对每个 rep_type，查 Pipeline 定义的 "input_rep" 列表
 
-2. 解析 Representation Tag
-   ├─ rep_type → 节点类型
-   ├─ derived_from → 血缘边（指向直接上游 rep_type）
-   ├─ pipeline_id → 产出流水线
-   ├─ transform → 变换方法
-   ├─ status → 当前状态
-   └─ entity_version → 版本
+2. 从 Pipeline 注册表获取派生关系
+   ├─ Pipeline A: input=raw, output=[canonical_md, plain_text]
+   ├─ Pipeline B: input=raw, output=[page_image]
+   ├─ Pipeline C: input=page_image, output=[ocr_text, vlm_extracted_md]
+   ├─ Pipeline D: input=canonical_md, output=[mind_map, summary, graph_json, wiki_md]
+   └─ Pipeline E: input=audio_segment, output=[transcript, transcript_segment]
 
 3. 内存中构建血缘 DAG
-   ├─ 节点 = 每个 representation 文件（由 rep_type 标识）
-   ├─ 边 = derived_from → 当前 rep_type
-   ├─ 遍历上游/下游 → O(边数)
-   ├─ 影响分析 → O(下游子树)
-   └─ 级联失效 → 沿边标 stale（更新下游文件的 status Tag）
+   ├─ 节点 = 每个 rep_type（在当前 Entity 存在的）
+   ├─ 边 = Pipeline.input_rep → Pipeline.output_rep
+   ├─ 遍历上游/下游 → O(边数 × 存在检查)
+   └─ 影响分析 → O(下游子树)
 ```
 
-**示例 DAG**（从 OSS Tag 重建）：
+**示例 DAG**（从路径 + Pipeline 注册表推导）：
 
 ```text
-raw (original, 无 derived_from)
-  ├─► canonical_md           (derived_from=raw, pipeline_id=pipeline_a, transform=parse)
-  ├─► page_image             (derived_from=raw, pipeline_id=pipeline_b, transform=render)
-  │     ├─► ocr_text         (derived_from=page_image, pipeline_id=pipeline_b, transform=ocr)
-  │     └─► vlm_extracted_md (derived_from=page_image, pipeline_id=pipeline_c, transform=vlm)
-  └─► canonical_md → mind_map (derived_from=canonical_md, pipeline_id=pipeline_d, transform=llm_compile)
-                  → summary   (derived_from=canonical_md, pipeline_id=pipeline_d, transform=llm_compile)
-                  → graph_json (derived_from=canonical_md, pipeline_id=pipeline_d, transform=llm_compile)
+raw (original, input=raw)
+  ├─► canonical_md           (Pipeline A: parse)
+  │     ├─► mind_map         (Pipeline D: llm_compile)
+  │     ├─► summary          (Pipeline D: llm_compile)
+  │     ├─► graph_json       (Pipeline D: llm_compile)
+  │     └─► wiki_md          (Pipeline D: llm_compile)
+  │
+  ├─► plain_text             (Pipeline A: parse)
+  │
+  └─► page_image             (Pipeline B: render)
+        ├─► ocr_text         (Pipeline C: ocr)
+        └─► vlm_extracted_md (Pipeline C: vlm)
 ```
 
-**为什么从 OSS Tag 重建而非文件命名推算**：
+**推导的 Python 实现**：
 
-| 维度 | OSS Tag 重建 | 文件命名推算 |
+```python
+# Pipeline 注册表（代码内注册，v0.1 静态）
+PIPELINE_REGISTRY = {
+    "pipeline_a": {
+        "name": "直接提取",
+        "input_rep": "raw",
+        "output_reps": ["canonical_md", "plain_text"],
+    },
+    "pipeline_b": {
+        "name": "OCR 流水线",
+        "input_rep": "raw",
+        "output_reps": ["page_image"],
+    },
+    "pipeline_c": {
+        "name": "VLM 视觉",
+        "input_rep": "page_image",
+        "output_reps": ["ocr_text", "vlm_extracted_md"],
+    },
+    "pipeline_d": {
+        "name": "知识编译",
+        "input_rep": "canonical_md",
+        "output_reps": ["mind_map", "summary", "graph_json", "wiki_md"],
+    },
+    "pipeline_e": {
+        "name": "音频转写",
+        "input_rep": "audio_segment",
+        "output_reps": ["transcript", "transcript_segment"],
+    },
+}
+
+# 推导血缘 DAG
+def build_lineage_dag(entity_id: str) -> dict:
+    """从路径推导 Entity 的血缘 DAG。"""
+
+    # 1. 列出 Entity 目录下的所有文件
+    files = vfs.list_files(entity_id)
+    existing_rep_types = {infer_rep_type(f.path) for f in files}
+
+    # 2. 遍历 Pipeline 注册表，找出存在的 rep 之间的派生关系
+    edges = []
+    for pipeline in PIPELINE_REGISTRY.values():
+        input_rep = pipeline["input_rep"]
+        for output_rep in pipeline["output_reps"]:
+            if input_rep in existing_rep_types and output_rep in existing_rep_types:
+                edges.append((input_rep, output_rep, pipeline["name"]))
+
+    return {
+        "nodes": list(existing_rep_types),
+        "edges": edges,
+    }
+
+def infer_rep_type(oss_path: str) -> str:
+    """从路径推导 rep_type。"""
+    basename = os.path.basename(oss_path)
+    # 1. 优先匹配 §4.2 路径约定表
+    for rep_type, path_pattern in REP_TYPE_PATH_PATTERNS.items():
+        if re.match(path_pattern, basename):
+            return rep_type
+    # 2. fallback 到 OSS Tag rep_type
+    return get_object_tagging(oss_path).rep_type
+```
+
+**为什么从路径推导而非 OSS Tag**：
+
+| 维度 | 路径推导 | OSS Tag 存储 derived_from |
 | --- | --- | --- |
-| **准确性** | derived_from 显式声明，无歧义 | 依赖命名约定 + pipeline 拓扑推断，新增 rep_type 需更新推断规则 |
-| **可扩展性** | 新 rep_type 只需打 Tag，无需改代码 | 新 rep_type 需修改推断逻辑 |
-| **级联失效** | 直接沿 derived_from 边遍历 | 需先推断边再遍历 |
-| **多源衍生** | derived_from 支持逗号分隔多值（128B 内约 10 个源） | 命名无法表达多源 |
-| **扫描成本** | ListObjects + 批量 GetObjTagging | ListObjects（稍快） |
+| **存储成本** | 零存储（路径即血缘） | 每个 rep 文件多 1 个 Tag（10个里占 1 个） |
+| **准确性** | Pipeline 注册表是单一真相源 | 需保证每个 rep 都正确打 Tag，可能漏打/错打 |
+| **可扩展性** | 新增 rep_type 只需注册到 Pipeline + 路径约定 | 需每个产出 Pipeline 都正确写 Tag |
+| **级联失效** | 沿 Pipeline.input_rep 边遍历 | 需读 derived_from Tag 遍历 |
+| **多源衍生** | Pipeline 可声明多个 input_rep（merge） | derived_from 需用分隔符拼装 |
+| **扫描成本** | VFS 列举 + Pipeline 注册表查询 | VFS 列举 + 批量 GetObjTagging |
 
-**为什么实时重建而非持久化**：
-- 一个 Entity 的血缘边通常 5-10 条，内存重建比读 JSON 快。
-- 重建逻辑是确定性的（基于 OSS Tag），不需要快照。
+**OSS Tag 减负的连锁效果**：
+
+- Tag 从 8 个减为 7 个（去 `derived_from`），3 个空位可做 evolution。
+- 血缘推导逻辑与 Pipeline 注册表耦合，新增 Pipeline 只需修改注册表。
+- OSS Tag 仅承载**业务元数据**（状态、版本、流水线、模态），**不承担关系建模**。
+
+**为什么实时推导而非持久化**：
+- 一个 Entity 的血缘边通常 5-10 条，内存推导比读 JSON 快。
+- 推导逻辑是确定性的（基于 Pipeline 注册表 + 路径约定），不需要快照。
 - 任何文件变动都立即反映在血缘图上，无同步问题。
-- Pipeline 升级时只需更新 representation 文件的 Tag，无需数据迁移。
-- OSS Tag 与对象生命周期绑定，删除文件时血缘边自动消失。
+- Pipeline 升级时只需修改注册表，无需数据迁移。
 
-**血缘重建性能估算**：
+**血缘推导性能估算**：
 
-| 规模 | representation 文件数 | GetObjTagging 批量调用 | 重建耗时 |
+| 规模 | 文件数 | Pipeline 注册表查询 | 推导耗时 |
 | --- | --- | --- | --- |
-| 1 Entity | ~10 | 1 批（100个/批） | < 100ms |
-| 1K Entity | ~10K | 100 批 | ~5s |
-| 1M Entity | ~10M | 100K 批 | ~80min |
+| 1 Entity | ~10 | 5 个 pipeline × 输出数 | < 10ms |
+| 1K Entity | ~10K | 同上（独立推导） | ~10s |
+| 1M Entity | ~10M | 同上 | ~3h（单线程）/ ~3min（并行） |
 
-> v0.1 规模（< 10K Entity）下重建耗时可忽略。v0.2 可引入缓存 + 增量更新（仅重建变更的 Entity）。
+> v0.1 规模（< 10K Entity）下推导耗时可忽略。v0.2 可引入缓存 + 增量更新（仅重建变更的 Entity）。
+
+**Edge cases 与解决方案**：
+
+| Edge case | 解决方案 |
+| --- | --- |
+| **同一 rep_type 由多条 Pipeline 产出** | Pipeline 注册表中同 rep_type 多条记录 → 推导时取并集边 |
+| **跨 rep_type merge** | Pipeline 声明 `input_reps: [canonical_md, ocr_text]`（多上游） |
+| **派生链分叉** | 推导时递归遍历，所有上游都在才标 stale（AND 语义） |
+| **手写 representation**（非 pipeline 产出） | 在 Pipeline 注册表加 `manual: true` 标记，input=raw |
+| **临时 rep（调试）** | 路径前缀加 `_tmp/` 目录，VFS 列表时跳过 |
+
+**演进路径（v0.2+）**：
+
+- 如果未来出现"跨 Entity 血缘"（A 的 rep 是 B 的 rep 的输入），可在 Pipeline 注册表加 `cross_entity: true` 字段，路径推导时跨 Entity 查询。
+- 如果未来需要"非确定性血缘"（动态选择上游），可回退到 OSS Tag 存 derived_from 方案。
 
 #### L1. 写入层：Pipeline 产出 Parquet
 
@@ -2102,15 +2285,15 @@ active · hidden · deleted · stale
 
 | 触发事件 | 联动动作 |
 | --- | --- |
-| raw object `content_hash` 变化 | entity.version++；沿 lineage（OSS Tag derived_from）向下级联：所有下游 representation 文件 OSS Tag `status`→`stale`，对应 chunks 标 `stale`（检索不再命中）；自动触发 pipeline 重跑；新版本 ready 后 publish 切换 |
+| raw object `content_hash` 变化 | entity.version++；沿 Pipeline 注册表的 input_rep 边向下级联：所有下游 rep 文件 OSS Tag `status`→`stale`，对应 chunks 标 `stale`（检索不再命中）；自动触发 pipeline 重跑；新版本 ready 后 publish 切换 |
 | representation OSS Tag `status`→`ready` | 触发对应 chunks 的 embed + index |
-| representation OSS Tag `status`→`stale` | 沿 lineage（derived_from）向下级联：所有下游 representation 文件 OSS Tag `status`→`stale`，chunks 标 `stale`；自动触发下游 pipeline 重建 |
+| representation OSS Tag `status`→`stale` | 沿 Pipeline input_rep 边向下级联：所有下游 rep 文件 OSS Tag `status`→`stale`，chunks 标 `stale`；自动触发下游 pipeline 重建 |
 | representation OSS Tag `status`→`failed` | pipeline `partial_success`；已有 representation 的 chunks 仍可用 |
 | OSS Tag `rag_status`→`hidden` | entity.status=hidden；所有 chunks 标 `hidden`（不进入默认检索） |
 | OSS Tag `rag_status`→`deleted` | entity.status=deleted；chunks 软删除；OSS 原文件保留 |
 | embedding 模型升级 | 检测 `model_version` 过期；触发对应 chunks 重跑 embed |
 | pipeline 新增 | 对已有 entity 按需重跑新 pipeline；不影响已有 representation |
-| 上游 representation 变化 | 沿 lineage（derived_from）向下级联：下游 representation OSS Tag `status`→`stale` → chunks stale → 自动重建 |
+| 上游 representation 变化 | 沿 Pipeline 边向下级联：下游 representation OSS Tag `status`→`stale` → chunks stale → 自动重建 |
 
 ### 5.8 内容寻址变更检测
 
@@ -2874,10 +3057,10 @@ semantic · lexical · hybrid · visual
 
 **核心决策总结**：
 
-1. **OSS Tag > Sidecar**：8 个 Tag 够用，0 额外文件，无孤儿问题。Sidecar 作为 evolution 路径保留。
+1. **OSS Tag > Sidecar**：7 个 Tag 够用，0 额外文件，无孤儿问题。Sidecar 作为 evolution 路径保留。
 2. **OSS Tag > x-oss-meta-**：PutObjectTagging 不需要重写对象，x-oss-meta- 需要 CopyObject 重写。
-3. **实时重建 > 持久化**：血缘从 OSS Tag 实时重建，无需 catalog/lineage.json，无同步问题。
-4. **事件驱动 + reconcile 兜底**：与 OpenLineage/Hudi 一致，但血缘存储在对象自身而非外部系统。
+3. **路径 + Pipeline 注册表 > 持久化**：血缘不存于任何字段或 Tag，从路径约定 + Pipeline 注册表实时推导，零存储、零同步问题。
+4. **事件驱动 + reconcile 兜底**：与 OpenLineage/Hudi 一致，但血缘存储在对象自身（路径）而非外部系统。
 
 ### 17.6 评审清单（Review Checklist）
 
