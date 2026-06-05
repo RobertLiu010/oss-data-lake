@@ -71,7 +71,7 @@
 | **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 一等公民，检索命中的原子粒度 |
 | **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 `representations.lance` 的 vector 列 |
 | **Index** | 某类检索能力（semantic/lexical/grep/visual/...） | 可演进 | 检索入口 |
-| **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，存为 `lineage.json`，支持级联失效 / 影响分析 |
+| **Lineage** | Representation 之间的血缘关系（谁从谁派生） | **可追溯** | 一等公民，从文件命名 + staging Parquet 实时推算，支持级联失效 / 影响分析 |
 | **Edge** | 跨 Entity 关系（cites/mentions/same_as/...） | 可演进 | 图检索基础 |
 
 ### 2.2 核心链路
@@ -453,7 +453,7 @@ mind_map · wiki_md · graph_json · summary
 
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
 2. **写入用 Parquet**（快写、隔离），**查询用 Lance**（索引、hybrid search），中间通过迭代式汇聚衔接。
-3. **2 张 Lance 表**：`catalog.lance`（全局）+ `representations.lance`（Entity 目录内）。血缘用 `lineage.json`（JSON 文件，内存操作，无需 Lance 索引）。
+3. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。血缘实时推算，元数据用 OSS Tag。
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -467,20 +467,25 @@ mind_map · wiki_md · graph_json · summary
 ├─────────────────────────────────────────────────────────────┤
 │  L3  查询层（Lance）                                         │
 │      每 Entity 目录内的 representations.lance 支持检索         │
-│      跨 Entity 检索通过 catalog 路由 + fan-out               │
+│      跨 Entity 检索通过 VFS 扫描 + OSS Tag 路由 + fan-out        │
 │      Lance 原生索引（IVF_PQ / HNSW / FTS）                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-#### OSS 目录结构
+#### OSS 目录结构 + OSS Object Tagging
+
+**核心决策**：
+1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
+2. **零持久化元数据** — 不需要 `catalog.lance`、不需要 `lineage.json`、不需要 `entity.json`。
+3. **OSS Object Tagging** 作为唯一的状态/标签存储层（`rag_status` / `labels` / `category` / `project`）。
+4. **VFS 实时扫描 prefix** 重建目录树 + 血缘图，所有元数据从 OSS 实时获取。
+5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。
 
 ```text
 vector-lake/{workspace_id}/{collection_id}/
 │
-├── catalog.lance                                ← 全局 Entity 注册
-│
 ├── {entity_id}/                                 ← Entity 目录（自包含）
-│   ├── original                                 ← raw 文件
+│   ├── original                                 ← raw 文件（带 OSS Tag）
 │   ├── canonical.md                             ← representation 文件
 │   ├── ocr.md
 │   ├── vlm_extracted.md
@@ -494,58 +499,106 @@ vector-lake/{workspace_id}/{collection_id}/
 │   ├── ...
 │   ├── staging/                                 ← L1 写入层（Pipeline 产出）
 │   │   └── representations_v{N}.parquet         ← 可检索单元 + vectors
-│   ├── representations.lance/                   ← L3 查询层（汇聚后）
-│   │   ├── data/
-│   │   └── _indices/
-│   │       ├── vector.idx
-│   │       └── fts.idx
-│   └── lineage.json                             ← 血缘（JSON，内存操作）
+│   └── representations.lance/                   ← L3 查询层（汇聚后）
+│       ├── data/
+│       └── _indices/
+│           ├── vector.idx
+│           └── fts.idx
 │
 ├── {entity_id_2}/                               ← 另一个 Entity
 │   ├── original
 │   ├── ...
 │   ├── staging/
-│   ├── representations.lance/
-│   └── lineage.json
+│   └── representations.lance/
 ```
 
 **关键设计**：
 - Entity 目录 = 该 Entity 的完整知识单元，包含所有 representation 文件 + Lance 索引。
 - 迁移/复制/删除 = 操作整个 Entity 目录。
 - 不同 Entity 之间完全隔离，无并发写入冲突。
+- **零持久化元数据**：catalog / lineage / entity 元数据全部从 OSS 实时获取（VFS 扫描 + OSS Tag API）。
 
-#### 2 张 Lance 表 + 1 个 JSON 文件
+#### 1 张 Lance 表 + OSS Object Tagging
 
 | # | 文件 | 位置 | 用途 |
 | --- | --- | --- | --- |
-| 1 | `catalog.lance` | 全局 | Entity 注册 + 检索路由 |
-| 2 | `representations.lance` | Entity 目录内 | 该 Entity 的所有可检索单元（含 vector + text） |
-| — | `lineage.json` | Entity 目录内 | 该 Entity 的血缘边（JSON，内存操作，无需 Lance 索引） |
+| 1 | `representations.lance` | Entity 目录内 | 该 Entity 的所有可检索单元（含 vector + text） |
+| — | OSS Object Tagging | raw 对象 | Entity 的状态/标签（rag_status / labels / category / project） |
 
-#### `catalog.lance`（全局）
+**为什么只用 1 张 Lance 表**：
+- `catalog.lance` 不需要 — VFS 扫描 prefix 即可获取所有 Entity 目录。
+- `lineage.json` 不需要 — 从文件命名规则 + staging Parquet 实时推算血缘。
+- `entity.json` 不需要 — Entity 元数据从 OSS Tag 实时读取。
+- 所有元数据都可以从 OSS 实时重建，零持久化 → 没有同步问题。
+
+#### OSS Object Tagging（唯一的状态/标签层）
+
+**所有 Entity 元数据存在 OSS 对象的 Tag 上**，通过 `PutObjectTagging` / `GetObjectTagging` API 读写。
+
+**Tag schema**（打在 `{entity_id}/original` 对象上）：
+
+| Key | 取值 | 说明 |
+| --- | --- | --- |
+| `rag_status` | `enabled` / `hidden` / `deleted` | 用户意图，VFS 过滤 |
+| `entity_type` | `document` / `image` / `audio` / `video` | Entity 类型 |
+| `name` | `pricing.pdf` | 原始文件名 |
+| `content_hash` | `sha256_xxx` | raw 内容的 SHA-256 |
+| `version` | `1` | Entity 版本号 |
+| `labels` | `pricing,finance,Q3` | 业务标签（逗号分隔） |
+| `category` | `strategy` | 分类 |
+| `project` | `Q3-review` | 项目归属 |
+| `model_version` | `embedding-v5-retrieval` | 最新 embedding 模型版本 |
+| `staging_status` | `pending` / `merged` / `stale` | staging 汇聚状态 |
+
+**示例**：
 
 ```text
-entity_id            string
-entity_type          string              # document / image / audio / video
-workspace_id         string
-collection_id        string
-name                 string              # pricing.pdf
-source_uri           string              # oss://.../{entity_id}/original
-source_version       string              # etag
-content_hash         string              # SHA-256
-version              int                 # 单调递增
-status               string              # enabled / hidden / deleted
-entity_uri           string              # oss://.../{entity_id}/
-representation_types list<string>        # [canonical_md, ocr_text, page_image, ...]
-modalities           list<string>        # [text, image]
-chunk_count          int                 # 可检索单元数
-model_version        string              # 最新 embedding 模型版本
-staging_status       string              # pending / merged / stale
-created_at           timestamp
-updated_at           timestamp
+oss://bucket/vector-lake/ws_001/kb_001/abc123/original
+  x-oss-tagging:
+    rag_status=enabled
+    entity_type=document
+    name=pricing.pdf
+    content_hash=sha256_abc...
+    version=1
+    labels=pricing,finance,Q3
+    category=strategy
+    project=Q3-review
+    model_version=embedding-v5-retrieval
+    staging_status=merged
 ```
 
-> `staging_status`：`pending` = 有新 Parquet 未汇聚；`merged` = 已汇聚到 Lance；`stale` = staging 有更新但未重新汇聚。
+**VFS + OSS Tag 协作**：
+
+```text
+VFS 扫描 vector-lake/{ws}/{col}/ prefix
+  ├─ ListObjectsV2（带 Tagging 过滤）
+  │   └─ 只返回 rag_status=enabled 的对象
+  ├─ 对每个 enabled 对象 GetObjectTagging
+  │   └─ 获取 entity_type / labels / category / ...
+  └─ 内存中构建完整目录树 + 实体视图
+```
+
+**OSS Tag 的优势**：
+- 零存储成本（metadata 存在 OSS 服务端）
+- 支持按标签过滤列表（`ListObjectsV2` + `Tagging` 参数）
+- 修改不需要重写对象（原子操作）
+- 隐藏/删除/恢复都是单一 API 调用：
+
+```bash
+# 隐藏
+ossutil put-object-tagging --bucket ... --key ... --tagging '{"Tags":[{"Key":"rag_status","Value":"hidden"}]}'
+
+# 恢复
+ossutil put-object-tagging --bucket ... --key ... --tagging '{"Tags":[{"Key":"rag_status","Value":"enabled"}]}'
+
+# 删除（软删除，文件保留）
+ossutil put-object-tagging --bucket ... --key ... --tagging '{"Tags":[{"Key":"rag_status","Value":"deleted"}]}'
+```
+
+**OSS Tag 的限制**：
+- 最多 10 个 tag → 我们用 10 个，刚好
+- 只能打在具体对象上 → 打在 `original` 上代表整个 Entity
+- 列表过滤只能精确匹配 → 业务标签过滤在 VFS 内存中做
 
 #### `representations.lance`（Entity 目录内，核心检索表）
 
@@ -577,32 +630,51 @@ created_at           timestamp
 
 > **Lance 索引**：`vector` 列建 IVF_PQ 或 HNSW；`text` 列建 FTS 索引；`modality` / `rep_type` / `status` 建 scalar 索引。
 
-#### `lineage.json`（Entity 目录内）
+#### Lineage 实时推算
 
-血缘边用 JSON 存储，无需 Lance 索引。Lineage 的操作（遍历上游/下游、影响分析、级联 stale）都是小图内存操作，不需要向量检索或 FTS。
+血缘不持久化，**每次从 OSS 实时推算**：
 
-```json
-{
-  "entity_id": "abc123",
-  "entity_version": 1,
-  "updated_at": "2026-06-05T10:00:00Z",
-  "edges": [
-    { "src": "raw", "dst": "canonical_md", "pipeline": "pipeline_a", "transform": "parse" },
-    { "src": "raw", "dst": "page_image", "pipeline": "pipeline_b", "transform": "render" },
-    { "src": "page_image", "dst": "ocr_text", "pipeline": "pipeline_b", "transform": "ocr" },
-    { "src": "page_image", "dst": "vlm_extracted_md", "pipeline": "pipeline_c", "transform": "vlm" },
-    { "src": "canonical_md", "dst": "mind_map", "pipeline": "pipeline_d", "transform": "llm_compile" },
-    { "src": "canonical_md", "dst": "summary", "pipeline": "pipeline_d", "transform": "llm_compile" },
-    { "src": "canonical_md", "dst": "graph_json", "pipeline": "pipeline_d", "transform": "llm_compile" }
-  ]
-}
+```text
+推算方法：
+
+1. 扫描 Entity 目录内的 representation 文件
+   ├─ canonical.md, ocr.md, page_image/, vlm_extracted.md, mind_map.json, ...
+   └─ 推断每个文件的 rep_type
+
+2. 扫描 staging/representations_v{N}.parquet
+   ├─ 读取每行的 source_rep_type 字段（标记来自哪个上游 rep）
+   └─ 推算派生关系
+
+3. 应用命名规则 + 已知 pipeline 拓扑
+   ├─ page_image → ocr_text（OCR pipeline）
+   ├─ page_image → vlm_extracted_md（VLM pipeline）
+   ├─ canonical_md → mind_map / summary / graph_json（LLM 编译 pipeline）
+   └─ raw → canonical_md / page_image（解析 pipeline）
+
+4. 内存中构建血缘 DAG
+   ├─ 遍历上游/下游 → O(边数)
+   ├─ 影响分析 → O(下游子树)
+   └─ 级联失效 → 沿边标 stale
 ```
 
-**为什么用 JSON 而不是 Lance**：
-- 一个 Entity 的血缘边通常 5-10 条，加载到内存就是一个 dict，遍历比查 Lance 快。
-- Lineage 不需要向量检索、FTS、scalar filter — Lance 的核心能力用不上。
-- JSON 直接可读、可调试，和 representation 文件放在一起，天然自包含。
-- Pipeline 产出时直接写 JSON，不需要经过汇聚层。
+**示例 DAG**（从文件扫描推算）：
+
+```text
+raw (original)
+  ├─► canonical_md           (pipeline_a: parse)
+  ├─► page_image             (pipeline_b: render)
+  │     ├─► ocr_text         (pipeline_b: ocr)
+  │     └─► vlm_extracted_md (pipeline_c: vlm)
+  └─► canonical_md → mind_map (pipeline_d: llm_compile)
+                  → summary
+                  → graph_json
+```
+
+**为什么实时推算而非持久化**：
+- 一个 Entity 的血缘边通常 5-10 条，内存推算比读 JSON 快。
+- 推算逻辑是确定性的（基于文件命名 + pipeline 拓扑），不需要快照。
+- 任何文件变动都立即反映在血缘图上，无同步问题。
+- Pipeline 升级时改"已知 pipeline 拓扑"即可，无需数据迁移。
 
 #### L1. 写入层：Pipeline 产出 Parquet
 
@@ -623,7 +695,6 @@ vector (list<float>) · status · entity_version · created_at
 - **天然隔离**：不同 Entity 写不同目录，无并发冲突。
 - **立即可查**：staging 中的 Parquet 可被直接扫描（用于调试 / 预览），但无索引优化。
 - **版本化**：每次 pipeline 重跑产出新的 `representations_v{N}.parquet`。
-- **lineage 直接写 JSON**：pipeline 产出时直接写 `{entity_id}/lineage.json`，不需要经过汇聚层。
 
 #### L2. 汇聚层：迭代式 Prefix Merge
 
@@ -632,10 +703,13 @@ vector (list<float>) · status · entity_version · created_at
 ```text
 汇聚流程：
 
-1. 扫描 catalog.lance 中 staging_status = pending 的 Entity
+1. 扫描所有 Entity 目录（VFS prefix 扫描）
+   ├─ 列出 vector-lake/{ws}/{col}/ 下的所有 {entity_id}/
+   └─ GetObjectTagging 读取 staging_status
+      └─ 找出 staging_status=pending 的 Entity
    │
    ▼
-2. 对每个 Entity，扫描其 staging/ 目录
+2. 对每个 pending Entity，扫描其 staging/ 目录
    ├─ 发现新 Parquet 文件
    └─ 转换为 Lance 格式
    │
@@ -645,7 +719,7 @@ vector (list<float>) · status · entity_version · created_at
    └─ 原子切换（Lance MVCC）
    │
    ▼
-4. 更新 catalog.lance（staging_status = merged）
+4. 更新 OSS Tag（staging_status=merged）
    │
    ▼
 5. 清理 staging（已汇聚的 Parquet 可归档/删除）
@@ -669,20 +743,21 @@ vector (list<float>) · status · entity_version · created_at
 用户查询 "Q3 定价策略"
    │
    ▼
-[1] 查 catalog.lance
-    ├─ 过滤：workspace_id + collection_id + status=enabled
-    └─ 可选：按 entity_type / modalities 预筛选
+[1] VFS 扫描 + OSS Tag 过滤
+   ├─ ListObjectsV2（prefix=vector-lake/{ws}/{col}/, tag rag_status=enabled）
+   └─ 对每个 enabled 对象 GetObjectTagging
+      └─ 可选：按 entity_type / labels / category 预筛选
    │
    ▼
 [2] Fan-out 检索
-    ├─ 对每个候选 Entity 的 representations.lance 并行执行 hybrid search
-    └─ 每个文件返回 top-k
+   ├─ 对每个候选 Entity 的 representations.lance 并行执行 hybrid search
+   └─ 每个文件返回 top-k
    │
    ▼
 [3] 全局 Merge
-    ├─ 合并所有文件的 top-k 结果
-    ├─ RRF / CrossEncoder 重排
-    └─ 返回全局 top-k
+   ├─ 合并所有文件的 top-k 结果
+   ├─ RRF / CrossEncoder 重排
+   └─ 返回全局 top-k
 ```
 
 > **优化**：v0.1 简单 fan-out；v0.2 可引入全局 ANN 索引做粗排，减少 fan-out 数量。
@@ -700,12 +775,12 @@ Pipeline 产出
    ├─ 转换为 Lance 格式
    ├─ 写入 {entity_id}/representations.lance
    ├─ 建索引 (vector / FTS / scalar)
-   └─ 更新 catalog (staging_status = merged)
+   └─ 更新 OSS Tag (staging_status = merged)
    │
    ▼
 [L3] 查询层
    ├─ 单 Entity → 直接读 representations.lance
-   └─ 跨 Entity → catalog 路由 + fan-out + merge
+   └─ 跨 Entity → VFS 扫描 + OSS Tag 路由 + fan-out + merge
 ```
 
 #### Lineage 级联在三层中的体现
@@ -891,8 +966,7 @@ active · hidden · deleted · stale
 
 3. 目录树缓存
    ├─ 内存中维护完整的虚拟目录树
-   ├─ 每个节点记录：path / type(file|dir) / size / last_modified / entity_id / rep_type
-   └─ 定期持久化到 catalog.lance
+   └─ 每个节点记录：path / type(file|dir) / size / last_modified / entity_id / rep_type / rag_status
 ```
 
 #### VFS 路径映射
@@ -945,7 +1019,7 @@ wiki/{entity_id}.md                              →  /{name}/wiki.md           
 | 工具 | 实现 | 说明 |
 | --- | --- | --- |
 | `ls` | 读目录树缓存 | 列出虚拟路径下的子项；支持 `--sort` / `--filter` |
-| `stat` | 读目录树缓存 + catalog | 返回文件/目录元数据（size / last_modified / entity_id / status） |
+| `stat` | 读目录树缓存 + OSS Tag | 返回文件/目录元数据（size / last_modified / entity_id / status） |
 | `read` | 从 OSS 读取实际文件 | 返回文件内容；支持 range 读取 |
 | `glob` | 在目录树缓存上匹配 | 支持 `**/*.pdf` / `**/canonical.md` 等模式 |
 | `grep` | 迭代式扫描 OSS 文本文件 | 在匹配的文件中搜索 pattern；支持正则 |
@@ -972,7 +1046,7 @@ grep "Q3 定价" /pricing.pdf/**
    ▼
 [4] 附加 metadata
    ├─ 从 VFS 路径反查 entity_id / rep_type / entity_version
-   ├─ 从 catalog 补充 entity 元数据（name / entity_type / status / source_uri）
+   ├─ 从 OSS Tag 补充 entity 元数据（name / entity_type / rag_status / labels）
    └─ 从 representations 补充 representation 元数据（pipeline_id / derived_from / quality）
    │
    ▼
@@ -1019,18 +1093,18 @@ grep "Q3 定价" /pricing.pdf/**
 | metadata 字段 | 来源 | 说明 |
 | --- | --- | --- |
 | `entity_id` | VFS 路径反查 | 从虚拟路径 → entity_id |
-| `entity_type` / `name` / `status` | catalog.lance | entity 元数据 |
+| `entity_type` / `name` / `rag_status` / `labels` | OSS Tag | entity 元数据 |
 | `rep_type` / `representation_id` | VFS 路径反查 | 从虚拟路径 → representation |
 | `pipeline_id` / `derived_from` / `derived_chain` / `quality` | representations.parquet | representation 元数据 |
 | `page_number` / `section_header` | 行号 → chunk 定位 | 从 start_pos 反查最近的 chunk |
-| `source_uri` / `content_hash` | catalog.lance | 原始文件信息 |
+| `content_hash` | OSS Tag | 原始文件信息 |
 | `mime_type` | VFS 目录树缓存 | 文件类型 |
 
 **优化**：
 - 先用 `glob` 缩小范围，避免扫描所有文件。
 - 对已缓存在本地的 representation（如 staging 中的 Parquet），直接本地 grep。
 - 大文件分块流式读取，不全部加载到内存。
-- metadata 附加在命中后批量查询，避免逐行查 catalog。
+- metadata 附加在命中后批量查询 OSS Tag API。
 
 #### VFS 与 Lance 检索的协作
 
@@ -1055,7 +1129,7 @@ grep "Q3 定价" /pricing.pdf/**
 | 能力 | 实现层 | 面对的数据 | 典型输入 | 典型输出 |
 | --- | --- | --- | --- | --- |
 | `ls` | VFS | 目录树缓存 | dir / collection | 子项列表 |
-| `stat` | VFS | 目录树缓存 + catalog | entity_id / path | 元数据 + 状态 |
+| `stat` | VFS | 目录树缓存 + OSS Tag | entity_id / path | 元数据 + 状态 |
 | `read` | VFS | OSS 文件 | entity_id + rep_type | 文件内容 |
 | `grep` | VFS | OSS 文本文件（迭代式扫描） | pattern + path | 行级命中 |
 | `glob` | VFS | 目录树缓存 | pattern | 匹配文件/目录 |
