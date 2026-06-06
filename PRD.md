@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链。
 
 ---
 
@@ -2425,13 +2425,108 @@ active · hidden · deleted · stale
 
 ### 6.3 Pipeline 与 Entity Type 的映射
 
-| entity_type | 默认 Pipeline | 可选 Pipeline |
+| entity_type | 默认 Pipeline | 可选 Pipeline | 备注 |
+| --- | --- | --- | --- |
+| document | A (直接提取) | B (OCR), C (VLM), D (知识编译), E (图片向量) | 文档默认走文本提取 |
+| image | E (图片向量) | B (OCR), C (VLM), D (知识编译) | 单图走 E，多图可走 A→B |
+| audio | F (音频转写) | D (知识编译) | 录音默认转文字 |
+| video | F (音频转写) | E (图片向量), D (知识编译) | 视频拆音轨 + 关键帧 |
+| **table** | **G (表格获取)** | D (知识编译) | **结构化数据→Parquet→DuckDB 查询** |
+
+### 6.4 边界与混合型 Entity
+
+#### 6.4.1 entity_type 判定
+
+`entity_type` 由**原始文件 MIME 类型 + 探测结果**判定：
+
+| 判定优先级 | 探测方式 | 适用文件 |
 | --- | --- | --- |
-| document | A (直接提取) | B (OCR), C (VLM), D (知识编译), E (图片向量) |
-| image | E (图片向量) | B (OCR), C (VLM), D (知识编译) |
-| audio | F (音频转写) | D (知识编译) |
-| video | F (音频转写) | E (图片向量), D (知识编译) |
-| table | G (表格获取) | D (知识编译) |
+| 1 | MIME 类型白名单 | .csv / .tsv / .xlsx / .parquet / .json (array) / .sql → `table` |
+| 2 | 内容探测（magic bytes） | .sqlite / .duckdb → `table` |
+| 3 | 文件大小 + 内容采样 | < 1MB + 强结构化 → `table` |
+| 4 | 文件大小 + 文本提取 | > 1MB + 多段文本 → `document` |
+| 5 | 文件名 + 扩展名 | .pdf / .docx / .pptx → `document` |
+| 6 | 媒体类型 | .png / .jpg / .mp3 / .wav / .mp4 → image/audio/video |
+
+> v0.1 仅实现 1、2、5、6 三类（4 类启发式判定留 v0.2）。`entity_type` 写入 OSS Tag `entity_type`，用户可通过 `Entity.update_tags()` 手动修正。
+
+#### 6.4.2 混合型 Entity（同一文件含多种内容）
+
+常见场景：
+- **PDF 内嵌表格**：`entity_type=document`，Pipeline A 产出 `canonical_md`（含表格 Markdown），可选 G **二次**产出 `table.parquet`（用 camelot/tabula 抽取）
+- **Excel 含图片 / 图表**：`entity_type=table`，G 产出 `table.parquet`，可选 E 二次产出 `page_image/`
+- **PPT 文本框 + 图表**：默认 `document`，A 产出 `canonical_md`；可同时 D 产出 `summary`/`graph_json`
+- **HTML 页面（HTML + JS + CSS）**：解析为 `document`（保留结构）+ `summary`（LLM 摘要）
+
+**多 Pipeline 并行执行策略**：
+
+```python
+def generate_all_representations(entity: Entity):
+    """根据 entity 内容自动决定跑哪些 Pipeline。"""
+    pipelines = []
+
+    # 1. 默认 Pipeline（基于 entity_type）
+    pipelines.extend(DEFAULT_PIPELINES[entity.entity_type])
+
+    # 2. 启发式发现（基于内容）
+    if entity.entity_type == "document":
+        if has_embedded_tables(entity.source):
+            pipelines.append("G")  # PDF 内嵌表格 → 走 G
+        if entity.has_images:
+            pipelines.append("E")  # 文档含图片 → 走 E
+
+    elif entity.entity_type == "table":
+        if has_chart_or_image(entity.source):
+            pipelines.append("E")  # 表格含图表 → 走 E
+        if is_multi_sheet(entity.source):
+            # Excel 多 sheet → 每个 sheet 一个 rep_type
+            pipelines.extend(["G_sheet_1", "G_sheet_2", ...])
+
+    # 3. 并行执行
+    results = await asyncio.gather(*[
+        run_pipeline(entity, pid) for pid in pipelines
+    ])
+```
+
+#### 6.4.3 Pipeline 间依赖
+
+**部分 Pipeline 强依赖其他 Pipeline 的产出**：
+
+| Pipeline | 强依赖上游 | 说明 |
+| --- | --- | --- |
+| B (OCR) | 依赖 E (page_image) 或自己生成 page_image | 需先有图片才能 OCR |
+| C (VLM) | 依赖 E (page_image) | 需先有图片才能 VLM |
+| D (知识编译) | 依赖 A (canonical_md) | 编译对象是 canonical_md |
+| G (表格) | 通常无依赖 | raw 直接解析，但 PDF 表格需先 A→表格抽取 |
+
+**依赖图可视化**：
+
+```text
+                raw
+                 │
+    ┌────────┬───┴────┬────────┬────────┐
+    ▼        ▼        ▼        ▼        ▼
+    A        B        C        E        G
+    │                 │       │
+    │ (canonical_md)  │       │ (page_image)
+    ▼                 ▼       ▼
+   D (知识编译)    (B/C 都依赖 E 的 page_image)
+```
+
+**Pipeline 调度规则**：
+
+1. **拓扑排序**：D 必须等 A 完成；B/C 必须等 E（或自己生成 page_image）
+2. **失败隔离**：B 失败不影响 A/D 的产出可用
+3. **重试策略**：A 重试时不应触发 D 重试（除非 A 的产出变化）
+
+### 6.5 Pipeline 之间的级联与避免重复
+
+| 场景 | 处理 |
+| --- | --- |
+| A 产出 canonical_md 后触发 D | D 的 `derived_from=canonical_md`（从目录层级推导：compile/ 的 input 在 extract/） |
+| B 与 C 同时产出（基于 page_image） | 两者并存，分别打 Rep OSS Tag；D 可选地基于任一产出 summary |
+| 表格中的图片 | G + E 并行：G 产 `table.parquet`，E 产 `page_image/`（图片向量） |
+| 公式 / 嵌入对象 | 暂不支持（v0.2+ 引入 Mathpix API / 公式抽取） |
 
 ---
 
@@ -2963,7 +3058,78 @@ Stage 4: Schema 记录
 Stage 5: Chunk + Index
   ├─ table.md（rep_type=table_md）：Markdown 表格格式，进入 Lance chunk + embed
   └─ table.json（rep_type=table_json）：供 tool 使用
+
+Stage 6: 写 Rep OSS Tag（与 §4.6 同步协议对齐）
+  ├─ 为 compile/table.parquet 写 Rep OSS Tag：
+  │   rep_type=table_parquet
+  │   pipeline_id=pipeline_g
+  │   transform=parse_csv|parse_xlsx|parse_sql
+  │   modality=table
+  │   status=ready
+  │   model_version=duckdb_v1
+  │   entity_version={entity.version}
+  ├─ 为 compile/table.md 写 Rep OSS Tag
+  ├─ 为 compile/table.json 写 Rep OSS Tag
+  └─ 触发 Lance Watcher 增量同步
 ```
+
+#### Pipeline G 的写并发控制
+
+**问题**：表格型 Entity 可能在以下场景出现并发写：
+- 同一 Entity 被多个 Pipeline G Worker 同时重跑（如调度器 bug）
+- Pipeline G 和 Pipeline A 同时产出（混合型 Entity）
+
+**解决方案**：
+
+```text
+1. Entity 目录互斥锁（基于 OSS Tag）
+   ├─ Pipeline G 开始前 CAS 设置 Entity Tag sync_state=syncing
+   ├─ 写 table.parquet 完成后 CAS 设置回 ready
+   └─ 失败时回滚到 failed
+
+2. table.parquet 文件级锁
+   ├─ 使用 CopyObject + x-oss-copy-source-if-match 实现 CAS
+   └─ 写新版本前 read etag，写入时 if-match
+
+3. MVCC 写入策略
+   ├─ 写入新 table.parquet.v2，Lance 同时记录新旧两个版本
+   ├─ 校验通过后原子切换（删除 v1）
+   └─ 失败保留 v1 为权威源
+```
+
+**多 Worker 并行处理的实体级隔离**：
+- 同一 Entity 的所有 Pipeline 串行执行（避免冲突）
+- 不同 Entity 的 Pipeline 完全不同（OSS 目录隔离）
+- Worker Pool 按 Entity ID 分片（一致性哈希）
+
+#### 表格预览细化
+
+`table_parquet` 预览策略：
+
+| 表格大小 | 抽样方式 | 渲染 | 延迟 |
+| --- | --- | --- | --- |
+| < 1K rows | 全部返回 | HTML 表格（100% 完整） | < 50ms |
+| 1K - 100K rows | 头 50 + 尾 50 + 随机 0 | HTML 表格（100 行） | < 200ms |
+| > 100K rows | 头 30 + 随机 70 | HTML 表格 + 分页控件（默认第 1 页） | < 500ms |
+| 任意大小 | 用户指定 OFFSET/LIMIT | 用户控制分页 | < 200ms |
+
+**SQL 抽样**：
+```sql
+-- 头 50 行
+SELECT * FROM read_parquet('...') ORDER BY _row_id LIMIT 50;
+-- 尾 50 行
+SELECT * FROM read_parquet('...') ORDER BY _row_id DESC LIMIT 50;
+-- 头 30 + 随机 70
+(SELECT * FROM read_parquet('...') ORDER BY _row_id LIMIT 30)
+UNION ALL
+(SELECT * FROM read_parquet('...') USING SAMPLE 70);
+```
+
+**预览元数据**：
+- 总行数、列数、文件大小
+- 数值列的 min/max/mean/std
+- 字符串列的 distinct count + top 5
+- 缺失值分布（每列 null_count / total）
 
 #### table_parquet 的 schema 约定
 
@@ -3022,6 +3188,16 @@ Stage 5: Chunk + Index
 
 > **对上层应用屏蔽"该用哪个检索能力"的复杂度**。
 
+### 9.1.1 三类一等检索能力
+
+| 能力类别 | 引擎 | 适用 Query | 证据单元 |
+| --- | --- | --- | --- |
+| **语义检索 (semantic)** | Lance + Embedding V5 | 概念 / 解释 / 模糊匹配 | `Chunk` (含 vector) |
+| **结构化检索 (structural)** | **DuckDB + Parquet** | 数值 / 范围 / 聚合 / JOIN / 统计 | `TableRow` (含完整字段) |
+| **全文检索 (textual)** | VFS grep / Lance FTS | 精确字段 / 编号 / 模式匹配 | `GrepHit` (含 line_number) |
+
+> **核心原则**：三种能力**对等、可组合、可融合**。智能引擎根据 Query 类型**路由 1..N 个能力**并融合结果。
+
 ### 9.2 流程
 
 ```text
@@ -3031,21 +3207,29 @@ User Query
 [1] Query Understanding
     ├─ intent (lookup / aggregate / compare / reason / multimodal)
     ├─ entities mentioned
-    └─ modality hint (text / image / audio)
+    ├─ modality hint (text / image / audio)
+    ├─ query_type (semantic / numeric / structural / textual / multimodal)
+    └─ aggregation hint (group_by / top_n / range / sum / count)
    │
    ▼
-[2] Capability Routing
-    ├─ 选择 1..N 个 tool
-    └─ 决定 filter / top_k / reranker
+[2] Capability Routing（按 query_type 选择）
+    ├─ semantic → Lance semantic search
+    ├─ textual → VFS grep / Lance FTS
+    ├─ structural → DuckDB SQL (单表 / 联邦 / 聚合)
+    ├─ visual → Lance image↔text
+    ├─ audio → Lance audio↔text
+    ├─ graph → graph_json traversal
+    └─ hybrid → 多个能力并行（structural + semantic / textual + semantic）
    │
    ▼
 [3] Parallel Execution
-    └─ 调 hybrid / semantic / lexical / visual / audio / graph
+    └─ 调 semantic / textual / structural / visual / audio / graph
    │
    ▼
 [4] Result Fusion & Rerank
-    ├─ 跨工具去重（按 entity_id + chunk_id）
-    ├─ 同一 Entity 多视角证据合并
+    ├─ 跨能力去重（按 entity_id + 证据单元 ID）
+    ├─ 同一 Entity 多视角证据合并（Chunk + TableRow + GrepHit）
+    ├─ 数值证据 vs 语义证据 vs 文本证据的归一化打分
     └─ Rerank (RRF / CrossEncoder)
    │
    ▼
@@ -3053,18 +3237,125 @@ User Query
     └─ evidence pack → 上层 RAG / Agent
 ```
 
+#### 9.2.1 Structural Query 路由示例
+
+```text
+User Query: "2024 Q3 revenue 超过 1M 的合同中，哪些提到定价策略？"
+
+[1] Query Understanding
+    ├─ intent: filter + reason
+    ├─ query_type: structural + semantic（混合）
+    ├─ aggregation: range (revenue > 1M) + top_n
+    └─ modality: text
+
+[2] Capability Routing
+    ├─ 触发条件: query_type ∈ {structural, numeric, aggregate}
+    └─ 路由选择:
+        ├─ Primary: DuckDB SQL 过滤 revenue > 1M
+        │   SELECT _entity_id, _row_id, contract_name
+        │   FROM entities WHERE revenue > 1000000
+        └─ Secondary: Lance 语义检索"定价策略"
+            search("定价策略", entity_ids=filtered_entity_ids)
+
+[3] Parallel Execution
+    ├─ DuckDB: 拿到 15 个 entity_id 集合
+    └─ Lance: 在这 15 个 Entity 中检索语义 chunks
+
+[4] Result Fusion
+    └─ evidence = [
+        {type: "table_row", entity_id, _row_id, contract_name, revenue},
+        {type: "chunk", entity_id, chunk_id, text, score}
+       ]
+
+[5] Pack & Return
+    └─ 上层 Agent 看到: 数值证据（revenue）+ 文本证据（定价策略）
+```
+
+#### 9.2.2 证据单元统一抽象
+
+```python
+from typing import Literal, Union
+from pydantic import BaseModel
+
+class ChunkEvidence(BaseModel):
+    """Lance 语义检索的证据。"""
+    type: Literal["chunk"] = "chunk"
+    entity_id: str
+    rep_type: str
+    chunk_index: int
+    text: str
+    score: float
+    page_number: int | None = None
+    section_header: str | None = None
+    provenance: dict  # source_uri, content_hash, model_version
+
+class TableRowEvidence(BaseModel):
+    """DuckDB 结构化查询的证据。"""
+    type: Literal["table_row"] = "table_row"
+    entity_id: str
+    _row_id: int
+    row: dict  # 所有列值
+    sql: str    # 触发的 SQL（可重放）
+    score: float = 1.0  # 结构化结果默认 1.0
+    provenance: dict  # table.parquet uri, sha256
+
+class GrepHitEvidence(BaseModel):
+    """VFS 文本匹配的证据。"""
+    type: Literal["grep_hit"] = "grep_hit"
+    entity_id: str
+    rep_type: str
+    file_path: str
+    line_number: int
+    line_text: str
+    context_before: list[str]
+    context_after: list[str]
+    score: float
+    provenance: dict
+
+# 统一证据类型
+Evidence = Union[ChunkEvidence, TableRowEvidence, GrepHitEvidence]
+
+class EvidencePack(BaseModel):
+    """上层 RAG / Agent 接收的统一证据包。"""
+    query: str
+    query_type: list[str]  # ["structural", "semantic"]
+    capabilities_used: list[str]  # ["duckdb", "lance_semantic"]
+    evidences: list[Evidence]
+    fusion_method: str  # "rrf" / "cross_encoder" / "manual"
+    sql_executed: str | None = None  # 触发的 SQL（可重放）
+```
+
 ### 9.3 路由策略（v0.1 规则版）
 
-| Query 类型 | 优先能力 | 次选 |
-| --- | --- | --- |
-| 概念 / 解释 | hybrid (semantic + lexical) | grep |
-| 精确字段 / 编号 | lexical + grep | semantic |
-| "找一张图" | visual (image↔text) | caption semantic |
-| "找一段录音" | audio (text↔audio) | transcript lexical |
-| 跨实体关系 | graph | hybrid |
-| 表格行 / 列 | table | lexical |
+| Query 类型 | 识别特征 | 优先能力 | 次选 | 证据类型 |
+| --- | --- | --- | --- | --- |
+| **概念 / 解释** | "什么是 / 介绍 / 解释" | hybrid (semantic + lexical) | grep | Chunk + GrepHit |
+| **精确字段 / 编号** | "编号 / ID / 邮箱 / 电话" | lexical + grep | semantic | GrepHit |
+| **找一张图** | "图 / 截图 / 海报" | visual (image↔text) | caption semantic | Chunk(image) |
+| **找一段录音** | "录音 / 音频" | audio (text↔audio) | transcript lexical | Chunk(audio) |
+| **跨实体关系** | "关系 / 引用 / 提及" | graph | hybrid | Chunk + Edge |
+| **数值范围** | "> 1M / < 10% / between X and Y" | **DuckDB SQL** | hybrid | **TableRow** |
+| **聚合统计** | "总数 / 平均 / Top N / GROUP BY" | **DuckDB SQL** | hybrid | **TableRow** |
+| **跨表 JOIN** | "A 和 B 的关联 / JOIN" | **DuckDB 联邦** | graph | **TableRow** |
+| **表格行 / 列** | "行 / 列 / 单元格" | **DuckDB SQL** | lexical | **TableRow** |
+| **混合** | "revenue > 1M 中提到定价的" | **DuckDB + Lance semantic** | graph | **TableRow + Chunk** |
 
-> 后续可替换为学习型 router（v0.2+）。
+> v0.2+ 替换为学习型 router（基于 query embedding + LLM 分类）。
+
+### 9.4 智能引擎与 §8 检索能力的映射
+
+| §8 能力 | 智能引擎调用 | 路由触发条件 | 输出证据类型 |
+| --- | --- | --- | --- |
+| §8.1 VFS (ls/stat/read/glob) | 上下文感知（先 ls 找 Entity） | 隐式 | — |
+| §8.1 VFS grep | `capability_textual` | 精确字段 / 编号 | GrepHit |
+| §8.3 Hybrid Search (Lance) | `capability_semantic` | 概念 / 解释 | Chunk |
+| §8.3 Hybrid Search + FTS | `capability_semantic_textual` | 模糊 + 精确 | Chunk |
+| §8.4 预览 | 嵌入到 evidence pack | 命中后预览 | PreviewContent |
+| §8.5 工具协议 | 上层 RAG / Agent 调用 | tool_use | Evidence |
+| §8.6 Lineage 可视化 | `capability_lineage` | 追溯 / 影响分析 | LineageDAG |
+| **§8.7 DuckDB SQL** | **`capability_structural`** | **数值 / 聚合 / JOIN** | **TableRow** |
+| **§8.7 DuckDB 联邦** | **`capability_structural_federated`** | **跨表 JOIN** | **TableRow（多 Entity）** |
+| **§8.7 DuckDB + Lance** | **`capability_hybrid_structural_semantic`** | **结构化 + 语义** | **TableRow + Chunk** |
 
 ---
 
