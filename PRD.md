@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§21-§25）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）；(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§21-§25）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）；(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例；(28) **Rep 继承链与级联传播（§5.13）**：新增 §5.13 Rep 继承链与级联传播——Rep Tag 从 7→9 个字段（新增 `input_content_hash` + `content_hash`），每个 Rep 记录直接上游的内容指纹；§5.9.1 `source_content_hash` 语义修正为 `input_content_hash`（直接上游，不一定是 raw）；新增 Rep 继承链定义（§5.13.1，含完整继承图示例 + 9 种 Rep 的 input_content_hash 映射表）；新增 Rep 变动级联传播（§5.13.2，含 BFS 级联算法 + 5 步级联场景）；新增 Index 增量重建（§5.13.3，required_reps ready 即可触发，不等全部 Rep ready，v0.1 先全量等待 v0.2 切增量）；新增继承链可观测性 API（§5.13.4，4 个查询端点）；新增继承链 vs 血缘对比（§5.13.5）；§5.7.1 Rep 联动表新增"上游 Rep content_hash 变化"行 + 引用 §5.13；§5.9.1 校验场景新增"上游 Rep 更新但下游 Rep 未重建"场景；Tag 示例 transform=ocr→visual_recognize。
 
 ---
 
@@ -1342,17 +1342,21 @@ oss://bucket/vector-lake/ws_001/kb_001/abc123/source/original
     model_version=embedding-v5-retrieval
 ```
 
-##### Representation Tag Schema（7 个 Tag，打在 representation 文件上）
+##### Representation Tag Schema（9 个 Tag，打在 representation 文件上）
 
 | Key | 取值 | 说明 |
 | --- | --- | --- |
 | `rep_type` | `canonical_md` / `ocr_text` / `page_image` / ... | 认知视角类型 |
 | `pipeline_id` | `pipeline_a` / `pipeline_b` / ... | 产出该 rep 的流水线 |
-| `transform` | `parse` / `ocr` / `vlm` / `llm_compile` / `render` | 具体变换方法 |
+| `transform` | `parse` / `visual_recognize` / `llm_compile` / `render` | 具体变换方法 |
 | `modality` | `text` / `image` / `audio` / `table` | 模态 |
 | `status` | `ready` / `stale` / `failed` / `deleted` | representation 状态 |
 | `model_version` | `paddleocr_v3` / `qwen2vl_v3` / ... | 产出该 rep 的模型版本 |
 | `entity_version` | `3` | 所属 Entity 版本 |
+| `input_content_hash` | `sha256:abc...` | 直接上游 Rep 的 content_hash（见 §5.13.1） |
+| `content_hash` | `sha256:def...` | 本 Rep 文件内容的 SHA-256 |
+
+> 9/10 Tag 位已用，预留 1 个给 v0.2。`input_content_hash` 和 `content_hash` 是 Rep 继承链的关键字段（§5.13.1）。
 
 **示例**：
 
@@ -1361,11 +1365,13 @@ oss://bucket/vector-lake/ws_001/kb_001/abc123/recognize/ocr.md
   x-oss-tagging:
     rep_type=ocr_text
     pipeline_id=pipeline_b
-    transform=ocr
+    transform=visual_recognize
     modality=text
     status=ready
     model_version=paddleocr_v3
     entity_version=3
+    input_content_hash=sha256:page_image_hash
+    content_hash=sha256:ocr_text_hash
 
 oss://bucket/vector-lake/ws_001/kb_001/abc123/extract/page_image/page_001.png
   x-oss-tagging:
@@ -2863,9 +2869,10 @@ active · hidden · deleted · stale
 
 | 触发事件 | 联动动作 |
 | --- | --- |
-| raw object `content_hash` 变化 | entity.version++；沿 RepPipeline 的 `input_reps` 边向下级联：所有下游 Rep 文件 OSS Tag `status`→`stale`；自动触发 RepPipeline 重建 |
-| Rep OSS Tag `status`→`ready` | 触发 `rep_all_ready` 事件 → IndexPipelineOrchestrator 评估是否需要重建索引 |
-| Rep OSS Tag `status`→`stale` | 沿 RepPipeline `input_reps` 边向下级联：下游 Rep `status`→`stale`；自动触发下游 RepPipeline 重建 |
+| raw object `content_hash` 变化 | entity.version++；沿 Rep 继承链（§5.13.2）向下级联：所有下游 Rep 文件 OSS Tag `status`→`stale`；按拓扑排序触发 RepPipeline 重建 |
+| 上游 Rep `content_hash` 变化 | 沿 Rep 继承链（§5.13.2）向下级联：直接下游 Rep `status`→`stale`；继续级联直到叶子节点；按拓扑排序触发 RepPipeline 重建 |
+| Rep OSS Tag `status`→`ready` | 触发增量 Index 评估（§5.13.3）；若所有 Rep ready → 触发 `rep_all_ready` 事件 → 全量 Index 一致性校验 |
+| Rep OSS Tag `status`→`stale` | 沿 Rep 继承链（§5.13.2）向下级联：下游 Rep `status`→`stale`；触发下游 RepPipeline 重建 |
 | Rep OSS Tag `status`→`failed` | RepPipeline `partial_success`；已有 Rep 的 Index 仍可用 |
 | OSS Tag `rag_status`→`hidden` | entity.status=hidden；所有 Rep + Index 标 `hidden` |
 | OSS Tag `rag_status`→`deleted` | entity.status=deleted；Rep + Index 软删除；OSS 原文件保留 |
@@ -2903,12 +2910,15 @@ active · hidden · deleted · stale
 
 #### 5.9.1 校验1：Rep ↔ Raw 一致性（内容一致性）
 
-**校验内容**：每个 Rep 文件的内容是否与它声明的 `source_content_hash`（即 raw 的 `content_hash`）一致。
+**校验内容**：每个 Rep 文件的内容是否与它声明的**直接上游 Rep** 的 `content_hash` 一致（通过 `input_content_hash` Tag 追踪）。
 
 ```text
 Reconciler 周期任务（每 15 min）— Rep 阶段
   ├─ 扫描所有 Rep 文件的 Representation Tag
-  ├─ 对比 Rep Tag 的 source_content_hash vs Raw 的 content_hash
+  ├─ 对比 Rep Tag 的 input_content_hash vs 直接上游 Rep 的 content_hash
+  │   ├─ pipeline_a (parse): 上游 = raw → input_content_hash 应 == raw.content_hash
+  │   ├─ pipeline_b (visual_recognize): 上游 = page_image → input_content_hash 应 == page_image.content_hash
+  │   └─ pipeline_d (compile_*): 上游 = canonical_md → input_content_hash 应 == canonical_md.content_hash
   ├─ 不匹配 → 标 Rep stale → 触发 RepPipeline 重建
   ├─ 检查 Rep 文件是否存在（OSS 404 → 标 failed）
   └─ 检查 Rep 文件的 body_hash vs Tag 中的 content_hash（防篡改/损坏）
@@ -2918,10 +2928,11 @@ Reconciler 周期任务（每 15 min）— Rep 阶段
 
 | 场景 | 检测方式 | 修复 |
 |---|---|---|
-| Raw 更新但 Rep 未重建 | `source_content_hash` 不匹配 | 标 stale → RepPipeline 重建 |
+| Raw 更新但 Rep 未重建 | `input_content_hash` 不匹配（A 类 Rep: input=raw） | 标 stale → RepPipeline 重建 |
+| 上游 Rep 更新但下游 Rep 未重建 | `input_content_hash` 不匹配（D 类 Rep: input=canonical_md） | 标 stale → RepPipeline 重建（§5.13.2 级联） |
 | Rep 文件损坏/丢失 | OSS 404 或 `body_hash` 不匹配 | 标 failed → RepPipeline 重建 |
 | RepPipeline 升级后旧 Rep 过时 | `pipeline_version` Tag 不匹配 | 标 stale → RepPipeline 重建 |
-| Rep 被意外删除 | OSS 404 | 标 deleted → RepPipeline 重建（如果 raw 仍在） |
+| Rep 被意外删除 | OSS 404 | 标 deleted → RepPipeline 重建（如果上游 Rep 仍在） |
 
 #### 5.9.2 校验2：Index ↔ Rep 一致性（索引一致性）
 
@@ -3103,6 +3114,169 @@ lance_dataset.update_metadata({
 ### 5.11 Edge 生命周期
 
 > **v0.1 简化**：Edge v0.1 仅支持"由 RepPipeline 编译产物自动产出 + 手动 API 创建"，不支持独立 Edge Pipeline。
+
+### 5.13 Rep 继承链与级联传播（Rep Inheritance & Cascade）
+
+> **核心问题**：Rep 之间有继承关系——一个 Rep 可能基于另一个 Rep 生成（如 `mind_map` 基于 `canonical_md`）。当上游 Rep 变化时，必须沿继承链级联传播，确保所有下游 Rep 和 Index 最终一致。
+
+#### 5.13.1 Rep 继承链定义
+
+每个 Rep 通过 `input_content_hash` Tag 记录其**直接上游 Rep** 的内容指纹，形成一条可追溯的继承链：
+
+```text
+继承链示例（Entity: pricing-2025.pdf）
+
+raw (content_hash=sha256:aaa)
+  │
+  ├─ pipeline_a: parse
+  │   └─ canonical_md (input_content_hash=sha256:aaa, content_hash=sha256:bbb)
+  │       │
+  │       ├─ pipeline_d: compile_mind_map
+  │       │   └─ mind_map (input_content_hash=sha256:bbb, content_hash=sha256:ccc)
+  │       │
+  │       ├─ pipeline_d: compile_summary
+  │       │   └─ summary (input_content_hash=sha256:bbb, content_hash=sha256:ddd)
+  │       │
+  │       └─ pipeline_d: compile_wiki_md
+  │           └─ wiki_md (input_content_hash=sha256:bbb, content_hash=sha256:eee)
+  │
+  └─ pipeline_b: render_page → visual_recognize
+      ├─ page_image (input_content_hash=sha256:aaa, content_hash=sha256:fff)
+      ├─ ocr_text (input_content_hash=sha256:fff, content_hash=sha256:ggg)
+      └─ vlm_md (input_content_hash=sha256:fff, content_hash=sha256:hhh)
+```
+
+**`input_content_hash` 的语义**：
+
+| Rep 类型 | 直接上游 | `input_content_hash` 取值 |
+| --- | --- | --- |
+| `canonical_md` (pipeline_a) | raw | `raw.content_hash` |
+| `page_image` (pipeline_b) | raw | `raw.content_hash` |
+| `ocr_text` (pipeline_b) | page_image | `page_image.content_hash` |
+| `vlm_md` (pipeline_b) | page_image | `page_image.content_hash` |
+| `mind_map` (pipeline_d) | canonical_md | `canonical_md.content_hash` |
+| `summary` (pipeline_d) | canonical_md | `canonical_md.content_hash` |
+| `wiki_md` (pipeline_d) | canonical_md | `canonical_md.content_hash` |
+| `transcript` (pipeline_f) | raw | `raw.content_hash` |
+| `table_parquet` (pipeline_g) | raw | `raw.content_hash` |
+
+> **关键**：`input_content_hash` 记录的是**直接上游**，不是 raw。这样 Reconciler 可以精确检测任意层级的 Rep 漂移。
+
+#### 5.13.2 Rep 变动级联传播
+
+当任意 Rep 的 `content_hash` 发生变化时，沿继承链**向下级联**标记所有下游 Rep 为 stale：
+
+```text
+场景：raw 更新（content_hash: sha256:aaa → sha256:aaa'）
+
+Step 1: 检测 raw 变化
+  raw.content_hash 变化 → entity.version++
+
+Step 2: 级联标记（沿继承链向下遍历）
+  canonical_md: input_content_hash=sha256:aaa ≠ raw.content_hash=sha256:aaa' → stale
+  page_image:   input_content_hash=sha256:aaa ≠ raw.content_hash=sha256:aaa' → stale
+
+Step 3: 二级级联（canonical_md 变 stale → 下游也 stale）
+  mind_map:  input_content_hash=sha256:bbb ≠ canonical_md.content_hash (stale) → stale
+  summary:   input_content_hash=sha256:bbb ≠ canonical_md.content_hash (stale) → stale
+  wiki_md:   input_content_hash=sha256:bbb ≠ canonical_md.content_hash (stale) → stale
+
+Step 4: 二级级联（page_image 变 stale → 下游也 stale）
+  ocr_text:  input_content_hash=sha256:fff ≠ page_image.content_hash (stale) → stale
+  vlm_md:    input_content_hash=sha256:fff ≠ page_image.content_hash (stale) → stale
+
+Step 5: 触发重建（按拓扑排序）
+  1. 先重建 pipeline_a (canonical_md) + pipeline_b (page_image)  ← 可并行
+  2. canonical_md ready → 重建 pipeline_d (mind_map/summary/wiki_md)
+  3. page_image ready → 重建 pipeline_b (ocr_text/vlm_md)
+  4. 所有 Rep ready → rep_all_ready → IndexPipeline 评估重建
+```
+
+**级联算法**：
+
+```python
+def cascade_invalidate(entity_id: str, changed_rep_type: str):
+    """从变更的 Rep 开始，沿继承链向下级联标记 stale。"""
+    # 1. 从 Pipeline 注册表构建继承图
+    #    edge: (upstream_rep_type) → (downstream_rep_type)
+    inheritance_graph = build_inheritance_graph(entity_id)
+
+    # 2. BFS 遍历下游
+    queue = [changed_rep_type]
+    while queue:
+        current = queue.pop(0)
+        downstream_reps = inheritance_graph.get_downstream(current)
+        for ds_rep in downstream_reps:
+            # 标记 stale
+            update_rep_tag(entity_id, ds_rep, status="stale")
+            # 继续向下级联
+            queue.append(ds_rep)
+
+    # 3. 触发重建（按拓扑排序，保证上游先完成）
+    rebuild_order = topological_sort(stale_reps)
+    for rep_type in rebuild_order:
+        pipeline_id = get_pipeline_for_rep(rep_type)
+        trigger_rebuild(entity_id, pipeline_id)
+```
+
+#### 5.13.3 Index 增量重建（基于继承链优化）
+
+当前设计：Index 重建依赖 `rep_all_ready` 事件，**所有 Rep 收敛后才触发**。但这可能导致不必要的等待。
+
+**优化策略**：IndexPipeline 按 `required_reps` 独立触发，不等全部 Rep ready：
+
+```text
+场景：canonical_md 变了，但 ocr_text/vlm_md 没变
+
+旧逻辑（全量等待）：
+  canonical_md stale → 等待所有 Rep ready → rep_all_ready → 重建所有 Index
+
+新逻辑（增量触发）：
+  canonical_md ready → 立即评估依赖 canonical_md 的 Index：
+    ├─ index_pipeline_text (required: canonical_md) → canonical_md ready → 立即重建
+    └─ index_pipeline_image (required: page_image) → page_image 未变 → 不重建
+
+  ocr_text ready → 评估依赖 ocr_text 的 Index：
+    └─ index_pipeline_text (required: canonical_md, optional: ocr_text) → 已基于新 canonical_md 重建 → 跳过
+```
+
+**Index 增量重建规则**：
+
+| 条件 | 动作 |
+| --- | --- |
+| Index 的 `required_reps` 中有任一 stale | 等待，不重建 |
+| Index 的 `required_reps` 全部 ready，`optional_reps` 有 stale | 可重建（跳过 optional 输入），但标记 `partial` |
+| Index 的 `required_reps` + `optional_reps` 全部 ready | 完整重建 |
+| Index 的 `index_built_from_hash` == 当前 Rep 的 `content_hash` 并集 | 跳过（已一致） |
+
+**`rep_all_ready` 事件保留但语义调整**：
+
+```text
+旧语义：所有 Rep ready → 触发 Index 评估
+新语义：所有 Rep ready → 触发"全量 Index 一致性校验"（兜底）
+        单个 Rep ready → 触发"增量 Index 评估"（即时）
+```
+
+> v0.1 实现建议：先实现全量等待（简单可靠），v0.2 切换到增量触发。
+
+#### 5.13.4 Rep 继承链的可观测性
+
+| 查询 | API | 说明 |
+| --- | --- | --- |
+| 查看 Rep 的直接上游 | `GET /entities/{id}/reps/{rep_type}/upstream` | 返回 input_content_hash 对应的上游 Rep |
+| 查看 Rep 的所有下游 | `GET /entities/{id}/reps/{rep_type}/downstream` | 返回继承链中所有依赖该 Rep 的下游 Rep |
+| 查看完整继承图 | `GET /entities/{id}/inheritance-graph` | 返回 DAG 形式的继承关系图 |
+| 模拟级联影响 | `POST /entities/{id}/reps/{rep_type}/cascade-preview` | 预览"如果该 Rep 变更，哪些下游会 stale" |
+
+#### 5.13.5 继承链与血缘的区别
+
+| 维度 | 继承链（Inheritance） | 血缘（Lineage） |
+| --- | --- | --- |
+| **定义** | Rep 之间的直接依赖关系（谁是谁的输入） | Entity 之间的关系（谁引用了谁） |
+| **粒度** | Rep 级（同一 Entity 内） | Entity 级（跨 Entity） |
+| **存储** | `input_content_hash` Tag + Pipeline 注册表 | 目录层级 + Pipeline 注册表 |
+| **用途** | 变动检测 + 级联传播 + Index 增量重建 | 影响分析 + 数据溯源 + 跨 Entity 检索 |
+| **方向** | 自上而下（上游→下游） | 双向（上游/下游） |
 
 #### 5.11.1 Edge 状态
 
