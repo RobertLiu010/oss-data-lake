@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行。
 
 ---
 
@@ -3372,15 +3372,347 @@ class EvidencePack(BaseModel):
 
 ---
 
-## 11. v0.1 范围
+## 11. Projector 层（多目标投影）
 
-### 11.1 文件类型
+> **核心定位**：Vector-Lake 是**主体**，Projector 层是它面向不同外部消费者（RAG API / Wiki / Dashboard / Web 前端）暴露数据形态的**适配器集合**。Projector 订阅 Lake 内部事件（entity 创建、representation 完工、edge 写入、lint 完成），把内部数据**单向投影**为各消费者约定的格式。
+>
+> **与检索层的关系**：§8 检索能力 / §9 智能引擎 是 Lake **被问** 时主动提供答案的 HTTP API；Projector 是 Lake **主动告知** 第三方（按事件驱动）的出站通道。两者正交。
+
+### 11.1 设计目标
+
+1. **Lake 内聚**：所有领域概念（Entity / Representation / Chunk / Edge / Event）只活在自己的边界内，不为外部消费者变形。
+2. **消费解耦**：新增消费者 = 新增一个 Projector，不改 Lake 核心代码。
+3. **最终一致**：投影允许秒级延迟；Lake 写入快，投影异步、可重放。
+4. **可回放**：每个 Projector 的输出是 Lake 事件的纯函数，支持全量重建（rebuild）。
+5. **不破坏消费者独立性**：消费者（如 Wiki）即使脱离 Lake 也能继续运行——因为拿到的是落地的 `.md` 文件，不是绑定到 Lake 的句柄。
+6. **幂等**：同一事件重复投影不产生副作用；artifact 命名带 idempotency key。
+
+### 11.2 Projector 抽象
+
+```python
+from typing import Protocol, Optional
+from datetime import datetime
+
+class Projector(Protocol):
+    """Lake 内部数据 → 外部消费者格式"""
+
+    name: str                                    # 唯一标识（注册表 key）
+    consumer_type: str                           # 'wiki' | 'rag_api' | 'dashboard' | 'web'
+
+    # ── 单事件投影（事件驱动调用）──
+    def project_entity(self, entity: Entity) -> list[Artifact]: ...
+    def project_representation(self, rep: Representation) -> list[Artifact]: ...
+    def project_edge(self, edge: Edge) -> list[Artifact]: ...
+    def project_event(self, event: Event) -> list[Artifact]: ...
+    def project_lint(self, result: LintResult) -> list[Artifact]: ...
+
+    # ── 全量重建接口（rebuild / schema 演进）──
+    def rebuild(self, since: Optional[datetime] = None) -> int:
+        """返回产出的 artifact 数量"""
+        ...
+```
+
+`Artifact` 是 Projector 输出的"落地物"（OSS 写文件 / HTTP 推送 / WebSocket 消息 / DB 行）。
+
+### 11.3 内置 Projector 清单
+
+| Projector | 消费者 | 输出形态 | 落地方式 | 状态 |
+|---|---|---|---|---|
+| `RagApiProjector` | 上层 RAG / Agent | JSON Evidence | HTTP `/tools/*` 路由（§8） | v0.1 |
+| `WikiProjector` | Karpathy LLM Wiki / Obsidian | `.md` 文件 + wikilink + log.md | OSS / 本地 vault | v0.1（详设见 §12） |
+| `DashboardProjector` | 运维面板 | 指标 / 状态卡片 | TSDB / WebSocket | v0.2 |
+| `WebProjector` | 前端 SPA | 视图模型 | HTTP `/v1/views/*` | v0.2 |
+
+> WikiProjector 是本次设计重点，详设见 §12。
+
+### 11.4 投影生命周期（事件驱动）
+
+```text
+Lake 内部事件源                        Projector 运行时
+─────────────────                      ─────────────────
+Entity.published       ───┐
+Representation.ready   ───┤
+Edge.created           ───┼──→  Event Bus（pub/sub）  ──→  [WikiProjector]
+Event.appended         ───┤                                  │
+Lint.completed         ───┤                                  ├─→ 1. 收事件
+Supersede.occurred     ───┘                                  │   2. 调 project_xxx()
+                                                            │   3. 落 Artifact（带 idempotency）
+                                                            │   4. 失败 → DLQ + 告警
+                                                            ↓
+                                                     Artifact 落地
+                                                     (OSS / HTTP / WS)
+```
+
+**幂等保证**：每个 Artifact 用 `sha256(input_event_id + projector_name + target_path)` 命名；重复投影覆盖同一目标，不产生重复条目。
+
+### 11.5 投影一致性等级
+
+| 等级 | 适用 | 实现 |
+|---|---|---|
+| **最终一致**（默认） | 绝大多数 Projector | 事件驱动 + 异步执行，秒级延迟 |
+| **强一致** | RAG API 的"写后即查" | 不走 Projector，直接调 Lake 内部 API（§8） |
+| **离线全量重建** | 投影损坏 / schema 演进 / 新接 Projector | `rebuild()` 接口，基于 `content_hash` 重放所有事件 |
+
+### 11.6 投影失败的恢复
+
+| 失败类型 | 检测 | 恢复 |
+|---|---|---|
+| 单事件投影失败 | DLQ 入队 + 告警 | 人工 replay 或自动重试 3 次后入 cold-DLQ |
+| 投影器进程崩溃 | 健康检查 | 启动时从 last_committed_offset 续接 |
+| 目标存储不可用 | 网络/权限错误 | 指数退避重试；最终进 DLQ |
+| 数据漂移（artifact 与 Lake 不一致） | 周期性 hash 比对 | 触发 `rebuild()` |
+
+---
+
+## 12. Wiki Projector 详设
+
+> **重新定位**：Vector-Lake 是**主体**，Wiki Projector 是其内部 Projector 层的成员。**Wiki 不是 Lake 的宿主，Wiki 也不是 Lake 的客户——Wiki 是 Lake 内部数据的一种"渲染格式"**。Lake 决定 wiki 长成什么样，wiki 用户可以选择消费或忽略这种格式。
+>
+> 这是对前两版（"Wiki 宿主 + Lake 后端" / "SBI 双边契约"）的最终修正：Lake 主体地位不动摇，Wiki Provider 是 Lake 内部 Projector 层的一个适配器。
+
+### 12.1 设计目标
+
+1. **Lake 主体地位不动摇**：所有 wiki 内容**派生自** Lake 内部事件。
+2. **Wiki 独立可运行**：投影产出的 `~/wiki/` 是 Karpathy 原始约定的目录，可被 Obsidian 独立打开。
+3. **两种投影模式**：
+   - **Push**：Lake 主动写 `~/wiki/`（适合 wiki 完全是 Lake 镜像）
+   - **Pull**：Lake 提供 `GET /v1/wiki/project/*` 拉取端点（适合 wiki 客户端灵活消费）
+4. **用户手改可吸收**：用户编辑过的 `.md` 被识别为 `rep_type=user_edited_md` 的新 Representation，不会被覆盖（默认）。
+5. **SCHEMA / index / log 由 Lake 维护**：减少用户手工负担；用户可基于 Lake 草稿修订。
+6. **幂等 + 顺序保证**：相同事件多次投影结果一致；log.md 严格按事件时间追加。
+
+### 12.2 投影范围
+
+| Lake 内部对象 | 投影到 Wiki 哪里 | 触发事件 | v0.1 |
+|---|---|---|---|
+| `entity` (active) | `entities/{slug}.md`（按 entity_type 路由文件夹） | `entity.published` | ✅ |
+| `representation(canonical_md)` | 文件正文 | `representation.ready` | ✅ |
+| `representation(graph_json)` | `[[wikilink]]` 渲染 | `representation.ready` | ✅ |
+| `edge` | `[[wikilink]]` + provenance 标记 | `edge.created` | ✅ |
+| `entity.version 切换` | `log.md` 追加 + `index.md` 更新 | `entity.superseded` | ✅ |
+| `lint_result` | `_lint/{page_id}.md` 报告 | `lint.completed` | v0.2 |
+| `pipeline_run` | `_meta/runs/{date}.md` 运维日志 | `pipeline.completed` | v0.2 |
+
+### 12.3 字段映射表（Lake 内部 → Wiki 格式）
+
+| Lake 内部 | Wiki 投影 | 备注 |
+|---|---|---|
+| `entity.entity_type` | 文件夹（`entities/` / `concepts/` / `comparisons/` / `queries/`） | 映射规则见 §12.3.1 |
+| `entity.title` | frontmatter `title:` | |
+| `entity.aliases` | frontmatter `aliases: [...]` | 用于 wikilink 容错 |
+| `entity.tags` | frontmatter `tags: [...]` | 来自 SCHEMA.md 词表 |
+| `representation(canonical_md).content` | `.md` 正文 | 去 frontmatter 后的纯 markdown |
+| `representation.sources[].raw_uri` | 行内 `^[raw/...]` 标记 | 出现在每个有出处的段落 |
+| `entity.entity_version` | frontmatter `version: N` | |
+| `entity.is_active=true` | 出现在 `entities/{slug}.md` | |
+| `entity.is_active=false` | 移到 `_superseded/{slug}@v{N}.md` | 不删，可回看 |
+| `entity.status='hidden'` | **不投影** | Lake 内仍可见、检索 |
+| `entity.status='deleted'` | **不投影** | Lake 内仍可见、检索 |
+
+#### 12.3.1 entity_type → 文件夹映射
+
+```python
+WIKI_FOLDER_BY_ENTITY_TYPE = {
+    # 显式 wiki 概念（v0.1 新增）
+    "wiki_entity":     "entities",
+    "wiki_concept":    "concepts",
+    "wiki_comparison": "comparisons",
+    "wiki_query":      "queries",
+    # 原始文档类型（v0.1 透传：每个 document 是一篇 wiki entity）
+    "document":        "entities",
+    # 不单独投影（嵌入到所属概念页）
+    "image":           None,
+    "audio":           None,
+    "table":           None,
+}
+```
+
+### 12.4 关系边（edge）到 Wikilink 渲染
+
+| `edges.relation` | 投影形式 | 说明 |
+|---|---|---|
+| `mentions` | `[[target]]` | 普通引用 |
+| `cites` | `[[target]]^[chunk_id]` | 带 chunk 引用，可点击定位原文 |
+| `contradicts` | `[[target]] ⚡` | 冲突标记，触发 Lint R004 |
+| `supports` | `[[target]] ✓` | 支持标记 |
+| `synthesizes` | `[[target]] ⊕` | 综合关系（src ≥ 3） |
+| `supersedes` | **不投影到正文** | 仅用于文件路径版本管理 |
+| `derived_from` | frontmatter `sources: [raw/...]` | 来源清单 |
+
+### 12.5 推送策略
+
+| 策略 | 行为 | 适用 | v0.1 |
+|---|---|---|---|
+| `atomic_per_page` | 单页写入：先 `.md.tmp` → 校验 → `rename` 覆盖 | 默认，单 Entity 写 | ✅ |
+| `whole_vault` | 重建整个 `~/wiki/`（基于 content_hash） | schema 演进、首次投影、灾难恢复 | v0.2 |
+| `incremental` | 仅写变化页 + 增量 `log.md` | 日常 ingest | v0.1（v0.1 简化为"每条事件触发单页写"） |
+
+**写入原子性**（critical，OSS 与本地 vault 同理）：
+
+```python
+import os, uuid
+
+def atomic_write_artifact(target_path: str, content: bytes):
+    tmp = f"{target_path}.tmp.{uuid.uuid4().hex[:8]}"
+    with open(tmp, "wb") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())      # 强制落盘
+    os.replace(tmp, target_path)   # POSIX 原子 rename
+```
+
+OSS 场景下等价为：`PutObject` 到 `.tmp` → `CopyObject` + `x-oss-copy-source-if-match` 原子替换。
+
+### 12.6 反向回写（用户手改识别）
+
+```text
+用户在 Obsidian 编辑 ~/wiki/entities/foo.md
+        ↓
+WikiProjector 检测器（每 5 min 扫一次 vault；v0.1 简化为手动触发）
+        ↓
+mtime 变化 OR content_hash 变化
+        ↓
+调用 Lake: POST /v1/wiki/import
+  {
+    entity_id: "wiki_concept:transformer-arch",
+    rep_type: "user_edited_md",
+    content: <读取 .md 内容>,
+    source: "user_edit",
+    supersedes: "canonical_md@v3"
+  }
+        ↓
+Lake 内部：
+  v3 canonical → status=superseded
+  v4 user_edited → status=active, is_active=true
+  Edge: v3 → v4, relation=supersedes
+        ↓
+下次 Push 投影：
+  默认 wiki.protect_user_edits=true → 不覆盖 vault（保护手改）
+  配置 wiki.protect_user_edits=false → 用 v4 覆盖
+```
+
+**关键不变量**：
+- Lake 内部数据是 Source of Truth
+- User edit 作为 `user_edited_md` 类型的 Representation 留在 Lake，可被检索、可被血缘追溯
+- Push 模式默认**不**用 v4 user_edited 覆盖 vault（避免循环覆盖）
+
+### 12.7 SCHEMA.md / index.md / log.md 维护责任
+
+| 文件 | 维护方 | 写入策略 | v0.1 |
+|---|---|---|---|
+| `SCHEMA.md` | 人 + Lake 草稿 | Lake 投影出**初稿**（基于 Pipeline 注册表 + Representation 矩阵），用户可手工修订 | ✅ 初稿生成 |
+| `index.md` | Lake 全权 | 每次 `entity.published` 事件触发增量更新 | ✅ |
+| `log.md` | Lake 全权 | append-only，事件映射见 §12.7.1 | ✅ |
+| `entities/*.md` | Lake 全权（默认） | Push 模式覆盖；user_edit 保护模式不覆盖 | ✅ |
+| `concepts/*.md` | Lake 全权 | 同上 | ✅ |
+| `comparisons/*.md` | Lake 全权 | 同上 | ✅ |
+| `queries/*.md` | 人 + LLM（Lake 投影为初稿） | 混合所有 | v0.2 |
+| `raw/` | **人** | Lake **绝不写**（不可变性硬约束） | — |
+| `_superseded/` | Lake 全权 | 写但不主动清理 | ✅ |
+| `_lint/*.md` | Lake 全权 | 每次 lint_run 写一份 | v0.2 |
+
+#### 12.7.1 event → log.md 行映射
+
+```python
+LOG_TEMPLATE = {
+    "ingest":       "📥 [{ts}] ingest: {page_id} v{ver}",
+    "publish":      "✅ [{ts}] publish: {page_id} v{ver} (supersedes v{prev})",
+    "supersede":    "🔄 [{ts}] supersede: {page_id} v{old} ← v{new}",
+    "delete":       "🗑️ [{ts}] delete: {page_id} (reason={reason})",
+    "lint_run":     "🔍 [{ts}] lint: {rules_count} rules, {err} error, {warn} warn",
+    "lint_error":   "❌ [{ts}] lint_error: {page_id} rule={rule} ({msg})",
+    "project_fail": "💥 [{ts}] project_fail: {page_id} ({err})",
+}
+```
+
+### 12.8 数据流（一次 ingest 到 wiki 落地）
+
+```text
+[用户/Agent]
+   │  POST /v1/entities (raw 文档)
+   ↓
+[Vector-Lake Ingest Gateway]                  ← 主体
+   │  1. detect(content_hash)
+   │  2. 入 Ingest Queue
+   │  3. Pipeline Orchestrator 调度
+   ↓
+[Pipeline: represent → chunk → embed]
+   │  产出 Entity + Representations
+   │  写入 Lance + Parquet 镜像
+   ↓
+[Event Bus: entity.created, rep.ready, edge.created]
+   ↓
+┌──┴──────────────────────────────────────────┐
+│  Projector 层（订阅事件）                     │
+│  ┌────────────┐  ┌────────────┐  ┌───────┐  │
+│  │ RAG API    │  │ Wiki       │  │ Dash  │  │
+│  │ 重建索引    │  │ 写 .md    │  │ 刷新  │  │
+│  └────────────┘  └────────────┘  └───────┘  │
+└──────────────────────────────────────────────┘
+                     │
+                     │ 写 ~/wiki/entities/foo.md
+                     │  追加 ~/wiki/log.md
+                     │  更新 ~/wiki/index.md
+                     ↓
+              [Karpathy LLM Wiki]
+                     │
+                     │  Obsidian 浏览
+                     │  Agent 提问（走 /tools/hybrid，不走 wiki）
+                     │  用户编辑 → 触发反向回写
+```
+
+### 12.9 反向验证（不变量）
+
+| 验证项 | 期望 |
+|---|---|
+| 复制 `~/wiki/` 到无 Lake 机器 | Obsidian 仍能正常打开、跳转、搜索 |
+| Lake 离线、Wiki 在线 | Wiki 仍能正常工作（`.md` 已落地） |
+| Wiki 改了一行 `.md` | Lake 重启后识别为 `user_edited_md` Representation |
+| Wiki 完全不用 Lake | `~/wiki/` 仍是 Karpathy 原始约定，可独立工作 |
+| `rebuild()` 全量重投影 | 与增量投影结果一致（基于 `content_hash`） |
+
+### 12.10 Wiki Projector v0.1 范围
+
+- [x] §12.3 字段映射表
+- [x] §12.4 edge → wikilink 渲染
+- [x] §12.5 推送策略 `atomic_per_page`（默认）
+- [x] §12.7 SCHEMA.md 草稿生成
+- [x] §12.7 index.md / log.md 自动维护
+- [x] §12.8 Push 模式端到端数据流
+- [ ] §12.5 `whole_vault` 全量重建（v0.2）
+- [ ] §12.5 `incremental` 优化（v0.1 简化为单事件单页写）
+- [ ] §12.6 反向回写 + user_edit 保护（v0.2）
+- [ ] §12 Pull 模式 `GET /v1/wiki/project/*`（v0.2）
+- [ ] `_lint/*.md` 报告文件（v0.2）
+- [ ] 反向回写检测器（v0.1 手动触发；v0.2 定时扫）
+
+### 12.11 与 Karpathy LLM Wiki 的对位
+
+| Karpathy 原始约定 | Vector-Lake Wiki Projector 投影 | 备注 |
+|---|---|---|
+| `raw/`（不可变原文） | **不投影**（用户自管） | Lake 只读访问 raw/ |
+| `entities/*.md` | Lake 投影（基于 `entity_type=document` 或 `wiki_entity`） | v0.1 |
+| `concepts/*.md` | Lake 投影（基于 `entity_type=wiki_concept`） | v0.2 引入 wiki_concept |
+| `comparisons/*.md` | Lake 投影（基于 `entity_type=wiki_comparison`） | v0.2 |
+| `queries/*.md` | Lake 投影 + 人/LLM 共同所有 | v0.2 |
+| `[[wikilink]]` | 从 `edges` 表渲染（§12.4） | v0.1 |
+| `^[raw/...]` provenance | 从 `representation.sources[]` 渲染 | v0.1 |
+| `SCHEMA.md` | Lake 投影初稿（基于 Pipeline 注册表） | v0.1 |
+| `index.md` | Lake 自动维护 | v0.1 |
+| `log.md` | Lake 自动追加 | v0.1 |
+| Lint（手工健康检查） | 升级为 Pipeline：`/v1/wiki/lint`（v0.2） | v0.2 |
+
+---
+
+## 13. v0.1 范围
+
+### 13.1 文件类型
 
 ```text
 pdf · docx · pptx · image · audio
 ```
 
-### 11.2 Pipeline
+### 13.2 Pipeline
 
 ```text
 A. 直接提取（document 默认）
@@ -3391,7 +3723,7 @@ F. 音频转写（audio 默认）
 
 > Pipeline C (VLM) 和 D (知识编译) 为 v0.2，但 schema 预留。
 
-### 11.3 Representation
+### 13.3 Representation
 
 ```text
 raw · canonical_md · plain_text · page_image · ocr_text
@@ -3400,7 +3732,7 @@ transcript · transcript_segment · caption
 
 > `vlm_extracted_md · mind_map · graph_json · wiki_md · summary` 为 v0.2，但 schema 预留。
 
-### 11.4 Index
+### 13.4 Index
 
 ```text
 semantic · lexical · hybrid · grep · visual
@@ -3408,13 +3740,13 @@ semantic · lexical · hybrid · grep · visual
 
 > `audio · table · graph` 为 v0.2，但 schema 预留。
 
-### 11.5 状态
+### 13.5 状态
 
 ```text
 enabled · hidden · deleted · active · stale
 ```
 
-### 11.6 能力
+### 13.6 能力
 
 ```text
 ls · read · stat · grep · glob
@@ -3423,7 +3755,7 @@ semantic · lexical · hybrid · visual
 
 > `audio · table · graph` 为 v0.2。
 
-### 11.7 明确不在 v0.1 范围
+### 13.7 明确不在 v0.1 范围
 
 - VLM 视觉流水线（v0.2）
 - 知识编译流水线 / mind_map / graph_json（v0.2）
@@ -3435,9 +3767,9 @@ semantic · lexical · hybrid · visual
 
 ---
 
-## 12. API 设计（v0.1 形态）
+## 14. API 设计（v0.1 形态）
 
-### 12.1 内部管线 API（异步）
+### 14.1 内部管线 API（异步）
 
 | API | 说明 |
 | --- | --- |
@@ -3449,7 +3781,7 @@ semantic · lexical · hybrid · visual
 | `GET /pipeline_runs/{run_id}` | 查询运行状态 |
 | `POST /reconcile` | 触发 reconcile 任务 |
 
-### 12.2 检索 API（同步，对上层应用）
+### 14.2 检索 API（同步，对上层应用）
 
 | API | 说明 |
 | --- | --- |
@@ -3468,7 +3800,7 @@ semantic · lexical · hybrid · visual
 | `GET /lineage/{entity_id}/impact` | 影响分析（某个 rep 变了会影响哪些下游） |
 | `POST /engine/ask` | 智能引擎（综合） |
 
-### 12.3 Entity 操作 API（对应 Entity 类方法）
+### 14.3 Entity 操作 API（对应 Entity 类方法）
 
 | API | 对应 Entity 方法 | 说明 |
 | --- | --- | --- |
@@ -3485,7 +3817,7 @@ semantic · lexical · hybrid · visual
 | `GET /entities/{id}/perspectives` | `perspectives` | 视角面板 |
 | `GET /entities/{id}/preview` | `preview` | 预览 |
 
-### 12.4 统一响应
+### 14.4 统一响应
 
 ```json
 {
@@ -3503,7 +3835,7 @@ semantic · lexical · hybrid · visual
 
 ---
 
-## 13. 非功能需求（NFR）
+## 15. 非功能需求（NFR）
 
 | 维度 | 指标 | v0.1 目标 |
 | --- | --- | --- |
@@ -3524,7 +3856,7 @@ semantic · lexical · hybrid · visual
 
 ---
 
-## 14. 关键场景（v0.1 验收用例）
+## 16. 关键场景（v0.1 验收用例）
 
 | 场景 | 触发 | 期望 |
 | --- | --- | --- |
@@ -3545,7 +3877,7 @@ semantic · lexical · hybrid · visual
 
 ---
 
-## 15. 里程碑
+## 17. 里程碑
 
 | 里程碑 | 周期 | 交付 |
 | --- | --- | --- |
@@ -3558,11 +3890,12 @@ semantic · lexical · hybrid · visual
 | **M6. Hybrid Search + Retrieval Gateway** | W7 | hybrid / semantic / lexical / visual / ls / read / grep / glob |
 | **M7. Intelligent Engine** | W8 | 规则版 router + RRF fusion + evidence pack |
 | **M8. Reconcile + Publish + 版本管理** | W9 | 软删除 / 隐藏 / 版本切换 / 周期调和 |
-| **M9. v0.1 GA** | W10 | S1–S9 全通过；NFR 达标 |
+| **M9. Projector 层 + Wiki Projector v0.1** | W10 | Projector 抽象 + Registry；WikiProjector 投影 `~/wiki/` 端到端跑通（Push 模式 + atomic_per_page + index/log 自动维护） |
+| **M10. v0.1 GA** | W11 | S1–S10 全通过；NFR 达标 |
 
 ---
 
-## 16. 风险与开放问题
+## 18. 风险与开放问题
 
 | # | 风险 / 问题 | 缓解 / 待定 |
 | --- | --- | --- |
@@ -3573,18 +3906,24 @@ semantic · lexical · hybrid · visual
 | R5 | OSS 一致性 vs 索引一致性 | content_hash 检测 + publish 原子切换 + reconcile 兜底 |
 | R6 | 大文档增量更新成本 | v0.1 全量重建；v0.2 评估 page-level 增量 |
 | R7 | Embedding 模型升级 | model_version 字段 + reconcile 检测过期 + 按需重跑 |
+| R8 | Projector 事件消费积压（Lake 写快、Projector 慢） | Projector 自带 DLQ + 告警 + last_committed_offset 续接；监控 lag 指标 |
+| R9 | Wiki 投影 idempotency 漏洞（重复事件产生重复 wikilink） | artifact 命名带 `sha256(event_id + projector + target_path)`；重复事件覆盖同目标 |
+| R10 | 用户手改 `.md` 与 Lake 投影冲突 | Push 模式默认 `wiki.protect_user_edits=true` 不覆盖；编辑以 `user_edited_md` Representation 形式回流到 Lake |
+| R11 | Wiki vault 写入非原子（断电导致半截文件） | `os.replace` POSIX 原子 rename；OSS 端用 `PutObject → CopyObject + if-match` 替换 |
+| R12 | `rebuild()` 全量重投影与增量结果不一致 | 投影函数必须是事件的纯函数；以 `content_hash` 为基准做等价性比对 |
 | Q1 | entity 是否需要"跨 collection 合并"？ | v0.1 不做；v0.2 讨论 `same_as` edge |
 | Q2 | wiki_md / mind_map 的 LLM 编译成本 | v0.2 实现；异步、按需、按版本 |
 | Q3 | graph index 用什么存储 | v0.1 用 graph_json representation + 内存遍历；v0.2 评估 Neo4j |
 | Q4 | 检索结果"高亮 / 片段截取" | v0.1 给 snippet；v0.2 接 highlighter |
 | Q5 | multimodal embedding 与文本是否真的同空间 | V5 明确支持，但需回归测试 |
 | Q6 | VLM pipeline 的模型选型 | v0.2 评估 Qwen2-VL / GPT-4o / Gemini |
+| Q7 | Wiki Projector 是否要支持 Pull 模式（`GET /v1/wiki/project/*`） | v0.2 评估；v0.1 仅 Push 模式 |
 
 ---
 
-## 17. 附录
+## 19. 附录
 
-### 17.1 与现有组件的对接
+### 19.1 与现有组件的对接
 
 | 现有组件 | 对接方式 |
 | --- | --- |
@@ -3593,7 +3932,7 @@ semantic · lexical · hybrid · visual
 | **Chunking UseCase** | Pipeline A/B 的 chunk 阶段调用 `ChunkingWithSlidingWindowUseCase`；字段映射见下表 |
 | **LanceDB** | representations.lance（vector + FTS + scalar filter）；hybrid search 原生支持 |
 
-### 17.2 Chunking UseCase 字段映射
+### 19.2 Chunking UseCase 字段映射
 
 | Chunk 字段 | Lance representations.lance 字段 | 用途 |
 | --- | --- | --- |
@@ -3609,7 +3948,7 @@ semantic · lexical · hybrid · visual
 | `metadata.title` | `doc_title` | FTS + 展示 |
 | `metadata.page_number` | `page_number` | 过滤 + 展示 |
 
-### 17.3 名词表
+### 19.3 名词表
 
 - **Entity**：知识对象，1 个 OSS Object = 1 个 Entity。
 - **Representation**：Entity 的一种"认知视角"，血缘关系从目录层级推导。
@@ -3620,8 +3959,11 @@ semantic · lexical · hybrid · visual
 - **Manifest**：某次处理产物的注册清单。
 - **Provenance**：结果可追溯到来源 + 版本 + pipeline。
 - **Reconcile**：定期对账，修复状态漂移。
+- **Projector**：Lake 内部事件驱动的出站适配器（§11），把 Entity/Representation/Edge/Event 投影为外部消费者（RAG API / Wiki / Dashboard / Web）约定的格式。
+- **WikiProjector**：Projector 的一种（§12），目标消费者是 Karpathy LLM Wiki / Obsidian；投影产物是 `~/wiki/` 目录的 `.md` + wikilink + index.md + log.md，可独立运行。
+- **Artifact**：Projector 输出的"落地物"（OSS 文件 / HTTP 推送 / WebSocket 消息 / DB 行）。
 
-### 17.5 开源项目 Review：血缘方案对比
+### 19.5 开源项目 Review：血缘方案对比
 
 本方案（OSS Tag per representation 文件）参考了以下开源项目/标准的设计，并做出适配取舍：
 
@@ -3641,7 +3983,7 @@ semantic · lexical · hybrid · visual
 3. **目录层级 + Pipeline 注册表 > 持久化**：血缘不存于任何字段或 Tag，从目录层级（source/extract/recognize/compile）+ Pipeline 注册表实时推导，零存储、零同步问题。
 4. **事件驱动 + reconcile 兜底**：与 OpenLineage/Hudi 一致，但血缘存储在对象自身（路径）而非外部系统。
 
-### 17.6 评审清单（Review Checklist）
+### 19.6 评审清单（Review Checklist）
 
 - [ ] 1 OSS Object = 1 Entity 是否覆盖所有 v0.1 场景？
 - [ ] Representation 的血缘 DAG 是否满足可重建？

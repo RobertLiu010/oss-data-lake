@@ -377,10 +377,16 @@ LiveVectorLake 的核心卖点就是"point-in-time retrieval"。对于合规/审
 | **Should Fix** | S4 | 缺少增量更新策略 | v0.1 全量；v0.2 page-level 增量 |
 | **Should Fix** | S5 | 缺少 embedding 模型版本管理 | 增加 model_version 字段 |
 | **Should Fix** | S6 | NFR 缺存储成本 | 增加存储估算表 |
+| **Must Fix（v0.2 增补）** | P8 | 缺少 Wiki / 第三方消费者的统一抽象 | 新增 §11 Projector 层，把 Lake → Wiki 的集成从"宿主-后端"修正为"主体-渲染格式" |
+| **Must Fix（v0.2 增补）** | P9 | Lake 写后到 wiki 可见无一致性保证 | §11.5 投影一致性等级：默认最终一致；可 `rebuild()` 全量重放 |
+| **Should Fix（v0.2 增补）** | S7 | 缺少反向回写（用户手改 → Lake） | §12.6 `user_edited_md` Representation 机制；Push 默认 `protect_user_edits=true` 不覆盖 |
+| **Should Fix（v0.2 增补）** | S8 | SCHEMA/index/log 全靠用户维护负担重 | §12.7 由 Lake 投影出初稿 + 维护 index/log |
+| **Should Fix（v0.2 增补）** | S9 | 缺少 wiki 写入原子性 | §12.5 `atomic_per_page`（POSIX `os.replace` / OSS `CopyObject+if-match`） |
 | **Nice to Have** | N1 | ColPali 页面级检索 | v0.2 评估 |
 | **Nice to Have** | N2 | Lance × DuckDB 分析层 | v0.2 评估 |
 | **Nice to Have** | N3 | Query Decomposition | v0.2 评估 |
 | **Nice to Have** | N4 | Temporal Query | v0.2 评估 |
+| **Nice to Have（v0.2 增补）** | N5 | Wiki Projector Pull 模式（`GET /v1/wiki/project/*`） | v0.2 评估；v0.1 仅 Push 模式 |
 
 ---
 
