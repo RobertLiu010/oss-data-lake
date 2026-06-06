@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§21-§25）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）。
 
 ---
 
@@ -55,6 +55,53 @@
 | **N3.** | 不做端到端 RAG 答案生成（属于上层应用）。 |
 | **N4.** | 不替代 LanceDB / Elasticsearch / 向量数据库本身，只做编排与建模。 |
 | **N5.** | v0.1 不做实时增量索引（先做近实时批式 reconcile + publish）。 |
+
+### 1.5 用户角色（User Personas）
+
+| 角色 | 职责 | 核心诉求 | 交互方式 |
+| --- | --- | --- | --- |
+| **数据工程师 / Pipeline 开发者** | 开发 RepStep / IndexStep / ProjectorStep Plugin；定义 RepPipeline 拓扑；调试 Pipeline 编排 | 清晰的 Plugin 接口（Protocol）；可复用的 Step 注册机制；丰富的日志与调试工具 | Python SDK (§22) + CLI + RepStepRegistry API |
+| **AI 应用开发者** | 构建 RAG 应用、Agent、问答系统；调用检索 API 获取知识证据 | 统一的检索入口（semantic + structural + textual）；可解释的检索结果（provenance + snippet）；低延迟 | REST API + MCP Server (§9.5) + Python SDK |
+| **知识管理者 / 数据管家** | 管理 Entity 生命周期（ingest / label / delete）；配置 Projector 输出目标；监控数据质量 | Entity 状态可视化；血缘追溯；批量操作（label / delete）；数据质量报告 | CLI + REST API + Dashboard（v0.2） |
+| **DevOps / 平台工程师** | 部署与运维 Vector-Lake 服务；监控系统健康；配置 OSS / Redis / LanceDB 连接 | 一键部署（Docker Compose / K8s）；健康检查与告警；日志聚合；配置热更新 | 配置文件（YAML + ENV）+ Prometheus + Grafana |
+| **终端用户（通过 MCP / API）** | 通过 LLM Agent 间接使用知识检索能力 | 准确、快速的知识检索结果；支持自然语言查询 | 间接（通过 MCP Server → LLM → 终端用户） |
+
+### 1.6 竞争定位（Competitive Positioning）
+
+Vector-Lake 不是另一个向量数据库、搜索引擎或数据治理平台。它是一个**知识搜索引擎层**——在 OSS 数据湖之上，提供 Entity 驱动的知识建模、多 Pipeline 内容变换、多模态索引构建、以及统一检索路由。
+
+| 维度 | Vector-Lake | Elasticsearch | Pinecone / Weaviate | LlamaIndex / LangChain | lakeFS / Delta Lake | OpenMetadata |
+| --- | --- | --- | --- | --- | --- | --- |
+| **定位** | 知识搜索引擎层 | 全文搜索引擎 | 向量数据库 | LLM 数据框架 | 数据湖版本控制 | 元数据治理平台 |
+| **数据源** | OSS 数据湖（原生） | 自建索引 | 自建索引 | 多种 Connector | OSS / S3 数据湖 | 多种 Connector |
+| **知识建模** | Entity + Representation + Lineage | 文档（无 Entity 概念） | 无知识建模 | Document / Node（轻量） | 无 | Dataset / Table（面向分析） |
+| **内容变换** | RepPipeline（可插拔 Plugin） | Ingest Pipeline（有限） | 无 | Transformation（代码级） | 无 | 无 |
+| **索引策略** | IndexPipeline（可插拔 Plugin） | 倒排索引（固定） | 向量索引（固定） | 向量 + 关键词（有限） | 无 | 无 |
+| **多模态** | 原生（文本 / 图片 / 音频 / 视频 / 表格） | 仅文本 | 仅向量 | 部分支持 | 无 | 无 |
+| **血缘** | 目录层级 + Pipeline 注册表（零存储） | 无 | 无 | 无 | 版本历史 | 表级血缘 |
+| **一致性模型** | 两阶段（Rep↔Raw + Index↔Rep） | 最终一致 | 最终一致 | 无保证 | 事务性 | 元数据同步 |
+| **对外投影** | Projector 层（Wiki / RAG API / Dashboard） | Kibana | 无 | 无 | 无 | 无 |
+| **LLM 集成** | MCP Server（原生） | 第三方 | 原生 SDK | 原生 | 无 | 无 |
+| **部署复杂度** | 轻量（LanceDB 嵌入式 + Redis Streams） | 重（集群） | 中等（SaaS / 自托管） | 轻量（Python 库） | 中等 | 重 |
+| **开源协议** | Apache 2.0（计划） | Elastic License | 源码可用 / 开源 | MIT | Apache 2.0 | Apache 2.0 |
+
+**Vector-Lake 的独特价值**：
+
+1. **Entity 驱动的知识建模** — 不是文档索引，而是以 Entity 为核心的知识对象管理，支持多 Representation 视角和完整血缘。
+2. **解耦的双 Pipeline 架构** — RepPipeline（内容变换）和 IndexPipeline（索引构建）完全解耦，各自有独立的 Plugin 体系，可独立演进。
+3. **准零持久化元数据** — 元数据从 OSS Tag + VFS 路径实时推导，不依赖外部元数据库，从 OSS 扫描即可完整重建。
+4. **Projector 层** — 知识引擎层主动将内部数据投影到多种外部消费者（Wiki / RAG API / Dashboard），而非被动等待查询。
+5. **两阶段一致性** — 首次在知识引擎中同时保证内容一致性（Rep↔Raw）和索引一致性（Index↔Rep），可调和、可重建。
+6. **LLM 原生** — MCP Server 作为一等公民，让 LLM 可以直接探索和检索知识湖。
+
+**与现有工具的互补关系**：
+
+```text
+Elasticsearch / Pinecone  ←→  Vector-Lake  ←→  LlamaIndex / LangChain
+  (底层索引引擎)              (知识搜索引擎层)         (上层应用框架)
+```
+
+Vector-Lake 不替代 Elasticsearch 或 Pinecone，而是在它们之上（或 LanceDB 之上）提供知识建模、Pipeline 编排、一致性保证和统一检索路由。它也不替代 LlamaIndex / LangChain，而是为它们提供更高质量、可追溯、多模态的知识检索结果。
 
 ---
 
@@ -5605,6 +5652,858 @@ semantic · lexical · hybrid · visual
 | **VFS→LLM** | MCP Server（v0.1） | REST API + OpenAPI | MCP 是 LLM 工具调用标准；自带 schema 描述 |
 | **可观测性** | OTel + Prometheus + Grafana | ELK / 商业方案 | 云原生标准 |
 | **元数据治理** | 自研 VFS（v0.1） → OpenMetadata（v0.2） | DataHub / Atlas | v0.1 简单；v0.2 集成 |
+
+---
+
+## 21. 部署模型与运维（Deployment & Operations）
+
+### 21.1 部署拓扑
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Vector-Lake 部署拓扑 (v0.1)                                  │
+│                                                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │ API Server   │  │ MCP Server   │  │ Reconciler   │       │
+│  │ (FastAPI)    │  │ (stdio/SSE)  │  │ (周期任务)    │       │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘       │
+│         │                 │                 │                │
+│         └─────────────────┼─────────────────┘                │
+│                           │                                  │
+│                    ┌──────┴──────┐                           │
+│                    │  Redis      │                           │
+│                    │  (Streams)  │                           │
+│                    └──────┬──────┘                           │
+│                           │                                  │
+│         ┌─────────────────┼─────────────────┐                │
+│         │                 │                 │                │
+│  ┌──────┴──────┐  ┌──────┴──────┐  ┌──────┴──────┐         │
+│  │ Worker 1    │  │ Worker 2    │  │ Worker N    │         │
+│  │ (RepPipeline│  │ (IndexPipeln│  │ (Projector) │         │
+│  │  Executor)  │  │  Executor)  │  │             │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         │                 │                 │                │
+│         └─────────────────┼─────────────────┘                │
+│                           │                                  │
+│              ┌────────────┴────────────┐                     │
+│              │    OSS / S3 / MinIO     │                     │
+│              │    (Entity + Rep +      │                     │
+│              │     LanceDB 数据)        │                     │
+│              └─────────────────────────┘                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 21.2 组件说明
+
+| 组件 | 职责 | 扩缩容 | 推荐资源 |
+| --- | --- | --- | --- |
+| **API Server** | REST API（§14）+ MCP HTTP 端点 | 水平扩展（无状态） | 2 CPU, 2 GB RAM |
+| **MCP Server** | LLM 工具调用（stdio / SSE） | 按需启动（每个 LLM 会话一个实例） | 1 CPU, 1 GB RAM |
+| **Reconciler** | 周期一致性检查（§5.9） | 单实例（通过 Redis 锁保证） | 2 CPU, 2 GB RAM |
+| **Worker** | RepPipeline / IndexPipeline / Projector 执行 | 水平扩展（按队列深度） | 2-4 CPU, 4-8 GB RAM |
+| **Redis** | 任务队列 + 分布式锁 + VFS 缓存 | 单实例（v0.1），哨兵（v0.2） | 2 CPU, 4 GB RAM |
+| **OSS / MinIO** | Entity / Rep / LanceDB 数据存储 | 外部依赖 | 按数据量 |
+
+### 21.3 Docker Compose 部署（推荐 v0.1）
+
+```yaml
+# docker-compose.yml
+version: "3.8"
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  api:
+    image: vector-lake:latest
+    ports:
+      - "8080:8080"
+    environment:
+      VL_CONFIG_PATH: /etc/vector-lake/config.yaml
+    volumes:
+      - ./config.yaml:/etc/vector-lake/config.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: vector-lake serve --host 0.0.0.0 --port 8080
+
+  worker:
+    image: vector-lake:latest
+    environment:
+      VL_CONFIG_PATH: /etc/vector-lake/config.yaml
+    volumes:
+      - ./config.yaml:/etc/vector-lake/config.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: vector-lake worker --concurrency 4
+    deploy:
+      replicas: 2
+
+  reconciler:
+    image: vector-lake:latest
+    environment:
+      VL_CONFIG_PATH: /etc/vector-lake/config.yaml
+    volumes:
+      - ./config.yaml:/etc/vector-lake/config.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: vector-lake reconcile --interval 900
+
+volumes:
+  redis_data:
+  minio_data:
+```
+
+### 21.4 配置文件
+
+```yaml
+# config.yaml
+vector_lake:
+  # OSS 连接
+  storage:
+    type: s3              # s3 | oss | minio
+    endpoint: http://minio:9000
+    access_key: minioadmin
+    secret_key: minioadmin
+    bucket: vector-lake
+    region: us-east-1
+
+  # LanceDB 配置
+  lancedb:
+    uri: s3://vector-lake/lancedb/  # 直接 S3 路径
+    # 或本地路径: /data/lancedb/
+
+  # Redis 连接
+  redis:
+    host: redis
+    port: 6379
+    db: 0
+    stream_maxlen: 100000   # 背压策略（§6.9.6）
+
+  # Pipeline 配置
+  pipelines:
+    default_concurrency: 4
+    step_timeout: 600        # RepStep 超时（秒）
+    index_timeout: 300       # IndexStep 超时（秒）
+
+  # Reconciler 配置
+  reconciler:
+    interval: 900            # 运行间隔（秒），默认 15min
+    batch_size: 100          # 每批处理 Entity 数
+    phase0_cron: "*/15 * * * *"   # Phase 0: ETag 快速扫描
+    phase1_cron: "0 */2 * * *"    # Phase 1: Rep↔Raw 一致性
+    phase2_cron: "0 */4 * * *"    # Phase 2: Index↔Rep 一致性
+
+  # MCP Server 配置
+  mcp:
+    enabled: true
+    transport: stdio          # stdio | sse
+    sse_port: 8081
+
+  # 可观测性
+  observability:
+    otel_endpoint: http://jaeger:4317
+    prometheus_port: 9090
+    log_level: INFO           # DEBUG | INFO | WARNING | ERROR
+    log_format: json          # json | text
+
+  # 软删除
+  retention:
+    soft_delete_days: 30      # 软删除后数据保留天数
+    cleanup_interval: 86400   # 清理任务间隔（秒），每天一次
+
+  # Plugin 注册
+  plugins:
+    rep_steps: []             # 额外 RepStep 包路径
+    index_steps: []           # 额外 IndexStep 包路径
+    projector_steps: []       # 额外 ProjectorStep 包路径
+```
+
+### 21.5 健康检查
+
+| 端点 | 用途 | 返回 |
+| --- | --- | --- |
+| `GET /health` | 基本存活检查 | `{"status": "ok"}` |
+| `GET /health/ready` | 就绪检查（含 Redis + OSS 连通性） | `{"status": "ready", "checks": {"redis": true, "storage": true}}` |
+| `GET /health/live` | Kubernetes liveness probe | `{"status": "alive"}` |
+| `GET /metrics` | Prometheus metrics | 标准 OpenMetrics 格式 |
+
+### 21.6 启动顺序
+
+```text
+1. Redis / MinIO 启动（docker-compose 自动处理）
+2. API Server 启动 → 等待 Redis + MinIO 就绪
+3. Worker 启动 → 连接 Redis Streams Consumer Group
+4. Reconciler 启动 → 获取 Redis 分布式锁，开始周期检查
+5. MCP Server 按需启动（LLM 会话建立时）
+```
+
+### 21.7 优雅关闭
+
+```text
+1. SIGTERM → API Server 停止接受新请求
+2. Worker 完成当前正在执行的 Pipeline Step（不中断）
+3. Reconciler 完成当前批次后释放锁
+4. 所有组件关闭 Redis 连接
+5. SIGKILL（超时 30s 后强制终止）
+```
+
+### 21.8 运维命令
+
+```bash
+# 启动所有服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f api worker
+
+# 扩容 Worker
+docker-compose up -d --scale worker=4
+
+# 手动触发 Reconciler
+vector-lake reconcile --once
+
+# 手动重建指定 Entity
+vector-lake entity rebuild --entity-id <id> --pipeline canonical_md
+
+# 查看 Stream 队列深度
+vector-lake queue status
+
+# 清理软删除过期数据
+vector-lake cleanup --dry-run
+vector-lake cleanup --force
+```
+
+---
+
+## 22. SDK 与客户端策略（SDK & Client Strategy）
+
+### 22.1 Python SDK（v0.1 主推）
+
+```python
+# 安装
+# pip install vector-lake-client
+
+from vector_lake import VectorLakeClient
+
+# 初始化
+client = VectorLakeClient(
+    base_url="http://localhost:8080",
+    api_key="vl-api-key-xxx"  # 可选
+)
+
+# === Entity 管理 ===
+# 创建 Entity
+entity = client.entities.create(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    entity_id="pricing-2025",
+    source_path="s3://bucket/pricing.pdf",
+    labels={"category": "pricing", "language": "zh"}
+)
+
+# 获取 Entity
+entity = client.entities.get("my-workspace", "knowledge-base", "pricing-2025")
+
+# 列出 Entity
+entities = client.entities.list(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    labels={"category": "pricing"},
+    limit=50
+)
+
+# 软删除
+client.entities.delete("my-workspace", "knowledge-base", "pricing-2025")
+
+# 物理删除
+client.entities.destroy("my-workspace", "knowledge-base", "pricing-2025")
+
+# === Representation 管理 ===
+# 获取 Entity 的所有 Representation
+reps = client.representations.list(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    entity_id="pricing-2025"
+)
+
+# 获取特定 Representation 内容
+rep_content = client.representations.get_content(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    entity_id="pricing-2025",
+    rep_type="canonical_md"
+)
+
+# === 检索 ===
+# 语义检索
+results = client.search(
+    query="2025 年定价策略是什么？",
+    workspace="my-workspace",
+    collection="knowledge-base",
+    top_k=10,
+    search_type="hybrid"  # semantic | lexical | hybrid | structural
+)
+
+# 带过滤的检索
+results = client.search(
+    query="定价策略",
+    workspace="my-workspace",
+    collection="knowledge-base",
+    top_k=10,
+    filters={
+        "entity_type": "document",
+        "labels.category": "pricing",
+        "rep_types": ["canonical_md", "vlm_md"]
+    },
+    include_snippets=True,
+    include_provenance=True
+)
+
+# 跨模态检索
+results = client.search(
+    query="数据中心的架构图",
+    workspace="my-workspace",
+    search_type="visual"
+)
+
+# === Pipeline 管理 ===
+# 触发 Pipeline 重建
+client.pipelines.trigger(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    entity_id="pricing-2025",
+    pipeline_id="canonical_md"
+)
+
+# 查看 Pipeline 状态
+status = client.pipelines.status(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    entity_id="pricing-2025"
+)
+
+# === 血缘查询 ===
+# 查询 Entity 的血缘
+lineage = client.lineage.get(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    entity_id="pricing-2025"
+)
+
+# 影响分析：上游变动影响哪些下游？
+impact = client.lineage.impact(
+    workspace="my-workspace",
+    collection="knowledge-base",
+    entity_id="pricing-2025",
+    rep_type="canonical_md"
+)
+```
+
+### 22.2 CLI 工具
+
+```bash
+# 安装
+pip install vector-lake-cli
+
+# 配置
+vl config set --endpoint http://localhost:8080 --workspace my-workspace
+
+# Entity 操作
+vl entity create --collection kb --source s3://bucket/doc.pdf --labels '{"category":"pricing"}'
+vl entity list --collection kb
+vl entity get --collection kb --entity-id pricing-2025
+vl entity delete --collection kb --entity-id pricing-2025
+vl entity rebuild --collection kb --entity-id pricing-2025
+
+# 检索
+vl search "定价策略" --collection kb --top-k 10 --type hybrid
+vl search "架构图" --collection kb --type visual
+
+# 血缘
+vl lineage show --collection kb --entity-id pricing-2025
+vl lineage impact --collection kb --entity-id pricing-2025 --rep-type canonical_md
+
+# 管理
+vl queue status
+vl health
+vl reconcile --once
+```
+
+### 22.3 MCP 客户端集成（LLM 使用）
+
+```json
+// claude_desktop_config.json 或 cursor mcp.json
+{
+  "mcpServers": {
+    "vector-lake": {
+      "command": "vector-lake-mcp",
+      "args": ["--config", "/path/to/config.yaml"],
+      "env": {
+        "VL_WORKSPACE": "my-workspace",
+        "VL_COLLECTION": "knowledge-base"
+      }
+    }
+  }
+}
+```
+
+LLM 通过 MCP 自动获得以下工具（§9.5.3）：
+
+| 工具 | 功能 |
+| --- | --- |
+| `vl_search` | 语义/混合检索 |
+| `vl_list_entities` | 列出 Entity |
+| `vl_get_entity` | 获取 Entity 详情 |
+| `vl_get_representation` | 获取 Representation 内容 |
+| `vl_get_lineage` | 获取血缘 |
+| `vl_list_workspaces` | 列出可用工作空间 |
+
+### 22.4 SDK 设计原则
+
+1. **同步 API 优先** — 检索类操作同步返回，Pipeline 触发异步但可 await
+2. **类型安全** — 所有方法有完整的类型注解（Pydantic models）
+3. **错误可恢复** — 网络重试 + 指数退避（默认 3 次）
+4. **连接池** — httpx 异步客户端，连接复用
+5. **分页** — 列表类 API 统一使用 `limit` + `cursor` 分页
+6. **日志透传** — SDK 端日志级别可配置，方便调试
+
+### 22.5 多语言 SDK 路线图
+
+| 语言 | v0.1 | v0.2 | 备注 |
+| --- | --- | --- | --- |
+| **Python** | 完整 SDK | 异步 + 流式 | 主推 |
+| **TypeScript** | — | 检索 + MCP | 前端 / Node.js |
+| **Go** | — | 高性能 Worker | 内部 Worker 实现 |
+| **Rust** | — | — | v0.3 评估 |
+
+---
+
+## 23. 错误模型与故障排查（Error Model & Troubleshooting）
+
+### 23.1 错误码体系
+
+所有 API 错误统一使用以下格式：
+
+```json
+{
+  "error": {
+    "code": "ENTITY_NOT_FOUND",
+    "message": "Entity 'pricing-2025' not found in workspace 'my-workspace' / collection 'kb'",
+    "details": {
+      "workspace": "my-workspace",
+      "collection": "kb",
+      "entity_id": "pricing-2025"
+    },
+    "request_id": "req_abc123",
+    "doc_url": "https://docs.vector-lake.dev/errors/ENTITY_NOT_FOUND"
+  }
+}
+```
+
+### 23.2 错误分类
+
+| 类别 | HTTP 状态码 | 前缀 | 示例 | 重试策略 |
+| --- | --- | --- | --- | --- |
+| **客户端错误** | 400 | `INVALID_*` | `INVALID_WORKSPACE`, `INVALID_FILTER` | 不可重试 |
+| **资源不存在** | 404 | `*_NOT_FOUND` | `ENTITY_NOT_FOUND`, `REP_NOT_FOUND` | 不可重试 |
+| **冲突** | 409 | `*_CONFLICT` | `ENTITY_ALREADY_EXISTS`, `PIPELINE_LOCKED` | 可重试（等锁释放） |
+| **服务端错误** | 500 | `INTERNAL_*` | `INTERNAL_ERROR`, `STORAGE_UNAVAILABLE` | 可重试（指数退避） |
+| **服务不可用** | 503 | `*_UNAVAILABLE` | `REDIS_UNAVAILABLE`, `OSS_UNAVAILABLE` | 可重试（指数退避） |
+| **Pipeline 错误** | 422 | `PIPELINE_*` | `PIPELINE_STEP_FAILED`, `PIPELINE_TIMEOUT` | 部分可重试 |
+| **索引错误** | 422 | `INDEX_*` | `INDEX_BUILD_FAILED`, `INDEX_STALE` | 可重试（重建） |
+
+### 23.3 完整错误码列表
+
+| 错误码 | HTTP | 含义 | 处理建议 |
+| --- | --- | --- | --- |
+| `INVALID_REQUEST` | 400 | 请求格式错误 | 检查 JSON schema |
+| `INVALID_WORKSPACE` | 400 | 工作空间名称非法 | 使用字母数字 + 连字符 |
+| `INVALID_ENTITY_ID` | 400 | Entity ID 格式非法 | 遵循命名规范 |
+| `INVALID_FILTER` | 400 | 检索过滤条件非法 | 检查 filter 语法 |
+| `ENTITY_NOT_FOUND` | 404 | Entity 不存在 | 确认 entity_id 和 workspace |
+| `REP_NOT_FOUND` | 404 | Representation 不存在 | 检查 rep_type 是否已生成 |
+| `INDEX_NOT_FOUND` | 404 | 索引不存在 | 触发 IndexPipeline 重建 |
+| `ENTITY_ALREADY_EXISTS` | 409 | Entity 已存在 | 使用不同 entity_id 或先删除 |
+| `PIPELINE_LOCKED` | 409 | Pipeline 正在执行中 | 等待当前执行完成 |
+| `PIPELINE_STEP_FAILED` | 422 | RepStep 执行失败 | 查看 worker 日志；检查输入文件 |
+| `PIPELINE_TIMEOUT` | 422 | Pipeline 执行超时 | 增加 step_timeout 配置 |
+| `INDEX_BUILD_FAILED` | 422 | 索引构建失败 | 检查 Rep 文件是否完整；重试 |
+| `INDEX_STALE` | 422 | 索引已过期（需重建） | 等待 Reconciler 自动重建 |
+| `STORAGE_UNAVAILABLE` | 503 | OSS / MinIO 不可用 | 检查 OSS 连接和凭证 |
+| `REDIS_UNAVAILABLE` | 503 | Redis 不可用 | 检查 Redis 连接 |
+| `RATE_LIMITED` | 429 | 请求频率超限 | 等待后重试（含 Retry-After） |
+| `INTERNAL_ERROR` | 500 | 内部错误 | 查看 request_id 对应日志 |
+
+### 23.4 故障排查指南
+
+#### 场景 1：Entity 创建后检索不到
+
+```text
+排查步骤：
+1. 确认 Entity 状态：vl entity get --collection kb --entity-id <id>
+   → 检查 status 是否为 active
+2. 确认 RepPipeline 完成：vl entity status --collection kb --entity-id <id>
+   → 检查 rep_status 中 canonical_md 是否为 active
+3. 确认 IndexPipeline 完成：vl entity status --collection kb --entity-id <id>
+   → 检查 index_status 中 semantic 是否为 built
+4. 如果 stuck：查看 Worker 日志
+   docker-compose logs worker | grep <entity_id>
+5. 手动触发：vl entity rebuild --collection kb --entity-id <id>
+```
+
+#### 场景 2：Pipeline 执行失败
+
+```text
+排查步骤：
+1. 查看失败原因：vl entity status --collection kb --entity-id <id>
+   → 检查 rep_status 中 last_error 字段
+2. 检查 Worker 日志：docker-compose logs worker | grep ERROR
+3. 常见原因：
+   - 源文件损坏：检查 source/original 文件完整性
+   - 模型调用失败：检查 Embedding V5 服务可用性
+   - 内存不足：Worker 内存是否达到上限
+   - 超时：增大 step_timeout 配置
+4. 手动重试：vl entity rebuild --collection kb --entity-id <id>
+```
+
+#### 场景 3：检索结果不准确
+
+```text
+排查步骤：
+1. 确认 Rep 内容质量：vl rep get --collection kb --entity-id <id> --rep-type canonical_md
+   → 检查提取内容是否准确
+2. 确认索引状态：vl entity status --collection kb --entity-id <id>
+   → 检查 index_status 是否为 built
+3. 调整检索策略：切换到不同 search_type（hybrid/semantic/lexical）
+4. 添加过滤条件：使用 labels / rep_types 缩小范围
+5. 查看血缘：vl lineage show --collection kb --entity-id <id>
+   → 确认是否使用了正确的 Representation
+```
+
+#### 场景 4：Reconciler 不工作
+
+```text
+排查步骤：
+1. 确认 Reconciler 运行：docker-compose ps reconciler
+2. 查看 Reconciler 日志：docker-compose logs reconciler
+3. 确认 Redis 锁：redis-cli GET "vl:reconciler:lock"
+4. 手动触发：vl reconcile --once
+5. 检查配置：reconciler.interval 是否正确
+```
+
+### 23.5 日志规范
+
+| 日志级别 | 使用场景 | 示例 |
+| --- | --- | --- |
+| **DEBUG** | 开发调试、Pipeline Step 详细执行 | `RepStep extract started for entity=pricing-2025` |
+| **INFO** | 正常业务流程 | `Entity pricing-2025 rep canonical_md published` |
+| **WARNING** | 可恢复的异常、重试 | `ETag mismatch for entity=pricing-2025, will reconcile` |
+| **ERROR** | Pipeline 失败、存储错误 | `RepStep vlm_md failed: API timeout after 30s` |
+| **CRITICAL** | 系统级故障 | `Redis connection lost, all workers blocked` |
+
+所有日志必须包含：`request_id`（API 请求）、`entity_id`（Entity 操作）、`pipeline_id`（Pipeline 操作）、`worker_id`（Worker 操作）。
+
+---
+
+## 24. 测试与质量策略（Testing & Quality Strategy）
+
+### 24.1 测试金字塔
+
+```text
+                  ┌──────┐
+                  │ E2E  │  完整 Pipeline 链路
+                  │  5%  │  (OSS → Entity → Rep → Index → Search)
+                  ├──────┤
+                  │ 集成  │  API + Redis + OSS + LanceDB
+                  │ 15%  │
+                  ├──────┤
+                  │ 单元  │  RepStep / IndexStep / 状态机 / 一致性
+                  │ 80%  │
+                  └──────┘
+```
+
+### 24.2 测试分类
+
+| 类型 | 覆盖目标 | 工具 | 运行频率 |
+| --- | --- | --- | --- |
+| **单元测试** | RepStep / IndexStep / 状态机 / 一致性校验 / 血缘推导 | pytest + pytest-cov | 每次 commit |
+| **集成测试** | API 端点 / Redis Streams / OSS 读写 / LanceDB 查询 | pytest + testcontainers | 每次 PR |
+| **E2E 测试** | 完整 Pipeline 链路（ingest → rep → index → search） | pytest + docker-compose | 每次 release |
+| **性能测试** | 检索延迟 / Pipeline 吞吐 / 并发 Worker | locust | 每次 release |
+| **兼容性测试** | OSS / S3 / MinIO 后端切换 | pytest + parametrize | 每次 PR |
+| **混沌测试** | Redis 宕机 / OSS 延迟 / Worker 崩溃恢复 | chaos-mesh（v0.2） | v0.2+ |
+
+### 24.3 单元测试示例
+
+```python
+# tests/unit/test_rep_step_extract.py
+def test_extract_step_pdf():
+    step = ExtractRepStep()
+    result = step.execute(
+        RepStepContext(
+            entity_id="test-001",
+            input_files={"raw": "testdata/sample.pdf"}
+        )
+    )
+    assert result.output_files["canonical_md"].exists()
+    assert result.output_files["canonical_md"].read_text().startswith("#")
+
+# tests/unit/test_consistency.py
+def test_rep_raw_consistency_etag_match():
+    """Phase 0: ETag 匹配 → 一致"""
+    result = consistency_checker.check_phase0(
+        entity_id="test-001",
+        raw_etag="abc123",
+        rep_etag="abc123"
+    )
+    assert result.status == "consistent"
+
+def test_rep_raw_consistency_etag_mismatch():
+    """Phase 0: ETag 不匹配 → 触发 Phase 1"""
+    result = consistency_checker.check_phase0(
+        entity_id="test-001",
+        raw_etag="abc123",
+        rep_etag="def456"
+    )
+    assert result.status == "inconsistent"
+    assert result.next_action == "phase1"
+
+# tests/unit/test_lineage.py
+def test_lineage_from_directory():
+    lineage = LineageResolver.resolve(
+        entity_path="vector-lake/ws/kb/entity-001/"
+    )
+    assert lineage.edges == [
+        ("source/original", "extract/canonical_md"),
+        ("extract/canonical_md", "compile/mind_map"),
+        ("extract/canonical_md", "compile/summary"),
+    ]
+```
+
+### 24.4 集成测试示例
+
+```python
+# tests/integration/test_api_search.py
+@pytest.mark.integration
+async def test_search_hybrid():
+    async with VectorLakeClient(base_url="http://localhost:8080") as client:
+        # 创建 Entity 并等待 Pipeline 完成
+        entity = await client.entities.create(...)
+        await wait_for_pipeline(entity.id, "canonical_md", timeout=60)
+
+        # 检索
+        results = await client.search(
+            query="定价策略",
+            workspace="test-ws",
+            collection="test-kb",
+            top_k=5
+        )
+        assert len(results.items) > 0
+        assert results.items[0].entity_id == entity.id
+
+# tests/integration/test_redis_streams.py
+@pytest.mark.integration
+async def test_xadd_xread():
+    """验证 Redis Streams 消息传递"""
+    await redis.xadd("vl:rep_queue", {"entity_id": "test-001", "pipeline_id": "canonical_md"})
+    messages = await redis.xread({"vl:rep_queue": "0"}, count=1)
+    assert len(messages) == 1
+```
+
+### 24.5 E2E 测试场景
+
+| 场景 | 描述 | 预期结果 |
+| --- | --- | --- |
+| **S1: 文档完整链路** | PDF → canonical_md → chunk → embed → search | 检索命中；snippet 正确；provenance 可追溯 |
+| **S2: 图片完整链路** | PNG → page_image → ocr_text → chunk → embed → search | 跨模态检索（文本→图片）命中 |
+| **S3: 音频完整链路** | MP3 → audio_segment → transcript → chunk → embed → search | 音频内容可检索 |
+| **S4: 一致性修复** | 修改 raw → Reconciler 检测 → Rep 重建 → Index 重建 | 两步自动修复完成 |
+| **S5: 软删除** | 删除 Entity → 30 天内仍可恢复 → 30 天后物理删除 | 数据按预期保留和清除 |
+| **S6: Pipeline 失败恢复** | RepStep 调用失败 → 重试 → 最终成功 | 指数退避重试；不超过 3 次 |
+| **S7: Wiki Projector** | Entity → RepPipeline → WikiProjector → ~/wiki/*.md | Wiki 文件正确生成；wikilink 有效 |
+
+### 24.6 CI/CD 流程
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install ruff mypy
+      - run: ruff check .
+      - run: mypy src/
+
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/unit/ -v --cov=src/ --cov-report=xml
+
+  integration-test:
+    needs: unit-test
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+      minio:
+        image: minio/minio
+        env: {MINIO_ROOT_USER: minioadmin, MINIO_ROOT_PASSWORD: minioadmin}
+        ports: ["9000:9000"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/integration/ -v -m "not slow"
+```
+
+### 24.7 质量门禁
+
+| 指标 | v0.1 目标 | v0.2 目标 |
+| --- | --- | --- |
+| **单元测试覆盖率** | ≥ 80% | ≥ 90% |
+| **集成测试覆盖率** | ≥ 60% | ≥ 75% |
+| **类型注解覆盖率** | ≥ 90%（mypy strict） | ≥ 95% |
+| **Lint 零告警** | ruff check 0 | ruff check 0 |
+| **API 响应 P99** | < 500ms（检索）/ < 2s（Entity CRUD） | < 200ms / < 1s |
+| **Pipeline 吞吐** | 100 Entity/小时/Worker | 500 Entity/小时/Worker |
+
+---
+
+## 25. 版本策略与兼容性承诺（Version Policy & Compatibility）
+
+### 25.1 版本号规范
+
+遵循 [Semantic Versioning 2.0](https://semver.org/)：
+
+```text
+MAJOR.MINOR.PATCH
+
+MAJOR — 不兼容的 API 变更
+MINOR — 向后兼容的新功能
+PATCH — 向后兼容的 Bug 修复
+```
+
+### 25.2 版本生命周期
+
+| 版本 | 状态 | 支持周期 | 说明 |
+| --- | --- | --- | --- |
+| **v0.1.x** | 开发预览 | 每 2 周发布 patch | 核心链路可用；API 可能变更 |
+| **v0.2.x** | Beta | 每月发布 minor | 新增 Projector / 血缘可视化 / Dagster 编排 |
+| **v0.3.x** | RC | 每季发布 minor | Merkle 树 / lakeFS 集成 / 多租户 |
+| **v1.0.0** | GA | 长期支持（LTS） | API 稳定；向后兼容保证 |
+
+### 25.3 向后兼容性承诺
+
+**从 v1.0.0 开始**：
+
+| 层面 | 兼容性承诺 | 例外 |
+| --- | --- | --- |
+| **REST API** | 不删除字段；新增字段可选；废弃字段标记 `@deprecated` 至少保留 2 个 MINOR 版本 | 安全漏洞修复 |
+| **Python SDK** | 公共方法签名不变；新增可选参数；废弃方法标记 `DeprecationWarning` | — |
+| **MCP 协议** | 工具名称不变；新增工具不影响已有工具；参数新增可选 | — |
+| **OSS 数据格式** | Entity Tag 字段名不变；Rep 目录结构不变；Lance 表 schema 新增列可选 | — |
+| **配置文件** | 新增 key 可选；已有 key 含义不变；废弃 key 标记 `@deprecated` | — |
+
+**v0.x 期间**：不提供向后兼容性保证。API / 数据格式 / 配置可能在任何版本变更。
+
+### 25.4 破坏性变更流程（v1.0+）
+
+```text
+1. 在 MINOR 版本中标记 @deprecated
+   → 文档说明替代方案
+   → 运行时 DeprecationWarning
+2. 等待至少 2 个 MINOR 版本
+3. 在下一个 MAJOR 版本中移除
+   → CHANGELOG 明确标注
+   → 迁移指南（MIGRATION.md）
+```
+
+### 25.5 数据格式演进
+
+| 数据层 | 演进策略 | 迁移方式 |
+| --- | --- | --- |
+| **Entity Tag schema** | 新增字段高位预留（7/10 已用）；v0.2 新增 3 个字段 | 新增字段无需迁移；旧数据默认值 |
+| **Rep 目录结构** | 新增 rep_type 目录；不修改已有目录名 | 无需迁移 |
+| **LanceDB schema** | Lance 原生支持 schema evolution（add column） | 自动；新增列为 NULL |
+| **Pipeline 注册表** | 新增 RepStep/IndexStep 注册；不改已有接口 | 无需迁移 |
+| **Redis Streams 消息格式** | 新增字段可选；不删已有字段 | 消费者兼容新旧格式 |
+
+### 25.6 CHANGELOG 规范
+
+遵循 [Keep a Changelog](https://keepachangelog.com/) 格式：
+
+```markdown
+# Changelog
+
+## [0.1.1] - 2025-xx-xx
+
+### Added
+- 新增 `vl entity status` CLI 命令
+
+### Fixed
+- 修复 ETag 比对时 OSS 返回编码不一致的问题
+
+### Changed
+- Worker 默认并发数从 2 改为 4
+
+## [0.1.0] - 2025-xx-xx
+
+### Added
+- 初始版本：Entity CRUD + RepPipeline + IndexPipeline + Reconciler
+```
+
+### 25.7 升级指南
+
+```bash
+# 升级到新版本
+pip install --upgrade vector-lake==0.2.0
+
+# 检查配置兼容性
+vector-lake config validate
+
+# 运行数据迁移（如有）
+vector-lake migrate --from 0.1.0 --to 0.2.0 --dry-run
+vector-lake migrate --from 0.1.0 --to 0.2.0
+
+# 验证升级
+vector-lake health
+```
 
 ---
 
