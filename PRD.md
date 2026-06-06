@@ -639,7 +639,7 @@ Entity 不是数据库行，而是**一个聚合根**，把以下资源聚合在
 
 ### 4.2 Representation（认知视角）
 
-**核心洞察**：**OSS 路径就是 Representation 的唯一身份标识（Primary Key）**。不需要 `representation_id`、`derived_from`、`derived_chain` 等字段——这些信息都可以从路径 + OSS Tag 实时推导出来。
+**核心洞察**：**OSS 路径就是 Representation 的唯一身份标识（Primary Key）**。继承关系从 RepStep 的输入声明自动推导——每个 Rep 知道自己的 `parent_reps`，形成继承树，叶节点就是最终呈现。
 
 ```json
 {
@@ -661,8 +661,8 @@ Entity 不是数据库行，而是**一个聚合根**，把以下资源聚合在
 **关键设计**：
 - **路径即身份**：`oss_path` 是 Representation 的全局唯一 PK。两个不同路径 = 两个不同 Representation。
 - **`rep_type` 是路径后缀的语义化**：从 `canonical.md` / `ocr.md` / `vlm_extracted.md` 等路径即可识别类型，OSS Tag 冗余存储加速过滤。
-- **没有 `derived_from` 字段**：血缘关系不存于任何字段，从**路径前缀**和**命名约定**实时推导（见 §4.6 Lineage 实时推导）。
-- **没有 `derived_chain` 字段**：完整溯源链通过路径前缀树 + 命名约定的递归查询实时组装。
+- **Representation 有继承关系**：每个 Rep 声明 `parent_reps`（从哪个/哪些 Rep 派生），形成继承树。叶节点 Rep 就是最终呈现。继承关系从 RepStep 的 `required_input_reps` + `optional_input_reps` 自动推导，无需手动维护。
+- **一个 Rep 就是一个最终呈现**：每个 Rep 都是完整的、可独立呈现的认知视角。继承关系保证内容可追溯，但不影响 Rep 的独立呈现能力。
 
 **路径结构（Representation 身份的根基）**：
 
