@@ -770,7 +770,410 @@ LiveVectorLake 的核心卖点就是"point-in-time retrieval"。对于合规/审
 
 ---
 
-## 八、参考资料
+## 八、成熟项目参照设计与对比
+
+> **评审视角**：借鉴 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖/表格式项目的元数据管理设计，评估当前 PRD 元数据架构的优化空间。
+>
+> 这 4 个项目都已通过生产级验证，其元数据设计原则是行业的"标准答案"。
+
+### 8.1 4 个项目的元数据架构对比
+
+| 项目 | 元数据存储 | 原子性保证 | 版本管理 | 适用场景 | 关键创新 |
+|---|---|---|---|---|---|
+| **Delta Lake** | `_delta_log/00000000000000000000.json` 序列 + Parquet checkpoint | 乐观并发控制 + Conditional Put（`PUT-if-absent`） | 单调递增 version + Time Travel | 高吞吐批处理 + Spark/Databricks 生态 | JSON 事务日志 + Checkpoint 加速 |
+| **Apache Iceberg** | `metadata.json` + Manifest List (Avro) + Manifest (Avro) + Data File | 原子指针交换（compare-and-swap on catalog） | Snapshot + Time Travel | 跨引擎互操作（Spark/Trino/Flink）+ 湖仓 | 三层元数据 + 列级统计 + 隐藏分区 |
+| **lakeFS** | Graveler Ranges + Meta-Range（Merkle 树）+ Object Store pointer | 零拷贝分支 + 原子提交 | Git-like commit/branch/merge/tag | 数据湖版本控制 + CI/CD for data | 2 层 Merkle 树 + 不可变 SSTable |
+| **Lance** | Manifest (Protobuf) + Data Fragments + Index Sections | MVCC + 原子 Manifest 替换 | 单调递增 version + Time Travel | ML/AI 场景 + 多模态 RAG | 两维存储 + 一等 Index + External Manifest Store |
+
+### 8.2 核心设计模式提取
+
+#### 模式 1：事务日志（Transaction Log）
+
+**Delta Lake 的实现**：
+```
+_delta_log/
+  00000000000000000000.json    ← 初始表结构
+  00000000000000000001.json    ← 第一次 commit（add file）
+  00000000000000000002.json    ← 第二次 commit（remove + add）
+  ...
+  00000000000000000010.checkpoint.parquet  ← 10 次 commit 后聚合
+```
+
+**关键特征**：
+- 每个 commit = 一个原子 JSON 文件
+- 写入流程：先写数据文件 → 再写 JSON commit（Conditional PUT）
+- 读取流程：从最近 checkpoint 重放 JSON commits → 重建当前状态
+- CRC 文件校验日志完整性（Delta 3.x 已弃用）
+- 优化：日志压缩（compacted.json）、Checkpoint Parquet
+
+**借鉴价值**：
+- 当前 PRD 的"零持久化"完全依赖 OSS Tag + 路径，没有事务日志概念
+- 一旦 OSS Tag 丢失，**没有任何线索重建变更历史**
+- 应该引入 append-only 事务日志，**记录所有 Entity/Rep/Index 状态变更**
+
+#### 模式 2：原子指针交换（Atomic Pointer Swap）
+
+**Iceberg 的实现**：
+```text
+Step 1: Write Data Files (Parquet)
+Step 2: Create Manifest Entries
+Step 3: Create/Update Manifest Files (Avro)
+Step 4: Create Manifest List (Avro)
+Step 5: Create New metadata.json (new snapshot)
+Step 6: Atomic Commit (compare-and-swap on metadata location pointer)
+        ↑ 这一步是 ACID 的核心
+        ↑ Before: readers see old snapshot
+        ↑ After: readers see new snapshot
+        ↑ No in-between state
+```
+
+**关键特征**：
+- Catalog 保存一个指针（"当前 metadata.json 在哪里"）
+- 写入新 metadata.json 后，原子交换指针
+- 依赖 Catalog 的 compare-and-swap 语义（`if-match`）
+- OSS/S3 的实现：`CopyObject` + `if-match etag` 或 `PUT-if-absent`
+
+**借鉴价值**：
+- 当前 PRD 的"先写文件再打 Tag"是两步操作，**没有原子指针交换**
+- 改进方案：在每个 Entity 目录加 `_current` 指针文件，写入协议改为"写新 manifest → 原子交换 _current"
+
+#### 模式 3：三层元数据（Three-tier Metadata）
+
+**Iceberg 的实现**：
+```text
+Catalog pointer → metadata.json (v1, v2, v3, ...)
+                    ↓
+                    Manifest List (per snapshot)
+                    ↓
+                    Manifest Files (per partition, with column stats)
+                    ↓
+                    Data Files (Parquet)
+```
+
+**关键特征**：
+- 三层递进：Catalog → metadata.json → Manifest List → Manifest → Data File
+- 每层有不同作用：版本管理 / snapshot 索引 / 文件清单 + 统计 / 实际数据
+- Manifest 包含列级统计（min/max/null_count），支持分区裁剪和文件裁剪
+- 大规模数据集下也能 O(1) 找到目标文件
+
+**借鉴价值**：
+- 当前 PRD 是单层：Entity 目录 → Rep 文件 → Lance 表，**没有中间索引层**
+- 100K+ Entity 规模下，全量扫描 prefix 会很慢
+- 应该引入"Entity Manifest"中间层（参考 Iceberg 的 Manifest List），包含 Entity 级别的统计信息
+
+#### 模式 4：Merkle 树 + Ranges（lakeFS Graveler）
+
+**lakeFS 的实现**：
+```text
+Commit
+  └─ Meta-Range（内容寻址，SSTable 格式）
+       └─ Ranges（按 key 范围分片）
+            └─ ValueRecord（key, identity=sha256, value=metadata）
+```
+
+**关键特征**：
+- 2 层 Merkle 树：Meta-Range → Ranges
+- 内容寻址：ValueRecord 的 identity = sha256(value)
+- Commit 之间复用未修改的 Ranges（零拷贝分支）
+- Diff 算法 O(diff_size) 而非 O(total_size)
+- 不可变 SSTable 格式：一旦写入，永不修改
+
+**借鉴价值**：
+- 当前 PRD 的"血缘"是从目录层级推导的，**每次扫描都要重新计算**
+- 应该把血缘关系**显式持久化**为内容寻址的 Merkle 树结构
+- 大规模场景下（100K+ Entity），血缘计算效率可提升 10-100x
+
+#### 模式 5：MVCC + 不可变 Manifest（Delta + Iceberg + Lance 共有）
+
+**Lance 的实现**：
+```protobuf
+message Manifest {
+  repeated Field fields = 1;        // 完整 schema（包括嵌套字段）
+  map<string, bytes> schema_metadata = 5;
+  repeated DataFragment fragments = 2;  // 数据片段
+  uint64 version = 3;               // 单调递增
+  uint64 version_aux_data = 4;      // 可选辅助数据
+  WriterVersion writer_version = ...;
+}
+```
+
+**关键特征**：
+- 每次写入产生**新**的 Manifest，旧 Manifest 保留
+- 原子协议：先写 Manifest → 再 atomic swap pointer
+- 读者看到 consistent snapshot（基于 version）
+- Time Travel：通过指定旧 version 读取历史
+- 冲突检测：基于 version 号的 optimistic concurrency
+
+**借鉴价值**：
+- 当前 PRD 的 Lance 数据集没有显式的 Manifest 概念（依赖 Lance 内部）
+- 应该让 Entity-level Manifest 显式化，作为 Entity 的"Truth of State"
+- Rep + Index 的状态变更统一记录到 Entity Manifest
+
+#### 模式 6：Schema Evolution（Delta + Iceberg + Lance 共有）
+
+**三个项目的共同设计**：
+- Schema 是 metadata 的一部分，记录在事务日志 / metadata.json / Manifest
+- 字段有唯一 field ID（Iceberg 独有）
+- 支持：加列、删列、改列类型、改列顺序
+- 兼容性规则：向后兼容（读旧 schema 读新数据）、向前兼容（读新 schema 读旧数据）
+- Schema 检查点：定期冻结 schema snapshot 加速查询
+
+**借鉴价值**：
+- 当前 PRD 的"§15 NFR R4 Lance schema 演进"提到"所有表带 schema_version，变更走 migration"
+- 但 Entity-level schema（entity_type、rep_type 集合）的演进规则未定义
+- 应该引入 Entity-level schema versioning，明确 Entity 字段的可演进规则
+
+### 8.3 当前 PRD 元数据架构的问题
+
+基于上述 6 个成熟模式，对比当前 PRD：
+
+| 设计模式 | 当前 PRD | 问题 | 严重度 |
+|---|---|---|---|
+| **事务日志** | ❌ 无 | 状态变更历史不可追溯；Tag 丢失后无法重建变更序列 | Must Fix |
+| **原子指针交换** | ❌ 无 | "先写文件再打 Tag"是两步操作；中间态导致不一致 | Must Fix |
+| **三层元数据** | ⚠️ 单层 | Entity → Rep → Lance，缺中间索引层；大规模扫描慢 | Should Fix |
+| **Merkle 树** | ❌ 无 | 血缘每次重新计算；无法复用历史 | Should Fix |
+| **MVCC + 不可变 Manifest** | ⚠️ 部分 | Lance 内部有 MVCC，但 Entity 状态没有 Manifest 显式化 | Should Fix |
+| **Schema Evolution** | ⚠️ 部分 | Lance 表 schema 有，但 Entity/Rep schema 演进未定义 | Should Fix |
+| **Checkpoint / Compaction** | ❌ 无 | 没有事务日志压缩机制；metadata 增长无界 | Should Fix |
+| **Catalog 抽象** | ❌ 无 | 没有 Catalog 概念；状态机分散在 OSS Tag | Should Fix |
+
+### 8.4 优化设计建议（参照成熟项目）
+
+#### 优化 1：引入事务日志（参考 Delta Lake）
+
+```text
+vector-lake/{ws}/{col}/{entity_id}/_log/
+  000000000000.json    ← 初始 Rep 状态
+  000000000001.json    ← "render_page" 产出 page_image
+  000000000002.json    ← "ocr" 产出 ocr_text
+  000000000003.json    ← raw update → 级联标 stale
+  000000000004.json    ← "ocr" 重建
+  ...
+  000000000100.checkpoint.jsonl  ← 100 次 commit 后聚合（参考 Delta）
+```
+
+**事务日志格式**（每行一个 JSON action）：
+
+```json
+{"add": {"path": "extract/canonical.md", "rep_type": "canonical_md", "content_hash": "sha256:abc", "size": 12345, "tags": {...}}}
+{"remove": {"path": "recognize/ocr_text.md"}}
+{"stale": {"rep_type": "ocr_text", "reason": "raw_update", "upstream_hash": "sha256:def"}}
+{"index_built": {"index_type": "semantic", "build_from_hash": "sha256:combined"}}
+{"checkpoint": {"version": 100}}
+```
+
+**借鉴价值**：
+- 完整的变更历史可回放
+- 灾难恢复时，从 checkpoint + 日志重放 = 完整重建
+- 时间旅行：读 `version=N` = 回到 Entity 的某个历史状态
+
+#### 优化 2：原子指针交换（参考 Iceberg）
+
+**当前问题**：
+```python
+# 旧协议（两步，非原子）
+1. write Rep file to OSS      ← 文件存在
+2. put_object_tagging(rep)    ← Tag 写入
+   → 中间态：文件存在但 Tag 缺失
+   → 此时崩溃 → Reconciler 需要检测 + 修复
+```
+
+**新协议**（基于 Iceberg）：
+```python
+# 新协议（基于 _current 指针的原子交换）
+1. write new manifest to /_log/000000000101.json  (Conditional PUT, if-match)
+2. write Rep file to /extract/canonical.md
+3. atomic swap: write /_current with new pointer
+   # 写入协议：PutObject with if-match on _current.etag
+   # 成功 = 新版本生效；失败 = 旧版本继续生效，下次重试
+```
+
+**关键改造**：
+- 每个 Entity 目录增加 `_current` 指针文件（指向当前 manifest 位置）
+- 写入协议改为"先写 manifest → 写 Rep 文件 → 原子交换 _current"
+- 读取时：先读 `_current` → 拿到当前 manifest → 知道有哪些 Rep
+
+#### 优化 3：三层元数据（参考 Iceberg）
+
+```text
+Lake 目录
+  ├─ _catalog/                         ← L0: 全局 Catalog（workspace 级）
+  │   └─ {collection_id}.json          ← 指向 _current 指针位置
+  │
+  └─ {entity_id}/
+      ├─ _current                      ← L1: Entity 当前状态指针
+      │
+      ├─ _log/                         ← L2: 事务日志
+      │   ├─ 000000000000.json         ← append-only
+      │   ├─ 000000000001.json
+      │   └─ 000000000100.checkpoint.jsonl
+      │
+      ├─ _manifest/                    ← L3: 快速查找索引（参考 Iceberg Manifest）
+      │   ├─ reps.jsonl                ← 所有 Rep 列表 + 列级统计
+      │   ├─ indexes.jsonl             ← 所有 Index 列表
+      │   └─ edges.jsonl               ← 所有 Edge 列表
+      │
+      ├─ source/                       ← 实际数据
+      ├─ extract/
+      ├─ recognize/
+      └─ _index/
+```
+
+**L3 _manifest 作用**：
+- 替代"每次扫描 prefix"，直接读 `_manifest/reps.jsonl` 拿到所有 Rep 列表
+- 包含列级统计：rep_type / status / content_hash / size / mtime
+- 写入协议：每次 Rep 变更追加一行到 `reps.jsonl`（append-only）
+- 定期 compaction（小文件合并）
+
+**优势**：
+- O(1) 拿到 Entity 状态（不需要 LIST prefix）
+- 大规模场景下（100K+ Entity）扫描时间从分钟级降到秒级
+- 灾难恢复：`_manifest` + `_log` 即可重建整个 Entity 状态
+
+#### 优化 4：Merkle 树血缘（参考 lakeFS Graveler）
+
+```text
+Lineage Merkle Tree
+  └─ Root (sha256)
+       ├─ rep:raw (sha256 of Rep's content_hash)
+       ├─ rep:canonical_md (sha256)
+       │    └─ upstream: raw (sha256)
+       └─ rep:ocr_text (sha256)
+            └─ upstream: page_image (sha256)
+```
+
+**优势**：
+- 血缘关系**显式持久化**为内容寻址
+- Diff 算法 O(diff_size) 而非 O(total_size)
+- 跨 Entity 血缘追踪更高效
+- 支持"零拷贝" Entity 快照（复用未修改的 Rep）
+
+#### 优化 5：Lance Manifest 显式化（参考 Lance spec）
+
+**当前**：PRD 把 `index_status` / `index_built_from_hash` 存在 Lance dataset custom metadata（§5.10.2）
+
+**改进**：
+- Entity 级 Manifest（`_manifest/reps.jsonl`）作为 Entity 的 Truth of State
+- Lance dataset custom metadata 仅作为快速缓存
+- Manifest 写入协议：先写 Lance → 再写 `_manifest`（如果失败可重建）
+
+#### 优化 6：Schema Evolution 规则（参考 Delta + Iceberg）
+
+**Entity Schema 演进规则**：
+```text
+v0.1 初始 Entity Schema
+  ↓ 加 entity_type: video
+v0.2 Schema Evolution
+  → 旧 Entity 不受影响（向后兼容）
+  → 新 Entity 可用新 entity_type
+  → Manifest 记录 schema_version
+```
+
+**Rep Schema 演进规则**：
+```text
+v0.1 Rep Tag: 7 个字段
+  ↓ 加 sync_state 字段（v0.2 引入 Projector 需要）
+v0.2 Rep Schema Evolution
+  → 旧 Rep Tag 自动补全默认 sync_state=ready
+  → Manifest 记录 schema_version
+  → 旧读卡器忽略未知字段
+```
+
+### 8.5 完整优化后的元数据架构
+
+```text
+Lake 目录
+│
+├─ _catalog/                                  ← 全局 Catalog（workspace 级）
+│   └─ {collection_id}.json → 指向 _current 指针
+│
+└─ {entity_id}/
+    │
+    ├─ _current                               ← Entity 当前状态指针（原子交换）
+    │
+    ├─ _log/                                  ← 事务日志（参考 Delta _delta_log）
+    │   ├─ 000000000000.json
+    │   ├─ 000000000001.json
+    │   └─ 000000000100.checkpoint.jsonl     ← 周期 Checkpoint（参考 Delta）
+    │
+    ├─ _manifest/                             ← 快速查找索引（参考 Iceberg Manifest）
+    │   ├─ entity.json                        ← Entity 元数据（rag_status, labels, version）
+    │   ├─ reps.jsonl                         ← 所有 Rep 列表 + 统计
+    │   ├─ indexes.jsonl                      ← 所有 Index 列表
+    │   ├─ edges.jsonl                        ← 所有 Edge 列表
+    │   └─ schema_version                     ← 当前 schema 版本
+    │
+    ├─ source/                                ← 实际数据
+    │   └── original
+    ├─ extract/
+    │   └── canonical.md
+    ├─ recognize/
+    │   └── ocr_text.md
+    └─ _index/
+        └─ representations.lance/
+```
+
+**写入协议**（新）：
+```text
+1. write Rep file to /extract/canonical.md
+2. write action to /_log/000000000101.json (append)
+   {"add": {"path": "extract/canonical.md", ...}}
+3. update /_manifest/reps.jsonl (append row)
+4. atomic swap /_current → 指向 /_log/000000000101.json
+   PutObject with if-match on _current.etag
+   - 成功：新版本生效
+   - 失败：旧版本继续生效，下次重试
+```
+
+**读取协议**（新）：
+```text
+1. 读 /_current → 拿到当前 manifest 位置
+2. 读 manifest 位置 → 拿到 Entity 完整状态
+3. 读具体 Rep 文件
+```
+
+**Checkpoint 协议**（参考 Delta）：
+```text
+每 100 次 commit 触发一次 Checkpoint：
+1. 重放最近 100 次 commit
+2. 合并为单一 checkpoint.jsonl（包含所有 active Rep + Index + Edge）
+3. 写 /_log/000000000100.checkpoint.jsonl
+4. atomic swap /_current → 指向 checkpoint
+   - 后续读从 checkpoint 开始
+   - 历史 commit 保留（用于 time travel / 灾难恢复）
+```
+
+### 8.6 优化前后对比
+
+| 维度 | 优化前 | 优化后 | 借鉴项目 |
+|---|---|---|---|
+| **变更历史** | 无（只有当前 Tag） | 完整 append-only 事务日志 | Delta Lake |
+| **原子性** | 2 步操作（写文件 + 打 Tag） | 4 步操作（含 manifest + 原子指针） | Iceberg |
+| **大规模扫描** | 全量 LIST prefix | 读 `_manifest/reps.jsonl` O(1) | Iceberg |
+| **灾难恢复** | 仅依赖 `.entity_manifest.json` + Tag | 完整事务日志 + Checkpoint | Delta + Iceberg |
+| **Time Travel** | 不支持 | 通过 manifest version 回放 | Delta + Iceberg + Lance |
+| **血缘** | 每次重新计算 | Merkle 树内容寻址 | lakeFS |
+| **Schema 演进** | 未定义 | 显式 schema_version + 兼容性规则 | Delta + Iceberg + Lance |
+| **零拷贝快照** | 不支持 | Merkle 树复用未修改 Rep | lakeFS |
+| **实现复杂度** | 低 | 中（需管理 _log / _manifest / _current） | — |
+
+### 8.7 实施路径建议
+
+| 阶段 | 内容 | 优先级 |
+|---|---|---|
+| **v0.1（当前）** | `.entity_manifest.json` + `.version_log.jsonl`（已实现） | ✅ |
+| **v0.2 阶段 1** | 引入 `_current` 指针 + 原子指针交换协议 | 高 |
+| **v0.2 阶段 2** | 引入 `_log/` 事务日志（add/remove/stale actions） | 高 |
+| **v0.2 阶段 3** | 引入 `_manifest/` 快速查找索引（reps.jsonl / indexes.jsonl） | 中 |
+| **v0.2 阶段 4** | Checkpoint 机制（每 N 次 commit 合并） | 中 |
+| **v0.2 阶段 5** | Merkle 树血缘（Content-addressable Ranges） | 低 |
+| **v0.3** | Schema Evolution 规则 | 中 |
+| **v0.3** | Time Travel API | 低 |
+
+---
+
+## 九、参考资料
 
 | 来源 | 关键洞察 |
 | --- | --- |

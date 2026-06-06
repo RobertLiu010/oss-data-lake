@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25。
 
 ---
 
@@ -2448,6 +2448,55 @@ raw 更新 (content_hash 变化)
 | `GET /lineage/{entity_id}/impact?rep_type=page_image` | 影响分析：如果 page_image 变了，哪些下游需要 stale + 重建 |
 | `POST /lineage/{entity_id}/cascade` | 手动触发级联：将指定 rep 的所有下游标 stale 并触发重建 |
 
+#### 4.6.x v0.2 三层元数据架构预览（参照成熟项目）
+
+> **设计目标**：v0.2 在 v0.1 "准零持久化"基础上，引入 Delta Lake / Iceberg / lakeFS / Lance 4 个成熟项目验证过的元数据架构：事务日志 + 原子指针 + 快速索引 + Merkle 血缘。详见 §5.12.9 - §5.12.13。
+>
+> **v0.1 策略** vs **v0.2 策略**：
+
+| 维度 | v0.1 策略 | v0.2 策略 | 借鉴项目 |
+|---|---|---|---|
+| **变更历史** | `.version_log.jsonl`（仅 Entity 版本） | `_log/` 事务日志（所有 Rep/Index/Edge 变更） | Delta Lake |
+| **原子性** | 先写文件再打 Tag（两步） | `_current` 指针原子交换（compare-and-swap） | Apache Iceberg |
+| **状态查询** | LIST prefix + Tag 解析 | 读 `_manifest/reps.jsonl`（O(1)） | Apache Iceberg |
+| **血缘** | 从目录层级推导（每次重算） | Merkle 树内容寻址（O(diff_size) diff） | lakeFS |
+| **Schema 演进** | 未定义 | 显式 schema_version + 兼容性规则 | Delta + Iceberg + Lance |
+| **Time Travel** | 不支持 | 通过 `_log/N.json` 回放 | Delta + Iceberg + Lance |
+| **零拷贝快照** | 不支持 | Merkle 树复用未修改 Rep | lakeFS |
+| **灾难恢复** | sidecar + Tag 重建 | checkpoint + 日志重放 | Delta + Iceberg |
+
+**v0.1 → v0.2 演进路径**：
+
+```text
+v0.1（当前）
+  ├─ OSS Object Tagging (Entity Tag + Rep Tag)
+  ├─ .entity_manifest.json + .version_log.jsonl
+  └─ Reconciler Phase 0/1/2/3
+       ↓ v0.2 阶段 1
+v0.2 阶段 1
+  ├─ 新增 _current 指针
+  ├─ 写入协议升级为"写文件 → 写日志 → 原子交换 _current"
+  └─ 读取协议升级为"读 _current → 读 _manifest"
+       ↓ v0.2 阶段 2
+v0.2 阶段 2
+  ├─ 完整 _log/ 事务日志（add/remove/stale/index_built actions）
+  └─ Time Travel API（GET /v1/entities/{id}/at?version=N）
+       ↓ v0.2 阶段 3
+v0.2 阶段 3
+  ├─ _manifest/ 快速索引（reps.jsonl / indexes.jsonl / edges.jsonl）
+  └─ 替代"全量 LIST prefix" → 大规模场景秒级响应
+       ↓ v0.2 阶段 4
+v0.2 阶段 4
+  └─ Checkpoint 机制（每 100 次 commit 合并，参考 Delta）
+       ↓ v0.3
+v0.3
+  ├─ Merkle 树血缘（Content-addressable Ranges）
+  ├─ Schema Evolution 规则
+  └─ 零拷贝 Entity 快照
+```
+
+> **设计哲学**：v0.1 优先解决"能跑 + 基础可靠性"（sidecar + Reconciler），v0.2 引入"行业标准 ACID"（事务日志 + 原子指针），v0.3 引入"高级能力"（Merkle + Schema Evolution + Time Travel）。这与 Delta Lake / Iceberg / lakeFS 的演进路径一致。
+
 ---
 
 ## 5. 状态模型（分层）
@@ -2711,6 +2760,8 @@ lance_dataset.update_metadata({
 - Lance 自带 version 管理，metadata 跟随 version 自动备份
 - 避免在 OSS 端为每个 Index 创建额外的元数据文件
 
+> **v0.2 升级（参照 Lance Manifest + Delta + Iceberg）**：Entity 级 Manifest（`_manifest/indexes.jsonl`，见 §5.12.12）作为 Index Status 的 **Truth of State**，Lance dataset custom metadata 仅作为快速缓存。Manifest 写入协议：先写 Lance → 再写 `_manifest`（如果失败可重建，从 Lance 自检恢复）。
+
 #### 5.10.3 Index Status 联动
 
 | 触发事件 | 联动动作 |
@@ -2919,6 +2970,213 @@ v0.1 策略：全量扫描（简单可靠），但增加 reconcile_entities_scan
   先写 .meta.json（Conditional Write if-match etag）→ 再写 Tag
   Tag 写入失败不影响 .meta.json（下次 Reconciler 从 .meta.json 重建 Tag）
 ```
+
+#### 5.12.9 成熟项目参照：事务日志 + 原子指针交换（v0.2）
+
+> **设计目标**：解决 v0.1 元数据架构在"原子性、变更历史、大规模扫描"上的不足。参照 **Delta Lake**、**Apache Iceberg**、**lakeFS**、**Lance** 4 个成熟数据湖项目的设计。
+
+**核心改造**：引入 **`_current` 指针 + `_log/` 事务日志 + `_manifest/` 快速索引** 三个组件。
+
+```text
+{entity_id}/
+  ├─ _current                                ← L1: 当前状态指针（原子交换）
+  │                                            内容：{ "log_offset": "/_log/000000000101.json",
+  │                                                   "manifest_version": 101,
+  │                                                   "schema_version": 2 }
+  │
+  ├─ _log/                                   ← L2: 事务日志（参考 Delta _delta_log）
+  │   ├─ 000000000000.json                   ← append-only 提交日志
+  │   ├─ 000000000001.json
+  │   ├─ ...
+  │   └─ 000000000100.checkpoint.jsonl       ← 周期 Checkpoint（参考 Delta）
+  │
+  ├─ _manifest/                              ← L3: 快速查找索引（参考 Iceberg Manifest）
+  │   ├─ entity.json                         ← Entity 元数据（rag_status, labels, version, schema_version）
+  │   ├─ reps.jsonl                          ← 所有 Rep 列表 + 列级统计（替代"每次 LIST prefix"）
+  │   ├─ indexes.jsonl                       ← 所有 Index 列表
+  │   └─ edges.jsonl                         ← 所有 Edge 列表
+  │
+  ├─ source/                                 ← 实际数据
+  └─ ...
+```
+
+**事务日志格式**（每行一个 JSON action，参考 Delta Lake）：
+
+```json
+{"txn_id": 101, "ts": "2026-06-06T10:00:00Z", "action": "add",      "rep": {"path": "extract/canonical.md", "rep_type": "canonical_md", "content_hash": "sha256:abc", "size": 12345}}
+{"txn_id": 102, "ts": "2026-06-06T10:01:00Z", "action": "remove",   "rep": "recognize/ocr_text.md"}
+{"txn_id": 103, "ts": "2026-06-06T10:02:00Z", "action": "stale",    "rep_type": "ocr_text", "reason": "raw_update", "upstream_hash": "sha256:def"}
+{"txn_id": 104, "ts": "2026-06-06T10:03:00Z", "action": "index_built", "index_type": "semantic", "build_from_hash": "sha256:combined"}
+{"txn_id": 105, "ts": "2026-06-06T10:04:00Z", "action": "checkpoint", "version": 100, "manifest": "/_log/000000000100.checkpoint.jsonl"}
+```
+
+**写入协议**（基于 Iceberg 原子指针交换）：
+
+```text
+RepStep 写入流程（新协议）：
+  1. 写 Rep 文件 → /extract/canonical.md
+  2. 写事务日志 → /_log/000000000101.json（append，Conditional PUT if-match）
+  3. 更新 _manifest → /_manifest/reps.jsonl 追加一行
+  4. 原子交换 _current → PutObject with if-match on _current.etag
+     ├─ 成功：新版本生效
+     └─ 失败：旧版本继续生效，下次重试（写入幂等）
+
+读取流程（新协议）：
+  1. 读 /_current → 拿到当前 manifest version
+  2. 读 /_manifest/reps.jsonl（O(1) 拿到所有 Rep 列表）
+  3. 读具体 Rep 文件
+```
+
+**Checkpoint 协议**（参考 Delta Lake）：
+
+```text
+每 100 次 commit 触发一次 Checkpoint：
+  1. 重放最近 100 次 commit
+  2. 合并为单一 checkpoint.jsonl（包含所有 active Rep + Index + Edge）
+  3. 写 /_log/000000000100.checkpoint.jsonl
+  4. 原子交换 _current → 指向 checkpoint
+  5. 历史 commit 保留（用于 time travel / 灾难恢复）
+```
+
+**关键优势**：
+- **完整变更历史**：事务日志记录所有 Entity/Rep/Index 状态变更
+- **原子性**：`_current` 指针的 compare-and-swap 保证 readers 永远看到 consistent snapshot
+- **O(1) 状态查询**：读 `_manifest/reps.jsonl` 替代"全量 LIST prefix"
+- **Time Travel**：通过指定 `_log/N.json` 回放到 Entity 的某个历史状态
+- **灾难恢复**：从最近 checkpoint + 后续 commit 重放 = 完整重建
+
+#### 5.12.10 成熟项目参照：Merkle 树血缘（v0.3）
+
+> **设计目标**：把血缘关系从"每次重新计算"改为"显式持久化 + 内容寻址"。参考 **lakeFS Graveler** 的 2 层 Merkle 树。
+
+```text
+Entity Lineage Merkle Tree
+  └─ Root (sha256 of all children)
+       ├─ rep:raw              → sha256(content_hash)
+       ├─ rep:canonical_md     → sha256(content_hash)
+       │    └─ upstream: raw   → sha256(content_hash)
+       └─ rep:ocr_text         → sha256(content_hash)
+            └─ upstream: page_image → sha256(content_hash)
+```
+
+**存储**：`{entity_id}/_lineage/ranges.jsonl`（Merkle 树序列化）
+
+**优势**：
+- 血缘关系**显式持久化**为内容寻址
+- Diff 算法 O(diff_size) 而非 O(total_size)
+- 跨 Entity 血缘追踪更高效
+- 支持"零拷贝" Entity 快照（复用未修改的 Rep）
+
+**借鉴项目**：
+- **lakeFS Graveler**：2 层 Merkle 树（Meta-Range → Ranges），Commit 之间复用未修改的 Ranges
+- **Git**：blob 树结构，commit 之间复用未修改的 blob
+
+#### 5.12.11 成熟项目参照：三层元数据架构（v0.2）
+
+> **设计目标**：避免"100K+ Entity 规模下全量扫描 prefix 慢"。参考 **Apache Iceberg** 的 Catalog → metadata.json → Manifest List → Manifest → Data File 三层架构。
+
+```text
+L0: Catalog (workspace 级)
+    └─ {collection_id}.json → 指向 _current 指针
+
+L1: _current (Entity 级)
+    └─ { "log_offset": "...", "manifest_version": 101 }
+
+L2: _log/ (Entity 级，append-only)
+    └─ 000000000000.json ... 000000000100.checkpoint.jsonl
+
+L3: _manifest/ (Entity 级，快速索引)
+    └─ entity.json + reps.jsonl + indexes.jsonl + edges.jsonl
+```
+
+**每层作用**：
+- **L0 Catalog**：跨 Entity 索引，workspace 级 metadata
+- **L1 _current**：Entity 当前快照指针（原子交换）
+- **L2 _log**：变更历史（time travel / 灾难恢复）
+- **L3 _manifest**：当前活跃状态快速查询（替代 prefix 扫描）
+
+**与 Iceberg 的对应**：
+| Iceberg | Vector-Lake |
+|---|---|
+| Catalog pointer | L0 `{collection_id}.json` |
+| metadata.json | L1 `_current` + L2 `_log` |
+| Manifest List | L3 `_manifest/reps.jsonl` |
+| Manifest File | L3 `_manifest/reps.jsonl` 单行 |
+| Data File | `extract/canonical.md` 等实际数据 |
+
+#### 5.12.12 成熟项目参照：MVCC + 不可变 Manifest（v0.2）
+
+> **设计目标**：让 Entity-level Manifest 显式化，作为 Entity 的"Truth of State"。参考 **Lance Manifest + Delta + Iceberg** 共同模式。
+
+**核心原则**：
+- 每次写入产生**新**的 Manifest 项，旧 Manifest 项保留
+- 原子协议：先写 Manifest → 再 atomic swap pointer
+- 读者看到 consistent snapshot（基于 manifest version）
+- Time Travel：通过指定旧 manifest version 读取历史
+
+**与 PRD 现有 §5.10 Index Status 的关系**：
+- §5.10 的 `index_status` / `index_built_from_hash` 存在 Lance dataset custom metadata
+- v0.2 改进：Entity 级 Manifest（`_manifest/indexes.jsonl`）作为 Truth of State
+- Lance dataset custom metadata 仅作为快速缓存
+- Manifest 写入协议：先写 Lance → 再写 `_manifest`（如果失败可重建）
+
+#### 5.12.13 成熟项目参照：Schema Evolution 规则（v0.3）
+
+> **设计目标**：明确 Entity/Rep schema 的演进规则。参考 **Delta + Iceberg + Lance** 三家共同设计。
+
+**Entity Schema 演进规则**：
+
+```text
+v0.1 初始 Entity Schema
+  ├─ entity_type: document | table | image | audio | video
+  ├─ name: string
+  ├─ content_hash: string
+  └─ version: int
+
+v0.2 Schema Evolution（加 entity_type: webpage）
+  → 旧 Entity 不受影响（向后兼容）
+  → 新 Entity 可用新 entity_type
+  → _manifest/entity.json 记录 schema_version
+  → 旧读卡器忽略未知 entity_type（视为不可处理）
+```
+
+**Rep Schema 演进规则**：
+
+```text
+v0.1 Rep Tag: 7 个字段（rep_type, pipeline_id, transform, modality, status, model_version, entity_version）
+
+v0.2 Rep Schema Evolution（加 sync_state 字段）
+  → 旧 Rep Tag 自动补全默认 sync_state=ready（Conditional Update）
+  → _manifest/reps.jsonl 记录 schema_version
+  → 旧读卡器忽略未知字段
+```
+
+**Lance Schema 演进规则**（§15 R4 已存在）：
+- 所有表带 schema_version
+- 变更走 migration
+- 兼容性规则：向后兼容（读旧 schema 读新数据）、向前兼容（读新 schema 读旧数据）
+
+**Schema Checkpoint**（参考 Iceberg）：
+- 定期冻结 schema snapshot
+- 加速查询（不必每次解析 schema）
+- 与 Log Checkpoint 一起触发
+
+#### 5.12.14 实施路径与 v0.1/v0.2 边界
+
+| 阶段 | 内容 | v0.1 状态 | v0.2 实施 |
+|---|---|---|---|
+| `.entity_manifest.json` | 不可推导信息持久化 | ✅ 已实现 | — |
+| `.version_log.jsonl` | 版本历史 append-only | ✅ 已实现 | — |
+| Phase 0 body_hash 校验 | Tag 可靠性兜底 | ✅ 已实现 | — |
+| `_current` 指针 + 原子交换 | 原子性保证 | ❌ 推迟 | v0.2 阶段 1 |
+| `_log/` 事务日志 | 变更历史 | ❌ 推迟 | v0.2 阶段 2 |
+| `_manifest/` 快速索引 | O(1) 状态查询 | ❌ 推迟 | v0.2 阶段 3 |
+| Checkpoint 机制 | 日志压缩 | ❌ 推迟 | v0.2 阶段 4 |
+| Merkle 树血缘 | 内容寻址血缘 | ❌ 推迟 | v0.3 |
+| Schema Evolution 规则 | Entity/Rep schema 演进 | ❌ 推迟 | v0.3 |
+| Time Travel API | 历史快照查询 | ❌ 推迟 | v0.3 |
+
+> **设计哲学**：v0.1 先解决"能跑起来 + 基础可靠性"（sidecar 持久化 + Reconciler 兜底），v0.2 引入"行业标准的 ACID + 大规模能力"（事务日志 + 原子指针 + 快速索引），v0.3 引入"高级能力"（Merkle 血缘 + Schema 演进 + Time Travel）。
 
 ---
 
@@ -4783,6 +5041,11 @@ semantic · lexical · hybrid · visual
 | **元数据可恢复** | Tag 重建（单 Entity） | ≤ 30 s（从 Ground Truth 重建所有 Tag） |
 | | Tag 重建（全 workspace，1K Entity） | ≤ 30 min |
 | | Lance 重建（单 Entity，10K chunks） | ≤ 5 min |
+| **v0.2 元数据架构（事务日志）** | `_current` 指针原子交换延迟 | ≤ 100 ms（OSS Conditional PUT） |
+| | `_log/` 事务日志写入吞吐 | ≥ 100 commits/s（单 Entity） |
+| | `_manifest/reps.jsonl` 查询延迟 | ≤ 50 ms（O(1) 读 jsonl 头部） |
+| | Time Travel 回放延迟（100 commits） | ≤ 1 s |
+| | Checkpoint 生成延迟（100 commits） | ≤ 5 s |
 | **可用性** | retrieval gateway 月度可用性 | ≥ 99.5% |
 | **可观测** | 必埋点 | RepStep/IndexStep/ProjectorStep 各阶段耗时与失败率；Registry 注册事件；两阶段一致性指标；检索 QPS / 延迟 / top1 命中率；VFS 漂移指标（vfs_drift_count / vfs_reconcile_duration / vfs_event_lag）；Tag 重建事件；body_hash 校验结果 |
 | **可扩展** | 横向扩展 | RepStep/IndexStep/ProjectorStep Executor Pool 各自独立扩缩容 |
@@ -4865,6 +5128,11 @@ semantic · lexical · hybrid · visual
 | R18 | Tag 写入非原子（写文件后进程被杀，Tag 未打） | 两阶段写入协议 + Reconciler Phase 0 检测"文件存在但 Tag 缺失"（§5.12.2 / §5.12.3） |
 | R19 | OSS 对象静默损坏（bit rot） | Phase 0 body_hash 校验（每天采样 1%）+ `POST /v1/admin/verify?mode=full` 全量校验（§5.12.3） |
 | R20 | `.entity_manifest.json` sidecar 与 Tag 不一致 | sidecar 优先原则 + Conditional Write 保证原子性（§5.12.3） |
+| R21 | v0.1 元数据架构缺事务日志，变更历史不可追溯 | v0.2 引入 `_log/` 事务日志（参考 Delta _delta_log，§5.12.9） |
+| R22 | v0.1 写入协议非原子（先写文件再打 Tag） | v0.2 引入 `_current` 指针原子交换（参考 Iceberg compare-and-swap，§5.12.9） |
+| R23 | v0.1 大规模场景（100K+ Entity）全量 LIST prefix 慢 | v0.2 引入 `_manifest/` 快速索引（参考 Iceberg Manifest List，§5.12.11） |
+| R24 | v0.1 血缘每次重新计算，效率低 | v0.3 引入 Merkle 树内容寻址（参考 lakeFS Graveler，§5.12.10） |
+| R25 | Entity/Rep schema 演进无规则 | v0.3 引入显式 schema_version + 兼容性规则（参考 Delta + Iceberg + Lance，§5.12.13） |
 | Q1 | entity 是否需要"跨 collection 合并"？ | v0.1 不做；v0.2 讨论 `same_as` edge |
 | Q2 | wiki_md / mind_map 的 LLM 编译成本 | v0.2 实现；异步、按需、按版本 |
 | Q3 | graph index 用什么存储 | v0.1 用 graph_json representation + 内存遍历；v0.2 评估 Neo4j |
