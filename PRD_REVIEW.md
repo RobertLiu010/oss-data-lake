@@ -1173,7 +1173,260 @@ Lake 目录
 
 ---
 
-## 九、参考资料
+## 九、产品级 Review：架构一致性 + 实现可行性 + 边界场景
+
+> **评审视角**：从"能落地"的角度，审查 PRD 的架构一致性、实现可行性和边界场景覆盖。重点关注"写了很多设计但实际跑不起来"的问题。
+
+### 9.1 架构一致性问题
+
+#### C1. 元数据存储三重冗余，一致性模型不完整
+
+**现状**：同一个 `rag_status` 存在三个地方：
+1. OSS Entity Tag（`rag_status=enabled`）
+2. `.entity_manifest.json`（`{"rag_status": "enabled"}`）
+3. v0.2 `_manifest/entity.json`（§5.12.11）
+
+**问题**：PRD 定义了"manifest 优先"原则（§5.12.2），但没有定义**写入失败时的降级策略**：
+- 写 manifest 成功 + 写 Tag 失败 → OK（下次 Reconciler 修）
+- 写 manifest 失败 + 写 Tag 成功 → **Tag 和 manifest 不一致**
+- 两者都失败 → Entity 处于"未知状态"
+
+**建议**：增加写入状态机，明确每种失败组合的处理策略。
+
+#### C2. Entity class 方法与 Pipeline 解耦不彻底
+
+**现状**：§4.1 Entity class 有 `generate_representation()` 和 `build_index()` 方法，但 §6 说 Pipeline 由 RepStep/IndexStep 调度。
+
+**问题**：Entity 是"触发器"还是"执行者"？
+- 如果是触发器：`generate_representation()` 只投递消息到 Redis Streams，不执行
+- 如果是执行者：`generate_representation()` 直接调用 RepStep.execute()
+
+PRD 没有明确这一点。当前 §4.1 的 Entity class 像执行者（有 `search()` / `grep()` 等实现），但 §6.9 的 Worker 伪代码又暗示 Entity 只是消息源。
+
+**建议**：明确 Entity 是"领域模型 + 触发器"，不是"执行者"。执行由 Worker 进程完成。Entity class 的 `generate_*` / `build_*` 方法只做 `XADD` 到 Redis Streams。
+
+#### C3. RepStep 的 `required_input_reps` 与 Redis Streams 消息格式不匹配
+
+**现状**：§6.6 RepStep 定义了 `required_input_reps: list[str]`（如 `["page_image"]`），但 §6.9.2 Redis Streams 消息格式只有 `step_id`，没有 `input_reps` 信息。
+
+**问题**：Worker 拿到消息后，如何知道要读哪些 input Rep？需要从 RepStepRegistry 查 `step.required_input_reps`，然后从 OSS 读取。但消息里没有 `rep_types` 的具体路径。
+
+**建议**：消息格式增加 `input_reps` 字段（运行时由 Orchestrator 填充具体路径），或者 Worker 从 Registry + Entity 目录动态解析。
+
+#### C4. v0.1 Entity Tag 10 个字段已满，v0.2 无法扩展
+
+**现状**：§4.6 Entity Tag 10 个字段（entity_type, name, content_hash, version, rag_status, labels, workspace_id, collection_id, entity_id, source_format），阿里云 OSS 限制每个对象最多 10 个 Tag。
+
+**问题**：v0.2 Projector 需要 `sync_state` 字段，但 10 个 Tag 已满。PRD 提到了 `.meta.json` sidecar（§5.12.8）但只定义了优先级规则，没有定义具体迁移策略。
+
+**建议**：v0.1 就预留 1-2 个 Tag 位置（如 `_reserved1`, `_reserved2`），或者将 `workspace_id` / `collection_id` / `entity_id` 从 Tag 移到路径推导（这三个本来就能从路径解析，不需要存 Tag）。
+
+#### C5. MCP Tools 与 REST API 功能重叠
+
+**现状**：§14 定义了 REST API（`GET /v1/entities/{id}` 等），§9.5 定义了 MCP Tools（`vfs_get_entity` 等），两者功能完全重叠。
+
+**问题**：维护两套 API 的成本高。MCP Tools 底层是调 REST API 还是直接访问 OSS？
+
+**建议**：MCP Server 底层复用 REST API 的 Service 层（不是 HTTP 调用，而是共享 Python 函数）。REST API 和 MCP Tools 是同一套业务逻辑的两种暴露方式。
+
+### 9.2 实现可行性问题
+
+#### F1. OSS Conditional Write (if-match etag) 支持有限
+
+**现状**：§5.12.2 和 §5.12.9 大量使用 OSS Conditional Write（`if-match etag`）保证原子性。
+
+**问题**：
+- 阿里云 OSS 的 `PutObject` **不支持** `if-match`（只有 `CopyObject` 和 `HeadObject` 支持）
+- AWS S3 的 `PutObject` 也不支持 `if-match`（只有 `CopyObject` 支持）
+- MinIO 的 `PutObject` 同样不支持
+
+**这意味着**：`.entity_manifest.json` 的 Conditional Write 在 OSS 上**不可行**。
+
+**替代方案**：
+1. 用 `CopyObject` + `if-match` 模拟（先写临时文件，再 CopyObject 到目标路径）
+2. 用 ETag-based 乐观锁（读 etag → 写入时带 etag 校验 → 失败则重试）
+3. v0.1 放弃 Conditional Write，依赖 Reconciler 修复不一致
+
+**建议**：§5.12.2 明确标注"OSS PutObject 不支持 if-match"，改用方案 1 或 3。
+
+#### F2. Reconciler Phase 0 body_hash 计算代价过高
+
+**现状**：§5.12.3 Phase 0 每天采样 1% 的 Rep 文件计算 SHA-256。
+
+**问题**：
+- 1% 的 Rep 文件 = 假设 10K Entity × 平均 5 Rep = 50K 文件 × 1% = 500 文件/天
+- 每个 Rep 平均 100KB → 50MB/天的 OSS 下载量（可接受）
+- 但如果 Entity 包含大文件（如 100MB PDF 的 page_image），1% 可能命中大文件 → 带宽暴增
+- SHA-256 计算本身不是瓶颈，**OSS 下载带宽**才是
+
+**建议**：Phase 0 改为"只校验 ETag（OSS 自带的 MD5）vs Tag content_hash"，不重新计算 SHA-256。ETag 校验零下载（HeadObject 即可）。只有 ETag 不匹配时才下载文件计算 SHA-256。
+
+#### F3. OSS LIST API 每次最多返回 1000 个对象
+
+**现状**：§4.6 VFS 通过 `LIST prefix` 扫描目录树。
+
+**问题**：
+- OSS LIST API 每次最多返回 1000 个对象（`max-keys=1000`）
+- 10K Entity × 平均 10 个文件 = 100K 对象 → 需要 100 次 LIST 调用
+- 100 次 LIST × 平均 100ms = 10s（可接受）
+- 但 100K Entity × 10 = 1M 对象 → 1000 次 LIST → 100s（不可接受）
+
+**建议**：
+1. VFS 维护 Redis 缓存（已有），LIST 只在冷启动时做
+2. v0.2 引入 `_manifest/reps.jsonl`（§5.12.11）替代 LIST
+3. 冷启动时用 OSS Event Notification 增量更新，不做全量 LIST
+
+#### F4. Redis Streams 无 per-entity 有序保证
+
+**现状**：§6.8 说"Entity 内串行"，§6.9 用 Redis Streams Consumer Group。
+
+**问题**：Redis Streams 的 Consumer Group **不保证同一 entity_id 的消息被同一 consumer 按序消费**。两个 `render_page` 消息（同一 entity_id）可能被不同 worker 同时消费。
+
+**当前方案**：§6.9.3 用 `redis_lock(f"rep:{entity_id}")` 解决。但：
+- 分布式锁有超时风险（worker 处理慢 → 锁超时 → 另一 worker 拿到锁 → 重复执行）
+- 锁超时设置太长 → worker crash 后锁长时间不释放
+
+**建议**：
+1. 锁超时 = step 预估耗时 × 3（如 `render_page` 预估 30s → 锁超时 90s）
+2. 加锁时写入 worker_id + timestamp，超时后其他 worker 可以安全抢占
+3. 或者改用 Redis Stream 的 `XADD` + `MAXLEN ~` 按 entity_id 分 stream（但 stream 数量会暴增）
+
+#### F5. Lance dataset custom metadata 有大小限制
+
+**现状**：§5.10.2 把 `index_built_from_hash` 等信息存在 Lance dataset custom metadata。
+
+**问题**：Lance 的 `manifest.metadata` 是 Protobuf `map<string, bytes>`，理论上无大小限制，但：
+- 每次 `update_metadata()` 会重写整个 Manifest
+- 如果 metadata 过大（如存储了 100 个 index 的 `built_from_hash`），写入延迟增加
+- Lance 的 `update_metadata()` 不是原子操作（先读旧 Manifest → 修改 → 写新 Manifest）
+
+**建议**：v0.1 限制每个 Entity 最多 5 个 Index（语义/全文/结构/图/多模态），metadata 大小可控。v0.2 迁移到 `_manifest/indexes.jsonl`。
+
+#### F6. `.entity_manifest.json` 的 append-only 写入在 OSS 上不可行
+
+**现状**：§5.12.1 `.entity_manifest.json` 用 Conditional Write（`if-match etag`）保证原子性。
+
+**问题**：
+- OSS `PutObject` 不支持 `if-match`（见 F1）
+- 每次更新 manifest 需要先读旧值 → 合并 → 写新值 → 如果中间有人写了 → 冲突
+- 这是一个 **read-modify-write** 竞态条件
+
+**建议**：
+1. v0.1 放弃 Conditional Write，接受"最后一个写入者赢"（last-writer-wins）
+2. Reconciler 定期校验 manifest vs Tag 一致性
+3. v0.2 用 `_current` 指针原子交换（`CopyObject` + `if-match` 是支持的）
+
+### 9.3 边界场景缺失
+
+#### E1. Entity 目录下有大量 page_image 文件时的性能
+
+**现状**：一个 100 页 PDF 会产出 100 个 `page_image/page_001.png` ... `page_image/page_100.png`。
+
+**问题**：
+- 每个 page_image 都有 7 个 Rep Tag → 100 × 7 = 700 次 `PutObjectTagging` API 调用
+- LIST prefix 扫描 `extract/page_image/` 返回 100 个对象
+- Lance 表中 100 个 page_image 各自的 chunk 数量
+
+**缺失**：PRD 没有定义"多文件 Rep"的批量 Tag 写入策略和 LIST 优化。
+
+**建议**：`page_image` 类 Rep 用"目录级 Tag"（打在目录的 `.meta` 文件上）而非逐文件打 Tag。
+
+#### E2. 并发写入同一 Entity 的不同 RepPipeline
+
+**现状**：§6.8 说"Entity 内串行"，但 §6.9 的 Redis Streams 拓扑中，`rep_pipeline` stream 的消息可能同时触发同一 Entity 的 `parse` 和 `render_page`。
+
+**问题**：`parse` 和 `render_page` 都读 `raw` 文件，不冲突。但它们都写 `extract/` 目录，且都需要更新 `.entity_manifest.json`。
+
+**缺失**：PRD 没有定义"同一 Entity 的不同 RepPipeline 是否可以并行"的粒度。
+
+**建议**：明确"Entity 内 RepPipeline 间可并行，RepStep 间串行"。锁粒度从 Entity 级改为 RepPipeline 级。
+
+#### E3. Entity 删除后的 Lance 数据清理
+
+**现状**：§5.10.3 说 `entity status=deleted → index_status=deleted + 实际删除 Lance 数据集`。
+
+**问题**：Lance 数据集删除是**不可逆**的。如果误删 Entity，Lance 数据无法恢复（即使 OSS 文件还在）。
+
+**缺失**：没有定义"软删除期间 Lance 数据保留策略"。
+
+**建议**：`rag_status=deleted` 时只标记 Tag，不删 Lance 数据。Lance 数据在"硬删除"（`destroy()`）时才物理删除。Reconciler 定期清理 `deleted > 30 days` 的 Entity。
+
+#### E4. Embedding 模型升级时的全量重建策略
+
+**现状**：§5.10.3 说"embedding 模型升级 → index_status=stale → 触发重跑"。
+
+**问题**：全量重建 10K Entity 的 Index 需要：
+- 10K × 平均 5 chunks = 50K 次 Embedding API 调用
+- 如果用 OpenAI API → $0.13/1K tokens × 50K × 500 tokens ≈ $3,250
+- 如果用本地模型 → 需要 GPU 资源
+
+**缺失**：没有定义"渐进式模型升级"策略（如按 Entity 优先级分批重建）。
+
+**建议**：增加"Index 重建优先级"概念（high/medium/low），模型升级时按优先级分批重建。
+
+#### E5. MCP Server 的权限模型
+
+**现状**：§9.5.2 提到"Bearer Token / mTLS"但没定义权限模型。
+
+**问题**：
+- `vfs_get_status` 暴露系统内部状态（Reconciler / 队列积压），不应给普通用户
+- `vfs_search` 可能返回 `rag_status=hidden` 的 Entity（如果没做权限过滤）
+- `vfs_get_rep_content` 可能返回敏感内容
+
+**缺失**：MCP Tools 没有权限分级。
+
+**建议**：MCP Tools 增加 `required_role` 标注（admin / user / readonly），SSE 模式下按 Token role 过滤。
+
+#### E6. Redis Streams 消息积压时的背压策略
+
+**现状**：§6.9 定义了 Consumer Group 但没有背压策略。
+
+**问题**：如果 OSS Event 突然涌入大量消息（如批量上传 1000 个文件），Redis Streams 积压 → Worker 处理不过来 → 内存增长 → Redis OOM。
+
+**缺失**：没有定义 `MAXLEN` 策略和背压机制。
+
+**建议**：
+1. `XADD` 时设置 `MAXLEN ~ 100000`（近似裁剪，保留最近 10 万条）
+2. Worker 消费延迟 > 5 min → 告警
+3. 积压 > 50K → 触发背压（拒绝新的 OSS Event Webhook，返回 429）
+
+### 9.4 问题汇总与优先级
+
+| # | 问题 | 严重度 | 类型 | 建议修复 |
+|---|---|---|---|---|
+| **C1** | 元数据三重冗余一致性模型不完整 | **Must Fix** | 一致性 | 增加写入状态机 |
+| **C2** | Entity class 是触发器还是执行者不明确 | **Must Fix** | 架构 | 明确 Entity = 触发器，Worker = 执行者 |
+| **C3** | RepStep required_input_reps 与消息格式不匹配 | **Should Fix** | 一致性 | 消息增加 input_reps 或 Worker 动态解析 |
+| **C4** | Entity Tag 10 个已满，v0.2 无法扩展 | **Must Fix** | 可扩展性 | 移除可推导字段（workspace_id/collection_id/entity_id） |
+| **C5** | MCP Tools 与 REST API 功能重叠 | **Should Fix** | 架构 | 共享 Service 层 |
+| **F1** | OSS PutObject 不支持 if-match | **Must Fix** | 可行性 | 改用 CopyObject+if-match 或 last-writer-wins |
+| **F2** | Phase 0 body_hash 计算代价过高 | **Should Fix** | 可行性 | 改为 ETag 校验（HeadObject），不下载文件 |
+| **F3** | OSS LIST API 1000 对象限制 | **Should Fix** | 可行性 | VFS Redis 缓存 + v0.2 manifest |
+| **F4** | Redis Streams 无 per-entity 有序保证 | **Should Fix** | 可行性 | 锁超时 = 预估耗时 × 3 + worker_id |
+| **F5** | Lance metadata 大小限制 | **Nice to Have** | 可行性 | v0.1 限制 5 个 Index |
+| **F6** | .entity_manifest.json read-modify-write 竞态 | **Must Fix** | 可行性 | v0.1 last-writer-wins + Reconciler 修复 |
+| **E1** | 多文件 Rep 批量 Tag 写入 | **Should Fix** | 边界 | 目录级 .meta 文件 |
+| **E2** | 同 Entity 不同 RepPipeline 并行粒度 | **Should Fix** | 边界 | 锁粒度改为 RepPipeline 级 |
+| **E3** | 软删除后 Lance 数据保留策略 | **Should Fix** | 边界 | deleted 只标 Tag，destroy 才物理删 |
+| **E4** | Embedding 模型升级全量重建策略 | **Should Fix** | 边界 | 按优先级分批重建 |
+| **E5** | MCP Server 权限模型 | **Should Fix** | 边界 | Tools 增加 required_role |
+| **E6** | Redis Streams 背压策略 | **Should Fix** | 边界 | MAXLEN + 告警 + 429 |
+
+### 9.5 关键优化建议（Top 5）
+
+1. **Entity Tag 从 10 个减到 7 个**：移除 `workspace_id` / `collection_id` / `entity_id`（可从路径推导），为 v0.2 预留 3 个位置（`sync_state` / `quality_score` / `custom_1`）
+
+2. **OSS Conditional Write 降级**：v0.1 用 last-writer-wins + Reconciler 修复，不依赖 `if-match`（OSS PutObject 不支持）；v0.2 用 `CopyObject` + `if-match` 实现原子交换
+
+3. **Phase 0 改为 ETag 校验**：不下载文件计算 SHA-256，而是 `HeadObject` 获取 ETag → 对比 Tag `content_hash` → 不匹配才下载计算 SHA-256。代价从 O(file_size) 降到 O(1)
+
+4. **Entity = 触发器，Worker = 执行者**：Entity class 的 `generate_*` / `build_*` 方法只做 `XADD` 到 Redis Streams，不直接执行 RepStep。所有执行由 Worker 进程完成
+
+5. **软删除不删 Lance**：`rag_status=deleted` 只标记 Tag，Lance 数据保留 30 天。`destroy()` 才物理删除
+
+---
+
+## 十、参考资料
 
 | 来源 | 关键洞察 |
 | --- | --- |
