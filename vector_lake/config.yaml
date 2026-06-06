@@ -1,0 +1,31 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+storage:
+  backend: local
+  local:
+    root: "./data"
+
+lance:
+  data_dir: "./lance_data"
+
+embedding:
+  base_url: "http://127.0.0.1:8006"
+  model: "embedding-v5"
+  dimension: 1024
+  task_passage: "retrieval.passage"
+  task_query: "retrieval.query"
+  batch_size: 64
+
+chunking:
+  method: "markdown_heading"
+  chunk_tokens: 256
+  window_size: 9
+  max_window_length: 12000
+  target_max_length: 10000
+  max_table_length: 3000
+
+auth:
+  enabled: false
+  api_keys: {}
