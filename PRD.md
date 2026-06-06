@@ -280,7 +280,7 @@ Vector-Lake 不替代 Elasticsearch 或 Pinecone，而是在它们之上（或 L
 | --- | --- | --- | --- |
 | **Raw Object** | OSS 上的原始文件 | **不可变** | source of truth |
 | **Entity** | 知识对象，1 个 OSS Object = 1 个 Entity | 标识稳定，属性可演进 | 文件级知识单元 |
-| **Representation** | Entity 的"认知视角"（canonical_md / ocr_text / vlm_md / mind_map / graph_json / page_image / ...） | **派生产物**，血缘关系从目录层级推导 |
+| **Representation** | Entity 的"认知视角"（canonical_md / vlm_md / mind_map / graph_json / page_image / ...） | **派生产物**，血缘关系从目录层级推导 |
 | **Pipeline** | 从 raw 或已有 representation 生成新 representation 的过程 | — | 一等公民，同一 Entity 可走多条并行流水线 |
 | **Chunk** | 某个 Representation 下的检索最小单元 | **可重建** | 索引方法，检索命中的原子粒度 |
 | **Embedding** | 某个 Chunk 的向量索引 | **可重建** | 内嵌于 `representations.lance` 的 vector 列 |
@@ -304,8 +304,7 @@ Raw Object (OSS, immutable)
     │                                    ← 内容变换阶段
     ├── RepPipeline A: "直接提取" ──► rep(canonical_md) ──► rep(plain_text)
     ├── RepPipeline B: "页面渲染" ──► rep(page_image)
-    ├── RepPipeline C: "OCR" ──► rep(ocr_text)
-    ├── RepPipeline D: "VLM" ──► rep(vlm_md)
+    ├── RepPipeline B: "视觉识别" ──► rep(vlm_md)
     ├── RepPipeline E: "知识编译" ──► rep(mind_map / graph_json / wiki_md / summary)
     ├── RepPipeline F: "音频转写" ──► rep(audio_segment) ──► rep(transcript)
     └── RepPipeline G: "表格获取" ──► rep(table_parquet / table_md)
@@ -370,7 +369,7 @@ Lineage 的核心目的是：**上游变动后，下游立即不可用并重新�
 ```text
 raw 更新
   → [Rep 级联] canonical_md stale → mind_map stale → graph_json stale → summary stale → wiki_md stale
-  → [Rep 级联] page_image stale → ocr_text stale → vlm_md stale
+  → [Rep 级联] page_image stale → vlm_md stale
   → [Index 重建] 所有基于 stale rep 的 index 自动标记 stale
 ```
 
@@ -416,7 +415,7 @@ Entity: pricing.pdf
   │     └── parse: raw → canonical_md, plain_text
   │
   ├── rep_pipeline_b: "视觉识别"
-  │     └── render_page → visual_recognize: raw → page_image → ocr_text + vlm_md
+  │     └── render_page → visual_recognize: raw → page_image → vlm_md
   │
   ├── rep_pipeline_d_wiki: "Wiki 编译" (v0.2)
   │     └── compile_wiki_md: canonical_md → wiki_md
@@ -432,7 +431,7 @@ Entity: pricing.pdf
   │
   ├── index_pipeline_text: "文本索引"
   │     └── chunk_and_embed_text → build_vector_index → build_fts_index
-  │         消费: canonical_md / ocr_text / vlm_md
+  │         消费: canonical_md / vlm_md
   │
   ├── index_pipeline_image: "图片索引"
   │     └── chunk_and_embed_image → build_vector_index
@@ -496,7 +495,7 @@ Entity: pricing.pdf
 │      RepPipeline → RepStep → Representation 文件             │
 │      RepStep Plugin 体系（可插拔）                             │
 │      parse → canonical_md · render → page_image              │
-│      ocr → ocr_text · vlm → vlm_md                          │
+│      visual_recognize → vlm_md                              │
 │      compile → mind_map / graph_json / wiki_md / summary     │
 ├──────────────────────────────────────────────────────────────┤
 │  L1  Entity Layer                                            │
@@ -736,7 +735,6 @@ vector-lake/{ws}/{col}/{entity_id}/{stage}/{rep_basename}
 │       └── ...
 │
 ├── recognize/                       ← L2: 识别/转写（extract → recognize）
-│   ├── ocr.md                       ← rep_type: ocr_text
 │   ├── vlm_extracted.md             ← rep_type: vlm_extracted_md
 │   ├── caption.md                   ← rep_type: caption
 │   ├── transcript.md                ← rep_type: transcript
@@ -766,7 +764,7 @@ vector-lake/{ws}/{col}/{entity_id}/{stage}/{rep_basename}
 | --- | --- | --- | --- |
 | `source/` | L0 | 原始文件，血缘根节点 | — |
 | `extract/` | L1 | 从 source 直接提取 | Pipeline A: raw → canonical_md / page_image |
-| `recognize/` | L2 | 从 extract 识别/转写 | Pipeline B/C: page_image → ocr_text / vlm_md |
+| `recognize/` | L2 | 从 extract 识别/转写 | Pipeline B/C: page_image → vlm_md |
 | `compile/` | L3 | 从 extract/recognize 编译 | Pipeline D: canonical_md → mind_map / summary |
 | `_index/` | 系统 | 索引 + 暂存，非内容 | Lance Watcher 管理 |
 
@@ -812,7 +810,6 @@ canonical_md          extract/canonical.md
 plain_text            extract/plain_text.txt
 layout_json           extract/layout.json
 page_image            extract/page_image/page_{NNN}.png
-ocr_text              recognize/ocr.md
 vlm_extracted_md      recognize/vlm_extracted.md
 caption               recognize/caption.md
 transcript            recognize/transcript.md
@@ -916,7 +913,7 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
 
 | rep_type | Chunk 策略 | modality |
 | --- | --- | --- |
-| canonical_md / ocr_text / vlm_extracted_md | 按标题+段落切 text chunk（ChunkingWithSlidingWindowUseCase） | text |
+| canonical_md / vlm_extracted_md | 按标题+段落切 text chunk（ChunkingWithSlidingWindowUseCase） | text |
 | page_image | 每页一个 chunk，走 image embedding | image |
 | transcript / transcript_segment | 按时间戳切 segment | text |
 | audio_segment | 每个 segment 一个 chunk，走 audio embedding | audio |
@@ -1040,13 +1037,13 @@ IndexStep chunk_and_embed_text
 
 canonical_md ──┐
                ├─► layout_json（唯一，由 RepStep parse 产出）
-ocr_text ──────┘
+vlm_md ────────┘
                │
                ├─ IndexStep chunk_and_embed_text(canonical_md + layout_json)
-               └─ IndexStep chunk_and_embed_text(ocr_text + layout_json)
+               └─ IndexStep chunk_and_embed_text(vlm_md + layout_json)
 
 关键：layout_json 是 Entity 级别的共享 Rep，不随 Rep 类型变化。
-所有文本类 Rep（canonical_md / ocr_text / vlm_md）的 chunk
+所有文本类 Rep（canonical_md / vlm_md）的 chunk
 都引用同一份 layout，保证"同一页码 / 同一 bbox"在不同视角间一致。
 ```
 
@@ -1075,8 +1072,8 @@ ocr_text ──────┘
   │   URL: /ws/kb/abc123/page_image?page=7&bbox=72,120,540,144
   │   行为：渲染 page_007.png，在 bbox 区域叠加半透明高亮矩形
   │
-  └─③ 切换视角：同一锚点跳转到 ocr_text / vlm_md
-      URL: /ws/kb/abc123/ocr_text#q3-pricing
+  └─③ 切换视角：同一锚点跳转到 vlm_md
+      URL: /ws/kb/abc123/vlm_md#q3-pricing
       行为：定位到同一标题锚点（共享 layout_json 保证位置一致）
 ```
 
@@ -1084,7 +1081,7 @@ ocr_text ──────┘
 
 | 锚点类型 | 字段 | 跳转目标 | 适用 Rep |
 | --- | --- | --- | --- |
-| **Markdown 锚点** | `anchor` (slug) | `canonical_md#q3-pricing` | canonical_md / ocr_text / vlm_md |
+| **Markdown 锚点** | `anchor` (slug) | `canonical_md#q3-pricing` | canonical_md / vlm_md |
 | **页码锚点** | `layout.page_number` | `page_image?page=7` | page_image |
 | **坐标锚点** | `layout.blocks[].bbox` | `page_image?page=7&bbox=72,120,540,144` | page_image |
 | **字符偏移锚点** | `start_pos` / `end_pos` | `canonical_md?pos=1200-2224` | canonical_md / plain_text |
@@ -1110,9 +1107,8 @@ GET /api/v1/entities/{entity_id}/anchor-jump
   },
   "cross_rep_anchors": {
     "canonical_md": "#q3-pricing",
-    "ocr_text": "#q3-pricing",
-    "page_image": "?page=7&bbox=72,120,540,144",
-    "vlm_md": "#q3-pricing"
+    "vlm_md": "#q3-pricing",
+    "page_image": "?page=7&bbox=72,120,540,144"
   }
 }
 ```
@@ -1168,7 +1164,7 @@ canonical_md#q3-pricing  ←→  page_image?page=7&bbox=72,120,540,144
   "entity_types": ["document"],
   "steps": [
     { "step_id": "render_page", "required_input_reps": ["raw"], "output_reps": ["page_image"] },
-    { "step_id": "visual_recognize", "required_input_reps": ["page_image"], "output_reps": ["ocr_text", "vlm_md"] }
+    { "step_id": "visual_recognize", "required_input_reps": ["page_image"], "output_reps": ["vlm_md"] }
   ],
   "enabled": true,
   "priority": 2
@@ -1216,9 +1212,9 @@ canonical_md#q3-pricing  ←→  page_image?page=7&bbox=72,120,540,144
   "pipeline_id": "index_pipeline_text",
   "pipeline_type": "index",
   "name": "文本索引构建",
-  "required_reps": ["canonical_md", "ocr_text"],
+  "required_reps": ["canonical_md", "vlm_md"],
   "steps": [
-    { "step_id": "chunk_and_embed_text", "required_reps": ["canonical_md", "ocr_text"] },
+    { "step_id": "chunk_and_embed_text", "required_reps": ["canonical_md", "vlm_md"] },
     { "step_id": "build_vector_index",   "index_type": "semantic" },
     { "step_id": "build_fts_index",      "index_type": "lexical" }
   ],
@@ -1390,7 +1386,7 @@ oss://bucket/vector-lake/ws_001/kb_001/abc123/source/original
 
 | Key | 取值 | 说明 |
 | --- | --- | --- |
-| `rep_type` | `canonical_md` / `ocr_text` / `page_image` / ... | 认知视角类型 |
+| `rep_type` | `canonical_md` / `vlm_md` / `page_image` / ... | 认知视角类型 |
 | `pipeline_id` | `pipeline_a` / `pipeline_b` / ... | 产出该 rep 的流水线 |
 | `transform` | `parse` / `visual_recognize` / `llm_compile` / `render` | 具体变换方法 |
 | `modality` | `text` / `image` / `audio` / `table` | 模态 |
@@ -1405,17 +1401,17 @@ oss://bucket/vector-lake/ws_001/kb_001/abc123/source/original
 **示例**：
 
 ```text
-oss://bucket/vector-lake/ws_001/kb_001/abc123/recognize/ocr.md
+oss://bucket/vector-lake/ws_001/kb_001/abc123/recognize/vlm_extracted.md
   x-oss-tagging:
-    rep_type=ocr_text
+    rep_type=vlm_md
     pipeline_id=pipeline_b
     transform=visual_recognize
     modality=text
     status=ready
-    model_version=paddleocr_v3
+    model_version=qwen2vl_v3
     entity_version=3
     input_content_hash=sha256:page_image_hash
-    content_hash=sha256:ocr_text_hash
+    content_hash=sha256:vlm_md_hash
 
 oss://bucket/vector-lake/ws_001/kb_001/abc123/extract/page_image/page_001.png
   x-oss-tagging:
@@ -1510,7 +1506,7 @@ ossutil put-object-tagging --bucket ... --key .../ocr.md --tagging '{"Tags":[{"K
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `entity_id` | utf8 | ✓ | 所属 Entity |
-| `rep_type` | utf8 | ✓ | 认知视角类型（canonical_md / ocr_text / …） |
+| `rep_type` | utf8 | ✓ | 认知视角类型（canonical_md / vlm_md / …） |
 | `chunk_index` | int32 | ✓ | 同一 rep 的切分序号 |
 | `entity_version` | int32 | ✓ | 冗余加速（权威值在 OSS Tag） |
 | `pipeline_id` | utf8 | ✓ | 产出流水线 |
@@ -1602,7 +1598,7 @@ ossutil put-object-tagging --bucket ... --key .../ocr.md --tagging '{"Tags":[{"K
 | 语义检索 | 向量搜索 | `status='active'`, `modality='text'` |
 | 全文检索 | BM25 关键词匹配 | `status='active'` |
 | 混合检索 | 语义 + BM25 + RRF 重排 | `status='active'` |
-| 按 Rep 过滤 | 限定 `rep_type` | `rep_type='ocr_text'` |
+| 按 Rep 过滤 | 限定 `rep_type` | `rep_type='vlm_md'` |
 | 按变换方法过滤 | 限定 `transform` | `transform='parse'` |
 | 按页码定位 | 限定 `page_number` | `page_number=3` |
 | 多模态检索 | 跨模态同一向量空间 | `modality IN ('text','image')` |
@@ -1695,7 +1691,7 @@ Lance 原生支持 schema evolution（加列不改列），演进规则：
 3. 从 Pipeline 注册表获取细粒度血缘（精确到具体 rep_type）
    ├─ Pipeline A: input=raw, output=[canonical_md, plain_text]
    ├─ Pipeline B: input=raw, output=[page_image]
-   ├─ Pipeline C: input=page_image, output=[ocr_text, vlm_extracted_md]
+   ├─ Pipeline B: input=page_image, output=[vlm_md]
    ├─ Pipeline D: input=canonical_md, output=[mind_map, summary, graph_json, wiki_md]
    └─ Pipeline E: input=audio_segment, output=[transcript, transcript_segment]
 
@@ -1719,15 +1715,14 @@ source/original (L0, raw)
   ├─► extract/plain_text        (L1, Pipeline A: parse)
   │
   └─► extract/page_image        (L1, Pipeline B: render)
-        ├─► recognize/ocr_text         (L2, Pipeline C: ocr)
-        └─► recognize/vlm_extracted_md (L2, Pipeline C: vlm)
+        └─► recognize/vlm_extracted_md (L2, Pipeline B: visual_recognize)
 ```
 
 **目录层级带来的推导加速**：
 
 | 推导需求 | 仅用目录层级 | + Pipeline 注册表 |
 | --- | --- | --- |
-| "ocr_text 的上游在哪？" | 一定是 `extract/` 下 → 缩小搜索范围 | `page_image`（Pipeline C 声明） |
+| "vlm_md 的上游在哪？" | 一定是 `extract/` 下 → 缩小搜索范围 | `page_image`（Pipeline B 声明） |
 | "raw 变了，影响谁？" | `extract/` + `recognize/` + `compile/` 全部 | 精确到具体 rep_type |
 | "新增 recognize/xxx.md" | 上游一定是 `extract/` 下 | 查 Pipeline 注册表确定具体哪个 |
 
@@ -1774,7 +1769,7 @@ source/original (L0, raw)
 | Edge case | 解决方案 |
 | --- | --- |
 | **同一 rep_type 由多条 Pipeline 产出** | Pipeline 注册表中同 rep_type 多条记录 → 推导时取并集边 |
-| **跨 rep_type merge** | Pipeline 声明 `input_reps: [canonical_md, ocr_text]`（多上游） |
+| **跨 rep_type merge** | Pipeline 声明 `input_reps: [canonical_md, vlm_md]`（多上游） |
 | **派生链分叉** | 推导时递归遍历，所有上游都在才标 stale（AND 语义） |
 | **手写 representation**（非 pipeline 产出） | 在 Pipeline 注册表加 `manual: true` 标记，input=raw |
 | **临时 rep（调试）** | 放在 `_tmp/` 目录，VFS 列表时跳过（下划线前缀 = 系统/临时） |
@@ -2285,7 +2280,7 @@ raw 更新 (content_hash 变化)
 
 | 查询 | 说明 |
 | --- | --- |
-| `GET /lineage/{entity_id}?direction=upstream&rep_type=ocr_text` | 从 ocr_text 向上追溯到 raw（辅助能力） |
+| `GET /lineage/{entity_id}?direction=upstream&rep_type=vlm_md` | 从 vlm_md 向上追溯到 raw（辅助能力） |
 | `GET /lineage/{entity_id}?direction=downstream&rep_type=page_image` | 从 page_image 向下找出所有下游（级联失效目标） |
 | `GET /lineage/{entity_id}/impact?rep_type=page_image` | 影响分析：如果 page_image 变了，哪些下游需要 stale + 重建 |
 | `POST /lineage/{entity_id}/cascade` | 手动触发级联：将指定 rep 的所有下游标 stale 并触发重建 |
@@ -2558,12 +2553,12 @@ Reconciler 周期（每 15 min）— Phase 3（在 Phase 1+2 完成后）
   "event_type": "rep_all_ready",
   "entity_id": "...",
   "entity_version": 3,
-  "ready_reps": ["canonical_md", "ocr_text"],
-  "failed_reps": ["vlm_md"],
+  "ready_reps": ["canonical_md", "vlm_md"],
+  "failed_reps": [],
   "skipped_reps": [],
   "rep_content_hashes": {
     "canonical_md": "sha256:abc...",
-    "ocr_text": "sha256:def..."
+    "vlm_md": "sha256:def..."
   },
   "build_from_hash_set": "sha256:combined_set_hash",
   "pipeline_runs": ["run_001", "run_002"]
@@ -2915,8 +2910,7 @@ raw (content_hash=sha256:aaa)
   │
   └─ pipeline_b: render_page → visual_recognize
       ├─ page_image (input_content_hash=sha256:aaa, content_hash=sha256:fff)
-      ├─ ocr_text (input_content_hash=sha256:fff, content_hash=sha256:ggg)
-      └─ vlm_md (input_content_hash=sha256:fff, content_hash=sha256:hhh)
+      ├─ vlm_md (input_content_hash=sha256:fff, content_hash=sha256:hhh)
 ```
 
 **`input_content_hash` 的语义**：
@@ -2925,7 +2919,6 @@ raw (content_hash=sha256:aaa)
 | --- | --- | --- |
 | `canonical_md` (pipeline_a) | raw | `raw.content_hash` |
 | `page_image` (pipeline_b) | raw | `raw.content_hash` |
-| `ocr_text` (pipeline_b) | page_image | `page_image.content_hash` |
 | `vlm_md` (pipeline_b) | page_image | `page_image.content_hash` |
 | `mind_map` (pipeline_d) | canonical_md | `canonical_md.content_hash` |
 | `summary` (pipeline_d) | canonical_md | `canonical_md.content_hash` |
@@ -2955,13 +2948,12 @@ Step 3: 二级级联（canonical_md 变 stale → 下游也 stale）
   wiki_md:   input_content_hash=sha256:bbb ≠ canonical_md.content_hash (stale) → stale
 
 Step 4: 二级级联（page_image 变 stale → 下游也 stale）
-  ocr_text:  input_content_hash=sha256:fff ≠ page_image.content_hash (stale) → stale
-  vlm_md:    input_content_hash=sha256:fff ≠ page_image.content_hash (stale) → stale
+  vlm_md:     input_content_hash=sha256:fff ≠ page_image.content_hash (stale) → stale
 
 Step 5: 触发重建（按拓扑排序）
   1. 先重建 pipeline_a (canonical_md) + pipeline_b (page_image)  ← 可并行
   2. canonical_md ready → 重建 pipeline_d (mind_map/summary/wiki_md)
-  3. page_image ready → 重建 pipeline_b (ocr_text/vlm_md)
+  3. page_image ready → 重建 pipeline_b (vlm_md)
   4. 所有 Rep ready → rep_all_ready → IndexPipeline 评估重建
 ```
 
@@ -2999,7 +2991,7 @@ def cascade_invalidate(entity_id: str, changed_rep_type: str):
 **优化策略**：IndexPipeline 按 `required_reps` 独立触发，不等全部 Rep ready：
 
 ```text
-场景：canonical_md 变了，但 ocr_text/vlm_md 没变
+场景：canonical_md 变了，但 vlm_md 没变
 
 旧逻辑（全量等待）：
   canonical_md stale → 等待所有 Rep ready → rep_all_ready → 重建所有 Index
@@ -3009,8 +3001,8 @@ def cascade_invalidate(entity_id: str, changed_rep_type: str):
     ├─ index_pipeline_text (required: canonical_md) → canonical_md ready → 立即重建
     └─ index_pipeline_image (required: page_image) → page_image 未变 → 不重建
 
-  ocr_text ready → 评估依赖 ocr_text 的 Index：
-    └─ index_pipeline_text (required: canonical_md, optional: ocr_text) → 已基于新 canonical_md 重建 → 跳过
+  vlm_md ready → 评估依赖 vlm_md 的 Index：
+    └─ index_pipeline_text (required: canonical_md, optional: vlm_md) → 已基于新 canonical_md 重建 → 跳过
 ```
 
 **Index 增量重建规则**：
@@ -4069,7 +4061,7 @@ watch_mode:
 | Pipeline | 输入 | 产出 Representation | 产出 Chunk 类型 | Embedding 策略 |
 | --- | --- | --- | --- | --- |
 | **A. 直接提取** | raw | canonical_md, plain_text | text chunks | `retrieval.passage` on embedding_text |
-| **B. 视觉识别** | raw → page_image | page_image, ocr_text, vlm_md | image chunks + text chunks | `image` on page_image; `retrieval.passage` on ocr_text/vlm_md |
+| **B. 视觉识别** | raw → page_image | page_image, vlm_md | image chunks + text chunks | `image` on page_image; `retrieval.passage` on vlm_md |
 | **D. 知识编译** | canonical_md | mind_map, graph_json, wiki_md, summary | text chunks | `retrieval.passage` on summary/caption |
 | **E. 图片向量** | raw → page_image | page_image | image chunks | `image` on page_image |
 | **F. 音频转写** | raw → audio_segment | audio_segment, transcript, transcript_segment | audio chunks + text chunks | `audio` on segment; `retrieval.passage` on transcript |
@@ -4419,7 +4411,7 @@ class RepStepRegistry:
 | `convert_to_pdf` | 办公文档转 PDF | `raw` | — | `source/pdf` | extract | document | text | ✅ |
 | `parse` | 文档解析 | `raw` | — | `canonical_md`, `plain_text`, `layout_json` | extract | document | text | ✅ |
 | `render_page` | 页面渲染 | `raw` / `source/pdf` | — | `page_image` | extract | document, image | image | ✅ |
-| `visual_recognize` | 视觉识别（OCR+VLM） | `page_image` | — | `ocr_text`, `vlm_md` | recognize | document | text | ✅ |
+| `visual_recognize` | 视觉识别（VLM） | `page_image` | — | `vlm_md` | recognize | document | text | ✅ |
 | `transcribe` | 音视频转写 | `raw` | — | `transcript`, `audio_segment` | recognize | audio, video | audio | ✅ |
 | `extract_keyframes` | 视频关键帧抽取 | `raw` | — | `keyframe_image`, `keyframe_timeline` | extract | video | image | ✅ |
 | `table_parse` | 表格解析 | `raw` | — | `table_parquet`, `table_md`, `table_json` | compile | table | table | ✅ |
@@ -4477,7 +4469,7 @@ RepStepRegistry.register(FaqCompileStep())
 
 #### 6.7.6 v0.1 核心流路：一切皆 MD
 
-> **v0.1 设计哲学**：所有 Pipeline 的最终目标都是产出 Markdown（`canonical_md` / `vlm_md` / `ocr_text`），作为后续 IndexPipeline 的统一输入。v0.1 聚焦三条核心流路：
+> **v0.1 设计哲学**：所有 Pipeline 的最终目标都是产出 Markdown（`canonical_md` / `vlm_md`），作为后续 IndexPipeline 的统一输入。v0.1 聚焦三条核心流路：
 
 **流路 1：URL → HTML → MD**
 
@@ -4509,7 +4501,7 @@ convert_to_pdf     ← LibreOffice headless 转换，输出 source/pdf
 render_page        ← pdf2image 逐页渲染，输出 page_image
   │
   ▼
-visual_recognize   ← OCR + VLM 双通道，输出 ocr_text + vlm_md
+visual_recognize   ← VLM 视觉识别，输出 vlm_md
   │
   ▼
 IndexPipeline      ← chunk_and_embed_text → Lance 索引
@@ -4625,7 +4617,7 @@ class IndexStepRegistry:
 
 | step_id | name | index_type | required_reps | optional_reps | supported_modalities | v0.1 |
 |---|---|---|---|---|---|
-| `chunk_and_embed_text` | 文本切片+嵌入 | semantic | `canonical_md`, `ocr_text`, `vlm_md`（任一） | `layout_json` | text | ✅ |
+| `chunk_and_embed_text` | 文本切片+嵌入 | semantic | `canonical_md`, `vlm_md`（任一） | `layout_json` | text | ✅ |
 | `build_vector_index` | 向量索引 | semantic | — | — | text, image, audio | ✅ |
 | `build_fts_index` | 全文索引 | lexical | — | — | text | ✅ |
 | `chunk_and_embed_image` | 图片切片+嵌入 | visual | `page_image` | `layout_json` | image | ✅ |
@@ -5160,7 +5152,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
 | `canonical_md` | Markdown 渲染 | 支持 GFM（表格、代码块、数学公式） |
 | `plain_text` | 纯文本 + 行号 | 等宽字体，支持高亮定位 |
 | `page_image` | 图片列表 / 翻页 | 每页一张截图，支持页码跳转 |
-| `ocr_text` | Markdown 渲染 | 同 canonical_md |
+| `vlm_md` | Markdown 渲染 | 同 canonical_md |
 | `vlm_extracted_md` | Markdown 渲染 | 同 canonical_md |
 | `caption` | 文本卡片 | 图片描述文本 |
 | `table_md` / `table_json` / `table_parquet` | 表格渲染 | table_parquet：DuckDB 抽样 100 行转 HTML 表格；JSON 转 HTML 表格；Markdown 表格直接渲染 |
@@ -5197,7 +5189,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
     { "rep_type": "raw", "status": "ready", "preview_url": "/preview/abc123?rep_type=raw" },
     { "rep_type": "canonical_md", "status": "ready", "preview_url": "/preview/abc123?rep_type=canonical_md" },
     { "rep_type": "page_image", "status": "ready", "preview_url": "/preview/abc123?rep_type=page_image" },
-    { "rep_type": "ocr_text", "status": "ready", "preview_url": "/preview/abc123?rep_type=ocr_text" },
+    { "rep_type": "vlm_md", "status": "ready", "preview_url": "/preview/abc123?rep_type=vlm_md" },
     { "rep_type": "mind_map", "status": "ready", "preview_url": "/preview/abc123?rep_type=mind_map" },
     { "rep_type": "graph_json", "status": "skipped", "preview_url": null }
   ]
@@ -5222,7 +5214,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
    canonical_md  page_image ──────────┐
       │    │       │    │             │
       │    │       ▼    ▼             ▼
-      │    │    ocr_text vlm_md   image_emb
+      │    │    vlm_md            image_emb
       ▼    ▼
   mind_map summary
       │
@@ -5231,7 +5223,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
 
    ← 点击 vlm_md → 预览 VLM 提取结果
    ← 高亮 raw → page_image → vlm_md 链路
-   ← 右键 page_image → "查看影响" → 高亮 ocr_text, vlm_md, image_emb
+   ← 右键 page_image → "查看影响" → 高亮 vlm_md, image_emb
 ```
 
 ### 8.5 工具协议
@@ -5756,7 +5748,7 @@ async def vfs_get_rep_content(
     rep_type: str,
     max_length: int = 5000,
 ) -> str:
-    """读取 Rep 文件内容（仅文本类 Rep：canonical_md / ocr_text / summary / table_schema）"""
+    """读取 Rep 文件内容（仅文本类 Rep：canonical_md / vlm_md / summary / table_schema）"""
     ...
 
 @server.tool()
@@ -6228,7 +6220,7 @@ pdf · docx · pptx · image · audio · table
 
 | pipeline_id | name | steps | required_reps | v0.1 |
 |---|---|---|---|---|
-| `index_pipeline_text` | 文本索引 | `chunk_and_embed_text` → `build_vector_index` → `build_fts_index` | `canonical_md` / `ocr_text`（任一） | ✅ |
+| `index_pipeline_text` | 文本索引 | `chunk_and_embed_text` → `build_vector_index` → `build_fts_index` | `canonical_md` / `vlm_md`（任一） | ✅ |
 | `index_pipeline_image` | 图片索引 | `chunk_and_embed_image` → `build_vector_index` | `page_image` | ✅ |
 | `index_pipeline_video` | 视频双模态索引 | `chunk_and_embed_audio` → `build_vector_index` → `chunk_and_embed_image` → `build_vector_index` | `transcript` + `keyframe_image` | ✅ |
 | `index_pipeline_structural` | 结构化检索 | `register_duckdb_view` | `table_parquet` | ✅ |
@@ -6248,7 +6240,7 @@ pdf · docx · pptx · image · audio · table
 ### 13.5 Rep
 
 ```text
-raw · canonical_md · plain_text · page_image · ocr_text
+raw · canonical_md · plain_text · page_image · vlm_md
 transcript · transcript_segment · caption
 table_parquet · table_md · table_json
 ```
@@ -6428,7 +6420,7 @@ semantic · lexical · hybrid · visual
 | | `preview` P95 | ≤ 500 ms（含 OSS 读 + 渲染数据准备） |
 | **吞吐** | `hybrid` QPS（单 workspace） | ≥ 50 |
 | **RepPipeline 执行延迟** | 100 页 PDF → `canonical_md` P95 | ≤ 30 s |
-| | 100 页 PDF → `ocr_text`（Pipeline B）P95 | ≤ 90 s |
+| | 100 页 PDF → `vlm_md`（Pipeline B）P95 | ≤ 90 s |
 | | 1 小时 audio → `transcript` P95 | ≤ 5 min |
 | **IndexPipeline 执行延迟** | 10K chunks → vector + FTS P95 | ≤ 60 s |
 | | 1K images → visual index P95 | ≤ 30 s |
@@ -6465,7 +6457,7 @@ semantic · lexical · hybrid · visual
 | 场景 | 触发 | 期望 |
 | --- | --- | --- |
 | **S1. PDF 全文检索** | 录入 pricing.pdf | hybrid (semantic + lexical) 命中；带页码 + section snippet |
-| **S2. PDF 双流水线** | 同一 PDF 走 Pipeline A + B | canonical_md 和 ocr_text 的 chunks 都可被检索到 |
+| **S2. PDF 双流水线** | 同一 PDF 走 Pipeline A + B | canonical_md 和 vlm_md 的 chunks 都可被检索到 |
 | **S3. 图片反查** | 录入 chart.png | 用文本"柱状图" → visual 命中 |
 | **S4. 录音转写检索** | 录入 meeting.wav | 用文本"Q3 定价" → 命中 transcript_segment + audio 时间戳 |
 | **S5. 隐藏不删** | 把 doc 标 hidden | 检索默认不可见；`include_hidden=true` 仍可取 |
@@ -6473,11 +6465,11 @@ semantic · lexical · hybrid · visual
 | **S7. 版本切换** | raw 更新 | 旧版本 active 直到新版本 publish 成功；检索无中断 |
 | **S8. Reconcile** | content_hash 变化 | reconcile 检测到变化，触发 pipeline 重跑 |
 | **S9. Pipeline 追加** | 注册新 pipeline | 对已有 entity 按需重跑；不影响已有 representation |
-| **S10. 视角预览** | 检索命中 pricing.pdf 的 chunk | 点击 → 预览 canonical_md（定位到第7页）；切换 → 预览 page_image / ocr_text / mind_map |
+| **S10. 视角预览** | 检索命中 pricing.pdf 的 chunk | 点击 → 预览 canonical_md（定位到第7页）；切换 → 预览 page_image / vlm_md / mind_map |
 | **S11. 视角面板** | 打开 entity 详情 | 列出所有可用 representation + 状态 + preview_url；skipped/failed 的灰显 |
-| **S12. 血缘级联失效** | raw 更新（content_hash 变化） | 沿 lineage 级联：page_image/ocr_text/canonical_md 全部标 stale；对应 chunks 检索不再命中 |
+| **S12. 血缘级联失效** | raw 更新（content_hash 变化） | 沿 lineage 级联：page_image/vlm_md/canonical_md 全部标 stale；对应 chunks 检索不再命中 |
 | **S13. 血缘级联重建** | S12 之后 | pipeline 自动重跑；新 representation ready → chunks active → 检索恢复 |
-| **S14. 中间节点失效** | page_image 重建失败 | 下游 ocr_text/vlm_md 保持 stale；上游 canonical_md 不受影响（不同 lineage 分支） |
+| **S14. 中间节点失效** | page_image 重建失败 | 下游 vlm_md 保持 stale；上游 canonical_md 不受影响（不同 lineage 分支） |
 | **S15. 两阶段一致性：Rep↔Raw 校验** | raw 更新 + Rep 未重建 | Phase 1 Reconciler 检测到 `source_content_hash` 不匹配 → 标 Rep stale → 触发 RepPipeline 重建 |
 | **S16. 两阶段一致性：Index↔Rep 校验** | Rep 重建后 Index 未更新 | Phase 2 Reconciler 检测到 `index_built_from_hash` ≠ `build_from_hash_set` → 标 Index stale → 触发 IndexPipeline 重建 |
 | **S17. 两阶段独立性** | IndexPipeline 重建失败 | Rep 文件仍可被读，状态 `ready`；Index `status=failed`；下一次 Reconcile 重试；Rep 不受影响 |
@@ -6500,7 +6492,7 @@ semantic · lexical · hybrid · visual
 | **M0. Schema 冻结** | W1 | Entity / Representation / Chunk / Edge / Pipeline schema review 通过 |
 | **M1. Ingest + Detect** | W2 | raw → entity + detect 跑通；content_hash 落盘 |
 | **M2. Pipeline A (直接提取)** | W3-4 | canonical_md → chunks → text embedding → semantic index |
-| **M3. Pipeline B (OCR)** | W5 | page_image → ocr_text → chunks → ocr embedding |
+| **M3. Pipeline B (VLM)** | W5 | page_image → vlm_md → chunks → text embedding |
 | **M4. Pipeline E (图片向量)** | W5 | page_image → image embedding → visual index |
 | **M5. Pipeline F (音频转写)** | W6 | audio_segment → transcript → chunks → dual embedding |
 | **M6. Hybrid Search + Retrieval Gateway** | W7 | hybrid / semantic / lexical / visual / ls / read / grep / glob |
@@ -6515,7 +6507,7 @@ semantic · lexical · hybrid · visual
 
 | # | 风险 / 问题 | 缓解 / 待定 |
 | --- | --- | --- |
-| R1 | 文档版面解析准确率影响 canonical_md 质量 | quality 字段记录 confidence；fallback 到 ocr_text / vlm_md |
+| R1 | 文档版面解析准确率影响 canonical_md 质量 | quality 字段记录 confidence；fallback 到 vlm_md |
 | R2 | 多模态 embedding 调用成本 | V5 API 单批 ≤ 64；batching + 缓存；按需 embed |
 | R3 | 大文件 PDF 多 pipeline 并行慢 | pipeline 间并行；分页并行；中间产物缓存 |
 | R4 | Lance 表 schema 演进 | 所有表带 `schema_version`；变更走 migration |
@@ -7413,7 +7405,7 @@ async def test_xadd_xread():
 | 场景 | 描述 | 预期结果 |
 | --- | --- | --- |
 | **S1: 文档完整链路** | PDF → canonical_md → chunk → embed → search | 检索命中；snippet 正确；provenance 可追溯 |
-| **S2: 图片完整链路** | PNG → page_image → ocr_text → chunk → embed → search | 跨模态检索（文本→图片）命中 |
+| **S2: 图片完整链路** | PNG → page_image → vlm_md → chunk → embed → search | 跨模态检索（文本→图片）命中 |
 | **S3: 音频完整链路** | MP3 → audio_segment → transcript → chunk → embed → search | 音频内容可检索 |
 | **S4: 一致性修复** | 修改 raw → Reconciler 检测 → Rep 重建 → Index 重建 | 两步自动修复完成 |
 | **S5: 软删除** | 删除 Entity → 30 天内仍可恢复 → 30 天后物理删除 | 数据按预期保留和清除 |
