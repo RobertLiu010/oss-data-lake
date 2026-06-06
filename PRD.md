@@ -4684,7 +4684,7 @@ index_strategies:
         respect_code_blocks: true       # 代码块不切断
         respect_table_blocks: true      # 表格不切断
     embedding:
-      model: jina-embeddings-v3         # 引用 config.yaml embedding.models 中的 key
+      model: jina-embeddings-v5-text-small  # 引用 config.yaml embedding.models 中的 key
       dimension: 1024                   # 输出向量维度
       batch_size: 64                    # 单次 embedding API 调用的最大文档数
       task: "retrieval.passage"         # Jina 任务类型：retrieval.passage | retrieval.query | text-matching
@@ -4803,7 +4803,9 @@ index_strategies:
 
 | 模型 | Provider | 维度 | 特点 | v0.1 |
 | --- | --- | --- | --- | --- |
-| `jina-embeddings-v3` | Jina AI | 1024（可配置 256/512/1024/2048） | 多语言、多任务（retrieval.passage/query/text-matching） | ✅ 默认 |
+| `jina-embeddings-v5-text-small` | Jina AI | 1024 | 多语言、LoRA 任务适配（retrieval.passage/query/text-matching/code/query-by-table） | ✅ 默认 |
+| `jina-embeddings-v5-text-large` | Jina AI | 2048 | 高精度、LoRA 任务适配 | v0.2 |
+| `jina-embeddings-v3` | Jina AI | 1024（可配置 256/512/1024/2048） | 多语言、多任务 | 兼容 |
 | `bge-m3` | 本地 | 1024 | 多语言、本地部署、无 API 费用 | ✅ |
 | `text-embedding-3-small` | OpenAI | 1536 | 英文优化 | v0.2 |
 | `text-embedding-3-large` | OpenAI | 3072 | 高精度 | v0.2 |
@@ -4842,10 +4844,10 @@ Ingest Strategy（接入策略）     IndexStrategy（索引策略）
 
 | ID | chunking | embedding | dimension | 适用 |
 | --- | --- | --- | --- | --- |
-| `default_text` | markdown_heading | jina-embeddings-v3 | 1024 | 文档/URL（默认） |
-| `library_text` | library | jina-embeddings-v3 | 1024 | 知识库/长文档 |
+| `default_text` | markdown_heading | jina-embeddings-v5-text-small | 1024 | 文档/URL（默认） |
+| `library_text` | library | jina-embeddings-v5-text-small | 1024 | 知识库/长文档 |
 | `local_text` | markdown_heading | bge-m3 | 1024 | 本地部署场景 |
-| `fixed_size_text` | fixed_size | jina-embeddings-v3 | 1024 | 无标题结构的纯文本 |
+| `fixed_size_text` | fixed_size | jina-embeddings-v5-text-small | 1024 | 无标题结构的纯文本 |
 
 ### 6.9 RepStep / IndexStep 并发模型
 
@@ -7038,13 +7040,20 @@ redis:
   key_prefix: "vl"                    # 全局 key 前缀
 
 embedding:
-  default_model: "jina-embeddings-v3"
+  default_model: "jina-embeddings-v5-text-small"
   models:
-    jina-embeddings-v3:
+    jina-embeddings-v5-text-small:
       provider: jina
       api_key: "${JINA_API_KEY}"
       dimension: 1024
       max_batch_size: 64
+      task_type: "retrieval.passage"     # LoRA 任务适配：retrieval.passage | retrieval.query | text-matching | code | query-by-table
+    jina-embeddings-v5-text-large:
+      provider: jina
+      api_key: "${JINA_API_KEY}"
+      dimension: 2048
+      max_batch_size: 32
+      task_type: "retrieval.passage"
     bge-m3:
       provider: local
       model_path: "./models/bge-m3"
