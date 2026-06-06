@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index。
 
 ---
 
@@ -155,22 +155,39 @@ Lineage 的核心目的是：**上游变动后，下游立即不可用并重新�
 
 ```text
 raw 更新
-  → page_image 立即 stale → ocr_text 立即 stale → ocr chunks 立即 stale
-                          → vlm_extracted_md 立即 stale → vlm chunks 立即 stale
-                          → image_embedding 立即 stale
-  → canonical_md 立即 stale → mind_map 立即 stale
-                            → summary 立即 stale
-                            → graph_json 立即 stale
+  → [Rep 级联] canonical_md stale → mind_map stale → graph_json stale → summary stale → wiki_md stale
+  → [Rep 级联] page_image stale → ocr_text stale → vlm_md stale
+  → [Index 重建] 所有基于 stale rep 的 index 自动标记 stale
 ```
 
-**Lineage 驱动的级联规则**：
+**两阶段一致性模型**：
 
-1. **上游变了 → 下游立即 stale**：沿 Pipeline 边向下遍历（从 Pipeline 注册表推导），所有下游 representation 文件的 OSS Tag `status` 更新为 `stale`，对应 chunks 标记 `stale`，检索不再命中。
-2. **stale → 自动触发重建**：pipeline orchestrator 检测到 stale 状态，自动重跑对应 pipeline 生成新 representation + chunks。
-3. **重建完成 → publish 切换**：新版本 ready 后，原子切换，检索恢复。
-4. **重建期间 → 旧版本仍可查**：stale 的 chunks 在新版本 publish 前仍保留，但标记为 stale（可选：检索是否包含 stale 结果）。
+> 解耦后，一致性校验变成两条清晰的链：**校验1：Rep↔Raw（内容一致性）**和**校验2：Index↔Rep（索引一致性）**。两者独立触发、独立修复。
 
-> 追溯、可视化、影响分析都是 Lineage 的**辅助能力**，核心是"级联失效 + 自动重建"。
+**阶段 1：Rep ↔ Raw 一致性（内容一致性）**：
+
+1. **上游变了 → 下游 Rep 立即 stale**：沿 RepPipeline 的 `input_reps` 边向下遍历，所有下游 Rep 文件的 OSS Tag `status` 更新为 `stale`。
+2. **stale → 自动触发 RepPipeline 重建**：RepPipelineOrchestrator 检测到 stale 状态，自动重跑对应 RepPipeline 生成新 Representation 文件。
+3. **重建完成 → publish 切换**：新版本 ready 后，原子切换。
+4. **重建期间 → 旧版本仍可查**：stale 的 Rep 在新版本 publish 前仍保留。
+
+**阶段 2：Index ↔ Rep 一致性（索引一致性）**：
+
+1. **Rep 变了 → 对应 Index 立即 stale**：IndexPipeline 消费的 Rep 有任一 stale，则该 Index 标记 stale。
+2. **stale → 自动触发 IndexPipeline 重建**：IndexPipelineOrchestrator 检测到 Index stale，自动重跑对应 IndexPipeline 重建索引。
+3. **Index 重建失败不影响 Rep**：Rep 文件仍在，只是检索能力暂时缺失。
+4. **Index 无血缘**：Index 之间不存在级联关系，每个 Index 独立重建。
+
+**两阶段的关键区别**：
+
+| 维度 | Rep ↔ Raw 一致性 | Index ↔ Rep 一致性 |
+|---|---|---|
+| 校验内容 | Rep 文件内容是否与 Raw 一致 | Index 是否与当前 active Rep 一致 |
+| 检测方式 | `content_hash` 比对 | `rep_content_hash` vs `index_built_from_hash` |
+| 级联 | 有（Rep 之间沿 RepPipeline 边级联） | 无（Index 之间独立） |
+| 修复 | 重跑 RepPipeline | 重跑 IndexPipeline |
+| 修复影响 | 知识内容变化 | 检索能力恢复 |
+| 修复顺序 | 先修 Rep，再修 Index | 必须等 Rep 全部 active 后 |
 
 ### 2.6 Pipeline 是一等公民
 
@@ -2453,26 +2470,123 @@ active · hidden · deleted · stale
 - 新版本处理期间，旧版本保持 active，直到新版本 publish 成功才切换。
 - 检索默认查 `status=active` 的最新 `entity_version`。
 
-### 5.7 状态联动规则
+### 5.7 状态联动规则（两阶段）
+
+> 解耦后，状态联动分为 **Rep 联动**（内容层）和 **Index 联动**（索引层），两者独立触发、独立修复。
+
+#### 5.7.1 Rep 联动（内容层）
 
 | 触发事件 | 联动动作 |
 | --- | --- |
-| raw object `content_hash` 变化 | entity.version++；沿 Pipeline 注册表的 input_rep 边向下级联：所有下游 rep 文件 OSS Tag `status`→`stale`，对应 chunks 标 `stale`（检索不再命中）；自动触发 pipeline 重跑；新版本 ready 后 publish 切换 |
-| representation OSS Tag `status`→`ready` | 触发对应 chunks 的 embed + index |
-| representation OSS Tag `status`→`stale` | 沿 Pipeline input_rep 边向下级联：所有下游 rep 文件 OSS Tag `status`→`stale`，chunks 标 `stale`；自动触发下游 pipeline 重建 |
-| representation OSS Tag `status`→`failed` | pipeline `partial_success`；已有 representation 的 chunks 仍可用 |
-| OSS Tag `rag_status`→`hidden` | entity.status=hidden；所有 chunks 标 `hidden`（不进入默认检索） |
-| OSS Tag `rag_status`→`deleted` | entity.status=deleted；chunks 软删除；OSS 原文件保留 |
-| embedding 模型升级 | 检测 `model_version` 过期；触发对应 chunks 重跑 embed |
-| pipeline 新增 | 对已有 entity 按需重跑新 pipeline；不影响已有 representation |
-| 上游 representation 变化 | 沿 Pipeline 边向下级联：下游 representation OSS Tag `status`→`stale` → chunks stale → 自动重建 |
+| raw object `content_hash` 变化 | entity.version++；沿 RepPipeline 的 `input_reps` 边向下级联：所有下游 Rep 文件 OSS Tag `status`→`stale`；自动触发 RepPipeline 重建 |
+| Rep OSS Tag `status`→`ready` | 触发 `rep_all_ready` 事件 → IndexPipelineOrchestrator 评估是否需要重建索引 |
+| Rep OSS Tag `status`→`stale` | 沿 RepPipeline `input_reps` 边向下级联：下游 Rep `status`→`stale`；自动触发下游 RepPipeline 重建 |
+| Rep OSS Tag `status`→`failed` | RepPipeline `partial_success`；已有 Rep 的 Index 仍可用 |
+| OSS Tag `rag_status`→`hidden` | entity.status=hidden；所有 Rep + Index 标 `hidden` |
+| OSS Tag `rag_status`→`deleted` | entity.status=deleted；Rep + Index 软删除；OSS 原文件保留 |
+| RepPipeline 新增 | 对已有 entity 按需重跑新 RepPipeline；不影响已有 Rep |
+
+#### 5.7.2 Index 联动（索引层）
+
+| 触发事件 | 联动动作 |
+| --- | --- |
+| `rep_all_ready` 事件 | IndexPipelineOrchestrator 评估：若 `index_built_from_hash` ≠ 当前 active Rep 的 `content_hash` 并集 → 标 Index stale → 自动重建 |
+| Index stale | 自动触发 IndexPipeline 重建；**不级联**（Index 之间独立） |
+| Index 重建失败 | Rep 不受影响；检索能力暂时缺失；下次 reconcile 重试 |
+| embedding 模型升级 | 检测 `model_version` 过期；标对应 Index stale → 触发 IndexPipeline 重跑 |
+| IndexPipeline 新增 | 对已有 Rep 按需重跑新 IndexPipeline；不影响已有 Index |
+
+#### 5.7.3 跨阶段联动
+
+| 触发事件 | 联动动作 |
+| --- | --- |
+| Rep `status`→`stale` | 该 Rep 对应的 Index 标 stale（因为 `index_built_from_hash` 不再匹配） |
+| Rep `status`→`ready`（全部 active） | 发出 `rep_all_ready` 事件 → IndexPipelineOrchestrator 评估重建 |
+| Rep 重建中（部分 stale） | Index 等待，不触发重建（避免基于不完整 Rep 建索引） |
 
 ### 5.8 内容寻址变更检测
 
 - `detect` 阶段计算 raw bytes 的 SHA-256 `content_hash`。
+- 每个 Rep 文件计算内容的 SHA-256 `content_hash`（写入 Representation Tag）。
 - 每个 chunk 计算文本内容的 SHA-256 `content_hash`。
 - Reconcile 比较 `content_hash` 而非 `etag`（etag 在 multipart upload 时不可靠）。
-- Parser 升级时，强制对受影响的 entity_type 重跑 pipeline，即使 content_hash 未变。
+- Parser 升级时，强制对受影响的 entity_type 重跑 RepPipeline，即使 content_hash 未变。
+
+### 5.9 两阶段一致性校验
+
+> 解耦后，Reconciler 的职责也拆为两阶段：**Rep↔Raw 校验**和**Index↔Rep 校验**。两者独立运行、独立修复。
+
+#### 5.9.1 校验1：Rep ↔ Raw 一致性（内容一致性）
+
+**校验内容**：每个 Rep 文件的内容是否与它声明的 `source_content_hash`（即 raw 的 `content_hash`）一致。
+
+```text
+Reconciler 周期任务（每 15 min）— Rep 阶段
+  ├─ 扫描所有 Rep 文件的 Representation Tag
+  ├─ 对比 Rep Tag 的 source_content_hash vs Raw 的 content_hash
+  ├─ 不匹配 → 标 Rep stale → 触发 RepPipeline 重建
+  ├─ 检查 Rep 文件是否存在（OSS 404 → 标 failed）
+  └─ 检查 Rep 文件的 body_hash vs Tag 中的 content_hash（防篡改/损坏）
+```
+
+**校验场景**：
+
+| 场景 | 检测方式 | 修复 |
+|---|---|---|
+| Raw 更新但 Rep 未重建 | `source_content_hash` 不匹配 | 标 stale → RepPipeline 重建 |
+| Rep 文件损坏/丢失 | OSS 404 或 `body_hash` 不匹配 | 标 failed → RepPipeline 重建 |
+| RepPipeline 升级后旧 Rep 过时 | `pipeline_version` Tag 不匹配 | 标 stale → RepPipeline 重建 |
+| Rep 被意外删除 | OSS 404 | 标 deleted → RepPipeline 重建（如果 raw 仍在） |
+
+#### 5.9.2 校验2：Index ↔ Rep 一致性（索引一致性）
+
+**校验内容**：每个 Index 是否基于当前所有 active Rep 的最新 `content_hash` 构建。
+
+```text
+Reconciler 周期任务（每 15 min）— Index 阶段
+  ├─ 扫描所有 Index 的元数据（index_built_from_hash）
+  ├─ 对比 index_built_from_hash vs 当前 active Rep 的 content_hash 并集
+  ├─ 不匹配 → 标 Index stale → 触发 IndexPipeline 重建
+  ├─ 检查 Index 是否存在（Lance index 缺失 → 标 stale）
+  └─ 检查 embedding model_version 是否过期 → 标 stale
+```
+
+**校验场景**：
+
+| 场景 | 检测方式 | 修复 |
+|---|---|---|
+| Rep 重建后 Index 未重建 | `index_built_from_hash` 不匹配 | 标 stale → IndexPipeline 重建 |
+| Index 损坏 | Lance index 校验失败 | 标 stale → IndexPipeline 重建 |
+| Embedding 模型升级 | `model_version` 过期 | 标 stale → IndexPipeline 重建 |
+| IndexPipeline 新增 | 无对应 Index 记录 | 首次构建 |
+| Rep 部分 stale | `index_built_from_hash` 不完整 | 等待 Rep 全部 active 后再重建 |
+
+#### 5.9.3 两阶段 Reconciler 的执行顺序
+
+```text
+Reconciler 周期（每 15 min）
+  │
+  ├─ Phase 1: Rep ↔ Raw 校验
+  │   ├─ 扫描所有 Rep
+  │   ├─ 检测不一致
+  │   ├─ 标 stale / failed
+  │   └─ 触发 RepPipeline 重建
+  │
+  ├─ Phase 2: Index ↔ Rep 校验（等 Phase 1 完成后）
+  │   ├─ 扫描所有 Index
+  │   ├─ 检测不一致
+  │   ├─ 标 stale
+  │   └─ 触发 IndexPipeline 重建
+  │
+  └─ Phase 3: 跨阶段校验
+      ├─ 检查是否有 Rep 全部 active 但 Index 仍 stale 的情况
+      └─ 触发 IndexPipeline 重建
+```
+
+**关键不变量**：
+- Phase 2 必须在 Phase 1 完成后执行（避免基于 stale Rep 建索引）
+- Index 重建失败不影响 Rep（两阶段独立）
+- 两个 Phase 可以并行运行在不同 Entity 上（Entity A 的 Rep 校验 和 Entity B 的 Index 校验不冲突）
 
 ---
 
