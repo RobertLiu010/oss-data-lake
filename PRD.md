@@ -6205,7 +6205,8 @@ pdf · docx · pptx · image · audio · table
 | pipeline_id | name | steps | entity_types | v0.1 |
 |---|---|---|---|---|
 | `rep_pipeline_a` | 直接提取 | `parse` | document | ✅ |
-| `rep_pipeline_b` | 视觉识别 | `render_page` → `visual_recognize` | document | ✅ |
+| `rep_pipeline_url` | URL 抓取+解析 | `fetch_url` → `parse_html` | document | ✅ |
+| `rep_pipeline_b` | 视觉识别 | `convert_to_pdf`（办公文档时）→ `render_page` → `visual_recognize` | document | ✅ |
 | `rep_pipeline_e` | 图片渲染 | `render_page` | document, image | ✅ |
 | `rep_pipeline_f` | 音频转写 | `transcribe` | audio | ✅ |
 | `rep_pipeline_g` | 表格获取 | `table_parse` | table | ✅ |
