@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）。
 
 ---
 
@@ -5142,6 +5142,100 @@ semantic · lexical · hybrid · visual
 | Q7 | Wiki Projector 是否要支持 Pull 模式（`GET /v1/wiki/project/*`） | v0.2 评估；v0.1 仅 Push 模式 |
 | Q8 | RepStep 之间是否允许共享状态（跨 step 缓存） | v0.1 不允许（纯函数）；v0.2 评估 `RepStepContext.cache` |
 | Q9 | RepPipeline 是否支持条件分支（if/else） | v0.1 不支持（线性拓扑）；v0.2 评估 DAG 条件边 |
+
+---
+
+## 20. 开源技术选型与复用清单
+
+> **目的**：Vector-Lake 系统构建优先复用成熟开源项目，只对特有能力（Entity 抽象、RepPipeline/IndexPipeline 双管线、Projector、Two-phase 一致性）做自研。本节定义 7 大类别的开源技术栈与复用路线图。
+>
+> **完整清单与对比**：见 [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)（含 50+ 开源项目对比、7 大类别全景图、v0.1/v0.2/v0.3 复用路线图）。
+
+### 20.1 7 大类别速查
+
+| 类别 | 核心需求 | v0.1 选定 | v0.2 候选 |
+|---|---|---|---|
+| **1. 对象存储** | Entity / Rep / Index 数据落盘 | 阿里云 OSS / AWS S3 / MinIO | Apache Ozone（超大规模） |
+| **2. 数据同步** | 跨桶/跨云/增量 | **juicefs sync** / **rclone** | s3sync / SeaTunnel |
+| **3. 向量检索** | 多模态 RAG 检索 | **LanceDB** ✅ | — |
+| **4. Pipeline 编排** | Rep/Index/Projector 调度 | 自研 RepStep/IndexStep 调度 | **Dagster**（资产为中心） |
+| **5. 元数据治理** | Entity 发现 / 血缘 / 治理 | 自研 VFS | **OpenMetadata** |
+| **6. 可观测性** | 监控 / 告警 / 日志 / Trace | **Prometheus + Grafana + OTel** | — |
+| **7. Lake Format** | 表格式 / 版本控制 | Lance 协议 ✅ | 借鉴 Iceberg / Delta 设计 |
+
+### 20.2 v0.1 推荐技术栈（最小可用集）
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│  Vector-Lake v0.1 Stack                                       │
+│                                                               │
+│  Storage:        阿里云 OSS / S3 / MinIO                     │
+│  Event:          OSS Event Notification / MinIO Webhook      │
+│  Vector:         LanceDB（embedded）                         │
+│  Pipeline:       自研 RepStep / IndexStep 调度（§6）          │
+│  Queue:          Redis Streams / Python asyncio.Queue        │
+│  Config:         YAML + 环境变量                              │
+│  Observability:  OpenTelemetry + Prometheus + Grafana        │
+│  Errors:         Sentry                                       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 20.3 v0.2 引入候选
+
+| 项目 | 引入理由 | 复用范围 |
+|---|---|---|
+| **Dagster** | 资产为中心与 Entity 模型完美契合 | RepPipeline / IndexPipeline 编排 |
+| **Temporal** | 持久执行 + 状态机 | Reconciler 周期任务 + Pipeline 失败重试 |
+| **OpenMetadata** | 一体化数据治理 | Entity 血缘可视化 + 数据质量 |
+| **Apache Kafka** | 跨服务事件 + 可靠重试 | OSS 事件 + RepStep 异步执行 |
+| **JuiceFS** | POSIX 视角访问 OSS | VFS 文件级操作优化 |
+| **lakeFS** | Git-like 数据湖版本控制 | Entity 零拷贝快照 / 分支（v0.3） |
+
+### 20.4 OSS 事件通知集成模式
+
+```text
+方式 A：OSS Event Notification → Webhook → Vector-Lake VFS
+  ├─ 阿里云 OSS：SMQ/MNS → Function Compute / Webhook
+  ├─ AWS S3：SNS / SQS / EventBridge → Lambda / Webhook
+  └─ MinIO：notify_webhook / notify_kafka / notify_redis
+
+方式 B：OSS Event Notification → Kafka → Vector-Lake
+  └─ 高吞吐 + 可靠重试（v0.2+）
+
+方式 C：VFS 周期 Reconciler 兜底（v0.1）
+  └─ Phase 0/1/2/3 15 min 周期（§5.9.3）
+```
+
+### 20.5 关键开源项目 GitHub 链接（v0.1/v0.2 直接相关）
+
+| 项目 | 链接 | 用途 |
+|---|---|---|
+| **LanceDB** | https://github.com/lancedb/lancedb | ✅ 已选定主存储 |
+| **MinIO** | https://github.com/minio/minio | 对象存储 / 本地开发 |
+| **juicefs sync** | https://github.com/juicefs/juicefs | 跨 OSS 同步 |
+| **rclone** | https://github.com/rclone/rclone | 多云/异构同步 |
+| **Dagster** | https://github.com/dagster-io/dagster | v0.2 编排 |
+| **OpenMetadata** | https://github.com/open-metadata/OpenMetadata | v0.2 治理 |
+| **Apache Iceberg** | https://github.com/apache/iceberg | v0.2 借鉴（事务日志） |
+| **Delta Lake** | https://github.com/delta-io/delta | v0.2 借鉴（Checkpoint） |
+| **OpenTelemetry** | https://github.com/open-telemetry/opentelemetry | ✅ Trace 标准 |
+| **Prometheus** | https://github.com/prometheus/prometheus | ✅ Metrics |
+| **Grafana** | https://github.com/grafana/grafana | ✅ 可视化 |
+| **Apache Tika** | https://github.com/apache/tika | RepStep `extract` |
+| **Whisper** | https://github.com/openai/whisper | RepStep `asr` |
+| **PaddleOCR** | https://github.com/PaddlePaddle/PaddleOCR | RepStep `recognize_text` |
+
+### 20.6 关键决策记录
+
+| 决策 | 选择 | 否决项 | 理由 |
+|---|---|---|---|
+| **对象存储** | OSS / S3 / MinIO | 自建存储 | 复用成熟基础设施 |
+| **向量检索** | LanceDB | Milvus / Qdrant | Lance 与多模态场景契合；v0.1 嵌入式 |
+| **Pipeline 编排** | 自研（v0.1） → Dagster（v0.2） | Airflow | 资产为中心更契合 |
+| **Lake Format** | Lance 协议 | Iceberg / Delta | Entity 模型与 Table 不同，借鉴而非直接用 |
+| **任务队列** | Redis Streams（v0.1） → Kafka（v0.2） | RabbitMQ | 简化部署 |
+| **可观测性** | OTel + Prometheus + Grafana | ELK / 商业方案 | 云原生标准 |
+| **元数据治理** | 自研 VFS（v0.1） → OpenMetadata（v0.2） | DataHub / Atlas | v0.1 简单；v0.2 集成 |
 
 ---
 
