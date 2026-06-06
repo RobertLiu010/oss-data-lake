@@ -27,15 +27,18 @@ from vector_lake.queue.streams import (
 logger = logging.getLogger(__name__)
 
 
-# Built-in RepPipeline definitions (§6.6.3)
+# Built-in RepPipeline definitions (§6.6.4)
 BUILTIN_REP_PIPELINES: dict[str, list[str]] = {
-    "pipeline_a": ["parse"],  # raw → canonical_md + plain_text
-    "pipeline_b": ["render_page"],  # raw → page_image
-    "pipeline_c": ["render_page", "ocr"],  # raw → page_image → ocr_text
-    "pipeline_d": ["parse", "compile_mind_map"],  # raw → canonical_md → mind_map (v0.2)
-    "pipeline_e": ["parse", "compile_summary"],  # raw → canonical_md → summary (v0.2)
-    "pipeline_f": ["transcribe"],  # raw → transcript + audio_segment
-    "pipeline_g": ["table_parse"],  # raw → table_parquet + table_md + table_json
+    "rep_pipeline_a": ["parse"],  # 直接提取: raw → canonical_md + plain_text
+    "rep_pipeline_b": ["render_page", "ocr"],  # OCR 内容变换: raw → page_image → ocr_text
+    "rep_pipeline_c": ["render_page", "vlm"],  # VLM 内容变换: raw → page_image → vlm_md (v0.2)
+    "rep_pipeline_d_mind_map": ["compile_mind_map"],  # 脑图编译 (v0.2)
+    "rep_pipeline_d_graph": ["compile_graph_json"],  # 关系图编译 (v0.2)
+    "rep_pipeline_d_summary": ["compile_summary"],  # 摘要编译 (v0.2)
+    "rep_pipeline_d_wiki": ["compile_wiki_md"],  # Wiki 编译 (v0.2)
+    "rep_pipeline_e": ["render_page"],  # 图片渲染: raw → page_image
+    "rep_pipeline_f": ["transcribe"],  # 音频转写: raw → transcript + audio_segment
+    "rep_pipeline_g": ["table_parse"],  # 表格获取: raw → table_parquet + table_md + table_json
 }
 
 # Built-in IndexPipeline definitions (§6.7.4)
@@ -48,13 +51,14 @@ BUILTIN_INDEX_PIPELINES: dict[str, list[str]] = {
 }
 
 # Entity type → default RepPipeline mapping (§6.3)
+# v0.1: document/image/audio/table; v0.2: mixed
 ENTITY_PIPELINE_MAP: dict[str, list[str]] = {
-    "document": ["pipeline_a", "pipeline_b", "pipeline_c"],
-    "image": ["pipeline_b"],
-    "audio": ["pipeline_f"],
-    "video": ["pipeline_f"],
-    "table": ["pipeline_g"],
-    "mixed": ["pipeline_a", "pipeline_b", "pipeline_c"],
+    "document": ["rep_pipeline_a", "rep_pipeline_b", "rep_pipeline_e"],
+    "image": ["rep_pipeline_e"],
+    "audio": ["rep_pipeline_f"],
+    "video": ["rep_pipeline_f"],
+    "table": ["rep_pipeline_g"],
+    "mixed": ["rep_pipeline_a", "rep_pipeline_b", "rep_pipeline_e"],
 }
 
 
