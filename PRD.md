@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2。
 
 ---
 
@@ -132,7 +132,7 @@ Entity: "https://example.com/pricing"
   │
   ├── rep: canonical_md        ← 网页抓取的 Markdown
   ├── rep: page_screenshot     ← 网页截图
-  ├── rep: vlm_extracted_md    ← 截图经 VLM 识别出的 Markdown
+  ├── rep: vlm_md                ← 截图经 VLM 识别出的 Markdown
   ├── rep: mind_map            ← LLM 编译的脑图
   ├── rep: summary             ← 摘要
   └── rep: graph_json          ← 实体关系图
@@ -144,7 +144,7 @@ Lineage 血缘链：
 raw ──► canonical_md ──► mind_map
                    ├──► summary
                    └──► graph_json
-raw ──► page_screenshot ──► vlm_extracted_md
+raw ──► page_screenshot ──► vlm_md
 ```
 
 ### 2.5 Lineage 是一等公民
@@ -189,27 +189,47 @@ raw 更新
 | 修复影响 | 知识内容变化 | 检索能力恢复 |
 | 修复顺序 | 先修 Rep，再修 Index | 必须等 Rep 全部 active 后 |
 
-### 2.6 Pipeline 是一等公民
+### 2.6 Pipeline 是两套独立的一等公民
 
-同一 Entity 可以走多条并行流水线，每条产出不同的 Representation：
+> **RepPipeline**（内容变换）和 **IndexPipeline**（索引构建）是两套独立的一等公民。RepPipeline 产出 Representation 文件；IndexPipeline 消费 Rep 产出索引。两者不混合在同一条流水线中。
+
+**RepPipeline**（内容变换）：
 
 ```text
 Entity: pricing.pdf
   │
-  ├── Pipeline A: "直接提取"
-  │     └── raw → canonical_md → text chunks → text embedding
+  ├── rep_pipeline_a: "直接提取"
+  │     └── parse: raw → canonical_md, plain_text
   │
-  ├── Pipeline B: "OCR 流水线"
-  │     └── raw → page_image → ocr_text → ocr chunks → ocr embedding
+  ├── rep_pipeline_b: "OCR 内容变换"
+  │     └── render_page → ocr: raw → page_image → ocr_text
   │
-  ├── Pipeline C: "VLM 视觉流水线"
-  │     └── raw → page_image → vlm_extracted_md → vlm chunks → vlm embedding
+  ├── rep_pipeline_c: "VLM 内容变换" (v0.2)
+  │     └── render_page → vlm: raw → page_image → vlm_md
   │
-  ├── Pipeline D: "知识编译流水线"
-  │     └── canonical_md → mind_map / graph_json / summary / wiki_md
+  ├── rep_pipeline_d_wiki: "Wiki 编译" (v0.2)
+  │     └── compile_wiki_md: canonical_md → wiki_md
   │
-  └── Pipeline E: "图片向量流水线"
-        └── page_image → image embedding (直接走 visual 索引)
+  └── rep_pipeline_e: "图片渲染"
+        └── render_page: raw → page_image
+```
+
+**IndexPipeline**（索引构建）：
+
+```text
+基于上述 Rep 产出的 Rep 文件
+  │
+  ├── index_pipeline_text: "文本索引"
+  │     └── chunk_and_embed_text → build_vector_index → build_fts_index
+  │         消费: canonical_md / ocr_text / vlm_md
+  │
+  ├── index_pipeline_image: "图片索引"
+  │     └── chunk_and_embed_image → build_vector_index
+  │         消费: page_image
+  │
+  └── index_pipeline_graph: "图索引" (v0.2)
+        └── build_graph_index
+            消费: graph_json
 ```
 
 ---
@@ -264,21 +284,25 @@ Entity: pricing.pdf
 
 ### 3.2 模块划分
 
-| 模块 | 职责 | 关键产出 |
-| --- | --- | --- |
-| **Ingest Service** | 监听 OSS 新对象、登记 entity | OSS Tag + Entity 目录 |
-| **Detect Worker** | mime / language / content_hash / size | detect 结果 |
-| **Pipeline Orchestrator** | 根据 entity_type 选择 1..N 条 pipeline 并行调度 | pipeline_run 记录 |
-| **Pipeline Worker** | 执行单条 pipeline，产出 representation + chunks | representation + chunks |
-| **Embedder** | 调用 Embedding V5 多模态服务 | chunks 表的 vector 列 |
-| **Lance Watcher** | 监听 staging Parquet 变动，实时增量同步到 Lance；支持全量 rebuild | 同步后的 Lance 数据集 |
-| **Compiler** | LLM 编译 wiki / summary / mind_map / graph | 高阶 representation |
-| **Publisher** | 版本标记 active、原子切换 | active 版本 |
-| **Event Listener** | 订阅 OSS 事件，实时更新 VFS 目录树 + 触发血缘重算 | 增量 VFS 视图 + 事件队列 |
-| **Reconciler** | 周期全量扫描 OSS prefix，对账 VFS 视图与 OSS 实际状态 | drift 报告 + 修复 |
-| **VFS Builder** | 迭代式扫描 OSS prefix，构建虚拟文件系统目录树 | 目录树 + 路径映射 |
-| **Retrieval Gateway** | 暴露统一检索 API（含 VFS 工具） | tool 调用结果 |
-| **Intelligent Engine** | 理解 query、路由能力、融合、重排 | evidence pack |
+> **关键**：Pipeline 拆为 RepPipeline + IndexPipeline 两套独立编排器；Projector 复用 RepPipeline 编排器。模块表已对齐新分层。
+
+| 模块 | 职责 | 关键产出 | 对应层 |
+| --- | --- | --- | --- |
+| **Ingest Service** | 监听 OSS 新对象、登记 entity | OSS Tag + Entity 目录 | L1 |
+| **Detect Worker** | mime / language / content_hash / size | detect 结果 | L1 |
+| **RepStepRegistry** | 全局 RepStep 注册表（v0.1 代码内注册） | RepStep 索引 | L2 |
+| **RepPipelineOrchestrator** | 选择 1..N 条 RepPipeline，按拓扑序调度 RepStep 执行 | rep_all_ready 事件 | L2 |
+| **RepStep Executor Pool** | 执行 RepStep（含 LLM/VLM/OCR Worker） | Rep 文件 + OSS Tag | L2 |
+| **IndexStepRegistry** | 全局 IndexStep 注册表 | IndexStep 索引 | L3 |
+| **IndexPipelineOrchestrator** | 消费 `rep_all_ready` 事件，调度 IndexStep 重建 | index 重建任务 | L3 |
+| **IndexStep Executor Pool** | 执行 IndexStep（chunk + embed + index build） | Lance 数据集 + 索引 | L3 |
+| **Lance Watcher** | 监听 staging Parquet 变动，实时同步到 Lance；支持全量 rebuild | Lance 数据集 | L3 |
+| **ProjectorStepRegistry** | Projector Step 注册表（v0.1 仅 `project_rag_api`） | ProjectorStep 索引 | L4 |
+| **ProjectorStep Executor** | 执行 ProjectorStep（写入外部 vault / HTTP / WS） | 外部 artifact | L4 |
+| **Retrieval Gateway** | 暴露统一检索 API（含 VFS 工具） | tool 调用结果 | L5 |
+| **Intelligent Engine** | 理解 query、路由能力、融合、重排 | evidence pack | L6 |
+| **Event Listener** | 订阅 OSS 事件，实时更新 VFS 目录树 | 增量 VFS 视图 | L4.5 |
+| **Reconciler** | 周期全量扫描 OSS prefix，对账 VFS 与实际状态；两阶段一致性校验 | drift 报告 + 修复 | 跨层 |
 
 ### 3.3 数据流：事件驱动 + 实时 VFS
 
@@ -831,13 +855,15 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
   "name": "OCR 内容变换",
   "entity_types": ["document"],
   "steps": [
-    { "step_id": "render_page", "input_rep": "raw", "output_rep": "page_image" },
-    { "step_id": "ocr", "input_rep": "page_image", "output_rep": "ocr_text" }
+    { "step_id": "render_page", "required_input_reps": ["raw"], "output_reps": ["page_image"] },
+    { "step_id": "ocr",          "required_input_reps": ["page_image"], "output_reps": ["ocr_text"] }
   ],
   "enabled": true,
   "priority": 2
 }
 ```
+
+> `step_id` 对应 `RepStepRegistry`（§6.6）中的 key；运行期由 `RepPipelineOrchestrator` 通过 `RepStepRegistry.get(step_id)` 解析为具体 RepStep 实例。
 
 **RepPipeline 特征**：
 - 每个 step 是一个 `RepStep`（§6.6），实现 `PipelineStep` Protocol
@@ -852,16 +878,17 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
   "pipeline_id": "index_pipeline_text",
   "pipeline_type": "index",
   "name": "文本索引构建",
-  "required_reps": ["canonical_md", "ocr_text", "vlm_md"],
+  "required_reps": ["canonical_md", "ocr_text"],
   "steps": [
-    { "step_id": "chunk_text", "source_reps": ["canonical_md", "ocr_text", "vlm_md"] },
-    { "step_id": "embed_text", "modality": "text", "task": "retrieval.passage" },
-    { "step_id": "build_vector_index", "index_type": "semantic" },
-    { "step_id": "build_fts_index", "index_type": "lexical" }
+    { "step_id": "chunk_and_embed_text", "required_reps": ["canonical_md", "ocr_text"] },
+    { "step_id": "build_vector_index",   "index_type": "semantic" },
+    { "step_id": "build_fts_index",      "index_type": "lexical" }
   ],
   "enabled": true
 }
 ```
+
+> `step_id` 对应 `IndexStepRegistry`（§6.7）中的 key；运行期由 `IndexPipelineOrchestrator` 通过 `IndexStepRegistry.get(step_id)` 解析为具体 IndexStep 实例。
 
 **IndexPipeline 特征**：
 - 每个 step 是一个 `IndexStep`（§6.7），实现 `IndexStep` Protocol
@@ -888,28 +915,19 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
 - v0.1：代码内注册（Python dataclass / YAML config），随服务部署。
 - v0.2：支持动态注册（Pipeline 定义存 OSS，运行时加载）。
 
-### 4.6 存储模型：Entity 目录自包含 + Parquet 写入 → Lance 索引
+### 4.6 存储模型：Entity 目录自包含 + Rep 写 OSS / Index 写 Parquet → Lance
 
-**核心决策**：
-
-1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
-2. **写入用 Parquet**（快写、隔离），**查询用 Lance**（索引、hybrid search），中间通过迭代式汇聚衔接。
-3. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。血缘从**目录层级 + Pipeline 注册表**实时推导，元数据用两套 OSS Tag（Entity Tag + Representation Tag）。
+> **关键决策**：RepPipeline 产出 Rep 文件（写 OSS），**不写** staging Parquet；IndexPipeline 消费 Rep 文件产出可检索单元（写 staging Parquet）+ Lance 索引。两者完全解耦，写入路径分开。
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  L1  写入层（Parquet）                                       │
-│      每 Entity 目录下写入 Parquet，小文件快写，天然隔离         │
-│      pipeline 产出直接落盘，无需全局协调                       │
+│  Rep 写入路径（RepPipeline → Rep 文件）                       │
+│   RepStep.execute() → 写 OSS Rep 文件 + 打 Rep OSS Tag        │
+│   （无 Parquet、无 Lance 写入）                               │
 ├─────────────────────────────────────────────────────────────┤
-│  L2  汇聚层（Lance Watcher）                                   │
-│      事件驱动 + 增量同步 + 全量 Rebuild                       │
-│      每 Entity 目录内独立同步，无需跨 Entity 协调              │
-├─────────────────────────────────────────────────────────────┤
-│  L3  查询层（Lance）                                         │
-│      每 Entity 目录内的 representations.lance 支持检索         │
-│      跨 Entity 检索通过 VFS 扫描 + OSS Tag 路由 + fan-out        │
-│      Lance 原生索引（IVF_PQ / HNSW / FTS）                   │
+│  Index 写入路径（IndexPipeline → chunk/vector/index）         │
+│   IndexStep.execute() → 写 staging Parquet → Lance Watcher    │
+│   同步 → Lance 索引                                          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -2588,6 +2606,143 @@ Reconciler 周期（每 15 min）
 - Index 重建失败不影响 Rep（两阶段独立）
 - 两个 Phase 可以并行运行在不同 Entity 上（Entity A 的 Rep 校验 和 Entity B 的 Index 校验不冲突）
 
+#### 5.9.3 Phase 3：Projector 一致性校验
+
+```text
+Reconciler 周期（每 15 min）— Phase 3（在 Phase 1+2 完成后）
+  ├─ 扫描 ProjectorStepRegistry 启用的所有 Projector
+  ├─ 对每个 Projector：
+  │   ├─ 扫描外部目标（如 ~/wiki/、/tools/* 路由缓存）
+  │   ├─ 对比 artifact content_hash vs Lake 内 active Rep 的 content_hash
+  │   └─ 不匹配 → 标 ProjectorStep 失败 → 触发对应 RepPipeline 重跑（包含 ProjectorStep）
+  └─ Projector 失败不影响 Rep 和 Index（独立）
+```
+
+**Projector 校验场景**：
+
+| 场景 | 检测方式 | 修复 |
+|---|---|---|
+| Rep 重建后 Projector 旧 artifact 未更新 | artifact `content_hash` vs active Rep `content_hash` | 触发 ProjectorStep 重跑 |
+| 外部 vault 文件被用户删除 | OSS 404 | 触发 ProjectorStep 重跑 |
+| Projector 配置变更（如 `protect_user_edits` 切换） | 配置 diff | 触发全量 `rebuild()` |
+| 外部 artifact 数据漂移 | hash 比对 | 触发 `rebuild()` |
+
+#### 5.9.4 `rep_all_ready` 事件精确定义
+
+> **定义**：`rep_all_ready` 事件由 `RepPipelineOrchestrator` 发出，表示**该 Entity 的所有 enabled RepPipeline 的所有 RepStep 产出已收敛**。
+
+**收敛条件**（全部满足才发）：
+1. 该 Entity 的所有 enabled `RepPipeline` 已结束（`pipeline_run.status ∈ {success, partial_success, failed}`）
+2. 该 Entity 的所有 enabled `RepPipeline` 的 `required_input_reps` 已被满足（Rep `status ∈ {ready, skipped}`）
+3. 至少一条 RepPipeline 产出了新 Rep（防止空跑污染事件流）
+
+**`partial_success` 语义**：
+- 至少一条 RepStep 失败，但其他 RepStep 成功 → 标 `partial_success`
+- 此时仍发 `rep_all_ready` 事件（因为有 Rep ready），但附带 `failed_steps` 列表
+- IndexPipelineOrchestrator 收到事件后，**只基于 `ready` 的 Rep 评估是否重建索引**（跳过 failed Rep）
+
+**`failed` 语义**：
+- 所有 RepStep 都失败 → 标 `failed`
+- **不发** `rep_all_ready` 事件
+- IndexPipelineOrchestrator 等待下次重试
+
+**事件负载**：
+
+```json
+{
+  "event_type": "rep_all_ready",
+  "entity_id": "...",
+  "entity_version": 3,
+  "ready_reps": ["canonical_md", "ocr_text"],
+  "failed_reps": ["vlm_md"],
+  "skipped_reps": [],
+  "rep_content_hashes": {
+    "canonical_md": "sha256:abc...",
+    "ocr_text": "sha256:def..."
+  },
+  "build_from_hash_set": "sha256:combined_set_hash",
+  "pipeline_runs": ["run_001", "run_002"]
+}
+```
+
+> `build_from_hash_set` 是该 Entity 当前所有 `ready` Rep 的 `content_hash` 排序后拼接再 SHA-256，用于 IndexPipeline 的 `index_built_from_hash` 比对（§5.9.2）。
+
+### 5.10 Index Status（独立状态模型）
+
+> **关键分离**：Rep 有自己的状态（§5.4），Index 也有自己的状态。两者独立维护、独立更新。
+
+#### 5.10.1 Index Status 定义
+
+| 状态 | 含义 | 触发 |
+|---|---|---|
+| `built` | 索引构建完成，与当前 active Rep 一致 | IndexStep.execute() 成功；`index_built_from_hash` == `build_from_hash_set` |
+| `stale` | 索引存在但与当前 active Rep 不一致 | Phase 2 检测：`index_built_from_hash` ≠ `build_from_hash_set`；或 Rep 状态变化 |
+| `failed` | 索引构建失败 | IndexStep.execute() 抛异常 |
+| `deleted` | 索引被删除（entity 删除或索引主动清理） | entity.status=deleted；或显式 `drop_index()` |
+
+#### 5.10.2 Index Status 存储位置
+
+> **决策**：Index 状态存储在 **Lance dataset 的 custom metadata**（不是 OSS Tag、不是单独的 metadata 文件）。
+
+```python
+# Lance dataset 的 custom metadata（写入 metadata key）
+lance_dataset = LanceDataset.open(...)
+lance_dataset.update_metadata({
+    "index_status": "built",                    # built | stale | failed | deleted
+    "index_built_from_hash": "sha256:abc...",   # 当前索引基于的 build_from_hash_set
+    "index_built_at": "2026-06-06T10:00:00Z",
+    "index_model_version": "v5-2026-05",        # embedding 模型版本
+    "index_pipeline_id": "index_pipeline_text",
+    "index_failed_reason": null,                # 失败原因（failed 状态时填）
+})
+```
+
+**为什么用 Lance metadata 而非 OSS Tag**：
+- 索引是 Lance 数据集的内部结构，metadata 是其原生位置
+- Lance 自带 version 管理，metadata 跟随 version 自动备份
+- 避免在 OSS 端为每个 Index 创建额外的元数据文件
+
+#### 5.10.3 Index Status 联动
+
+| 触发事件 | 联动动作 |
+| --- | --- |
+| IndexStep.execute() 成功 | 写 `index_status=built` + 更新 `index_built_from_hash` |
+| IndexStep.execute() 失败 | 写 `index_status=failed` + 填 `index_failed_reason` |
+| Rep `status` 变化（`build_from_hash_set` 变化） | 标 `index_status=stale` |
+| Phase 2 Reconciler 检测不一致 | 标 `index_status=stale` + 触发 IndexPipeline 重建 |
+| embedding 模型升级（`index_model_version` 不匹配） | 标 `index_status=stale` + 触发重跑 |
+| entity `status=deleted` | 标 `index_status=deleted` + 实际删除 Lance 数据集 |
+
+### 5.11 Edge 生命周期
+
+> **v0.1 简化**：Edge v0.1 仅支持"由 RepPipeline 编译产物自动产出 + 手动 API 创建"，不支持独立 Edge Pipeline。
+
+#### 5.11.1 Edge 状态
+
+| 状态 | 含义 |
+|---|---|
+| `active` | 边生效，参与检索 |
+| `stale` | 边关联的 src 或 dst Entity 处于 stale，Edge 暂不参与检索 |
+| `deleted` | 边已删除（src 或 dst Entity 删除时级联） |
+
+#### 5.11.2 Edge 生命周期事件
+
+| 触发事件 | 联动动作 |
+| --- | --- |
+| `RepPipeline.d_graph` 产出 `graph_json`（v0.2） | 解析 `graph_json` 中的边，自动写入 Edge 存储 |
+| 手动 `POST /edges`（v0.1） | 创建 Edge，`status=active` |
+| src 或 dst Entity `status=deleted` | 级联 Edge `status=deleted` |
+| src 或 dst Entity `status=stale` | 关联 Edge `status=stale`（不参与检索） |
+| `RepPipeline.d_graph` 重跑且新 `graph_json` 缺某边 | 该边 `status=deleted`（v0.2） |
+
+#### 5.11.3 v0.1 范围
+
+- ✅ 手动创建/查询/删除 Edge 的 API
+- ✅ Edge 与 Entity 状态联动（stale / deleted）
+- ❌ 自动从 `graph_json` 解析（v0.2，因 `compile_graph_json` 是 v0.2）
+- ❌ 反向回写（从 `~/wiki/` wikilink 解析回 Edge，v0.2）
+- ❌ Edge 自己的 Lint 规则（v0.2）
+
 ---
 
 ## 6. Pipeline 定义
@@ -2753,9 +2908,10 @@ class RepStep(Protocol):
     """可插拔的内容变换步骤。"""
 
     # ── 声明（注册时读取，不执行）──
-    step_id: str                         # 全局唯一标识
+    step_id: str                         # 全局唯一标识，对应 RepStepRegistry key
     name: str                            # 人类可读名称
-    input_reps: list[str]                # 依赖的上游 rep_type
+    required_input_reps: list[str]       # 必须全部存在才能执行（缺失则 step 标 skipped）
+    optional_input_reps: list[str]       # 可选存在（有则用，无则跳过该输入分支）
     output_reps: list[str]               # 产出的 rep_type
     output_stage: str                    # 产出到哪个目录层级
     supported_entity_types: list[str]    # 支持的 entity_type
@@ -2807,36 +2963,36 @@ class RepStepRegistry:
 
 #### 6.6.3 内置 RepStep 清单（v0.1）
 
-| step_id | name | input_reps | output_reps | output_stage | entity_types | modality |
-|---|---|---|---|---|---|---|
-| `parse` | 文档解析 | `raw` | `canonical_md`, `plain_text` | extract | document | text |
-| `render_page` | 页面渲染 | `raw` | `page_image` | extract | document, image | image |
-| `ocr` | OCR 识别 | `page_image` | `ocr_text` | recognize | document | text |
-| `vlm` | VLM 视觉 | `page_image` | `vlm_md` | recognize | document | text |
-| `transcribe` | 音频转写 | `raw` | `transcript`, `audio_segment` | recognize | audio | audio |
-| `table_parse` | 表格解析 | `raw` | `table_parquet`, `table_md`, `table_json` | compile | table | table |
-| `compile_mind_map` | 脑图编译 | `canonical_md` | `mind_map` | compile | document | text |
-| `compile_graph_json` | 关系图编译 | `canonical_md` | `graph_json` | compile | document | text |
-| `compile_summary` | 摘要编译 | `canonical_md` | `summary` | compile | document | text |
-| `compile_wiki_md` | Wiki 编译 | `canonical_md` | `wiki_md` | compile | document | wiki |
-| `project_wiki` | Wiki 投影 | `canonical_md`, `wiki_md`, `graph_json` | — | compile | wiki |
+| step_id | name | required_input_reps | optional_input_reps | output_reps | output_stage | entity_types | modality | v0.1 |
+|---|---|---|---|---|---|---|---|---|
+| `parse` | 文档解析 | `raw` | — | `canonical_md`, `plain_text` | extract | document | text | ✅ |
+| `render_page` | 页面渲染 | `raw` | — | `page_image` | extract | document, image | image | ✅ |
+| `ocr` | OCR 识别 | `page_image` | — | `ocr_text` | recognize | document | text | ✅ |
+| `vlm` | VLM 视觉 | `page_image` | — | `vlm_md` | recognize | document | text | v0.2 |
+| `transcribe` | 音频转写 | `raw` | — | `transcript`, `audio_segment` | recognize | audio | audio | ✅ |
+| `table_parse` | 表格解析 | `raw` | — | `table_parquet`, `table_md`, `table_json` | compile | table | table | ✅ |
+| `compile_mind_map` | 脑图编译 | `canonical_md` | — | `mind_map` | compile | document | text | v0.2 |
+| `compile_graph_json` | 关系图编译 | `canonical_md` | — | `graph_json` | compile | document | text | v0.2 |
+| `compile_summary` | 摘要编译 | `canonical_md` | — | `summary` | compile | document | text | v0.2 |
+| `compile_wiki_md` | Wiki 编译 | `canonical_md` | — | `wiki_md` | compile | document | wiki | v0.2 |
+| `project_wiki` | Wiki 投影 | `canonical_md` | `wiki_md`, `graph_json`, `summary` | — | compile | document | wiki | v0.2 |
 
-> `project_wiki` 是 Projector 作为 RepStep 注册的示例（§11），产出不写回 Lake 内部，而是写外部 vault。
+> `project_wiki` 是 Projector 作为 RepStep 注册的示例（§11），产出不写回 Lake 内部，而是写外部 vault。`required_input_reps` 表示必须全部存在；`optional_input_reps` 表示有则用、无则跳过该输入分支。
 
-#### 6.6.4 内置 RepPipeline 组装（v0.1）
+#### 6.6.4 内置 RepPipeline 组装
 
-| pipeline_id | name | steps |
-|---|---|---|
-| `rep_pipeline_a` | 直接提取 | `parse` |
-| `rep_pipeline_b` | OCR 内容变换 | `render_page` → `ocr` |
-| `rep_pipeline_c` | VLM 内容变换 | `render_page` → `vlm` |
-| `rep_pipeline_d_mind_map` | 脑图编译 | `compile_mind_map` |
-| `rep_pipeline_d_graph` | 关系图编译 | `compile_graph_json` |
-| `rep_pipeline_d_summary` | 摘要编译 | `compile_summary` |
-| `rep_pipeline_d_wiki` | Wiki 编译 | `compile_wiki_md` |
-| `rep_pipeline_e` | 图片渲染 | `render_page` |
-| `rep_pipeline_f` | 音频转写 | `transcribe` |
-| `rep_pipeline_g` | 表格获取 | `table_parse` |
+| pipeline_id | name | steps | v0.1 |
+|---|---|---|---|
+| `rep_pipeline_a` | 直接提取 | `parse` | ✅ |
+| `rep_pipeline_b` | OCR 内容变换 | `render_page` → `ocr` | ✅ |
+| `rep_pipeline_c` | VLM 内容变换 | `render_page` → `vlm` | v0.2 |
+| `rep_pipeline_d_mind_map` | 脑图编译 | `compile_mind_map` | v0.2 |
+| `rep_pipeline_d_graph` | 关系图编译 | `compile_graph_json` | v0.2 |
+| `rep_pipeline_d_summary` | 摘要编译 | `compile_summary` | v0.2 |
+| `rep_pipeline_d_wiki` | Wiki 编译 | `compile_wiki_md` | v0.2 |
+| `rep_pipeline_e` | 图片渲染 | `render_page` | ✅ |
+| `rep_pipeline_f` | 音频转写 | `transcribe` | ✅ |
+| `rep_pipeline_g` | 表格获取 | `table_parse` | ✅ |
 
 #### 6.6.5 第三方 RepStep 注册示例
 
@@ -2845,7 +3001,7 @@ class RepStepRegistry:
 class FaqCompileStep(RepStep):
     step_id = "compile_faq"
     name = "FAQ 编译"
-    input_reps = ["canonical_md"]
+    required_input_reps = ["canonical_md"]
     output_reps = ["faq_md"]
     output_stage = "compile"
     supported_entity_types = ["document"]
@@ -2885,10 +3041,11 @@ class IndexStep(Protocol):
     """可插拔的索引构建步骤。"""
 
     # ── 声明 ──
-    step_id: str                         # 全局唯一标识
+    step_id: str                         # 全局唯一标识，对应 IndexStepRegistry key
     name: str                            # 人类可读名称
     index_type: str                      # semantic / lexical / visual / graph / table / audio
-    required_reps: list[str]             # 需要哪些 rep_type 存在才能执行
+    required_reps: list[str]             # 必须全部存在才能执行（缺失则 step 标 skipped）
+    optional_reps: list[str]             # 可选存在（有则合并处理，无则跳过）
     supported_modalities: list[str]      # 支持的模态
 
     # ── 执行 ──
@@ -2972,6 +3129,56 @@ IndexStepRegistry.steps_for_reps(available_reps)
 ```
 
 **关键不变量**：IndexPipeline **不触发** RepPipeline。索引构建失败不影响 Representation 文件的存在。
+
+### 6.8 RepStep / IndexStep 并发模型
+
+> **核心规则**：**Entity 内串行，Entity 间并行**。
+
+#### 6.8.1 并发粒度
+
+| 层级 | 并发策略 | 原因 |
+|---|---|---|
+| **同一 RepPipeline 内 step** | 串行（按拓扑序） | step 之间有数据依赖（如 ocr 需要 page_image） |
+| **同一 Entity 内 RepPipeline** | 并行 | 不同 RepPipeline 写入不同 OSS 路径，无冲突 |
+| **同一 Entity 内 IndexPipeline** | 串行（每个 IndexPipeline 独占 Lance 写锁） | Lance 同一 dataset 写入需排他 |
+| **不同 Entity 的 RepPipeline** | 完全并行 | OSS 路径天然隔离 |
+| **不同 Entity 的 IndexPipeline** | 完全并行 | Lance 数据集在不同 Entity 目录下，无冲突 |
+| **同一 RepStep 的多实例** | 串行（per entity） | 避免同一 Entity 的 Rep 写入冲突 |
+| **RepPipeline 与 IndexPipeline** | 不能并行 | IndexPipeline 必须等 RepPipeline 完成后（`rep_all_ready` 事件） |
+
+#### 6.8.2 锁模型
+
+```text
+Entity 维度的锁：
+  EntityLock(entity_id):
+    ├─ RepLock: 同一 Entity 的 RepPipeline 互斥
+    ├─ IndexLock: 同一 Entity 的 IndexPipeline 互斥
+    └─ 但 RepLock 和 IndexLock 不互斥（不同阶段可并行）
+    
+全局维度：
+  RegistryLock(RepStepRegistry | IndexStepRegistry | ProjectorStepRegistry):
+    └─ 注册/注销时短时持有；查询无锁（读时复制）
+```
+
+#### 6.8.3 失败处理
+
+| 场景 | 处理 |
+|---|---|
+| RepPipeline 内 step 失败 | 标 `partial_success`；继续执行后续 RepPipeline；下发 `rep_all_ready` 时附带 `failed_steps` |
+| RepPipeline 整体失败（所有 step 失败） | 标 `failed`；不发 `rep_all_ready`；告警；3 次重试后入 DLQ |
+| IndexPipeline 失败 | 标 `index_status=failed`；不影响 Rep；下次 Reconciler 重试 |
+| ProjectorStep 失败 | 标 Projector 失败；不影响 Rep 和 Index；告警 |
+| RepPipeline 死锁 / 超时 | Orchestrator 设全局超时（默认 10 min/step）；超时标 failed |
+
+#### 6.8.4 配额
+
+| 资源 | 默认配额 | 触发降级 |
+|---|---|---|
+| 同 Entity 并行 RepPipeline | 3 | 队列等待 |
+| 全局并发 RepStep | 50 | 队列等待 |
+| 全局并发 IndexStep | 20 | 队列等待 |
+| 单 RepStep LLM 调用并发 | 5（per worker） | 队列等待 |
+| 单 RepStep 显存占用 | 8 GB | 失败 + 降级到 CPU |
 
 ---
 
@@ -3866,7 +4073,7 @@ class ProjectorStep(RepStep):
 
 | Projector | consumer_type | 输出形态 | 落地方式 | 注册为 RepStep | 状态 |
 |---|---|---|---|---|---|
-| `WikiProjectorStep` | wiki | `.md` 文件 + wikilink + log.md | OSS / 本地 vault | `project_wiki` | v0.1（详设见 §12） |
+| `WikiProjectorStep` | wiki | `.md` 文件 + wikilink + log.md | OSS / 本地 vault | `project_wiki` | v0.2（依赖 `compile_wiki_md`；详设见 §12） |
 | `RagApiProjectorStep` | rag_api | JSON Evidence | HTTP `/tools/*` 路由（§8） | `project_rag_api` | v0.1 |
 | `DashboardProjectorStep` | dashboard | 指标 / 状态卡片 | TSDB / WebSocket | `project_dashboard` | v0.2 |
 | `WebProjectorStep` | web | 视图模型 | HTTP `/v1/views/*` | `project_web` | v0.2 |
@@ -3917,9 +4124,9 @@ RepStep: parse ──→ RepStep: ocr ──→ RepStep: compile_wiki_md ──�
 
 ## 12. Wiki Projector 详设
 
-> **重新定位**：Vector-Lake 是**主体**，Wiki Projector 是其内部 RepStep Plugin 体系的一个成员（§6.6 / §11）。**Wiki 不是 Lake 的宿主，Wiki 也不是 Lake 的客户——Wiki 是 Lake 内部数据的一种"渲染格式"**。Lake 决定 wiki 长成什么样，wiki 用户可以选择消费或忽略这种格式。
+> **v0.1 状态**：本章为 Wiki Projector 的**完整设计预览**（v0.2 实现），目的是锁定接口、字段映射、v0.2 落地路径。v0.1 不实现 `WikiProjectorStep`、不消费 `wiki_md` / `graph_json` / `compile_wiki_md`（均为 v0.2，§13）。
 >
-> Wiki Projector 注册为 `project_wiki` RepStep，由 `RepPipelineOrchestrator` 统一编排。它消费 `canonical_md` / `wiki_md` / `graph_json` 等 Representation，产出不写回 Lake 内部，而是写到外部 `~/wiki/` 目录。
+> v0.1 的 Projector 仅 `project_rag_api`（§11.3 / §13.4）。Wiki Projector 的 Protocol 已在 §6.6（`ProjectorStep(RepStep)`）和 §11.2 中定义，可直接实现。
 
 ### 12.1 设计目标
 
@@ -4156,33 +4363,61 @@ LOG_TEMPLATE = {
 
 ## 13. v0.1 范围
 
+> **v0.1 范围声明**：聚焦"两阶段流水线 + Plugin 体系"的核心可用形态，Wiki Projector 与知识编译均为 v0.2。v0.1 不包含 Projector（§11/§12 整体推迟到 v0.2），但 Projector 作为 RepStep Plugin 注册的设计本身在 v0.1 落地（即 ProjectorStep 基类与 ProjectorStepRegistry 在 v0.1 已存在，但只有 `project_rag_api` 实例化）。
+
 ### 13.1 文件类型
 
 ```text
-pdf · docx · pptx · image · audio
+pdf · docx · pptx · image · audio · table
 ```
 
-### 13.2 Pipeline
+### 13.2 RepPipeline（v0.1 内置）
 
-```text
-A. 直接提取（document 默认）
-B. OCR 流水线（document 可选）
-E. 图片向量（image 默认 / document 可选）
-F. 音频转写（audio 默认）
-```
+| pipeline_id | name | steps | entity_types | v0.1 |
+|---|---|---|---|---|
+| `rep_pipeline_a` | 直接提取 | `parse` | document | ✅ |
+| `rep_pipeline_b` | OCR 内容变换 | `render_page` → `ocr` | document | ✅ |
+| `rep_pipeline_e` | 图片渲染 | `render_page` | document, image | ✅ |
+| `rep_pipeline_f` | 音频转写 | `transcribe` | audio | ✅ |
+| `rep_pipeline_g` | 表格获取 | `table_parse` | table | ✅ |
+| `rep_pipeline_c` | VLM 内容变换 | `render_page` → `vlm` | document | v0.2 |
+| `rep_pipeline_d_mind_map` | 脑图编译 | `compile_mind_map` | document | v0.2 |
+| `rep_pipeline_d_graph` | 关系图编译 | `compile_graph_json` | document | v0.2 |
+| `rep_pipeline_d_summary` | 摘要编译 | `compile_summary` | document | v0.2 |
+| `rep_pipeline_d_wiki` | Wiki 编译 | `compile_wiki_md` | document | v0.2 |
 
-> Pipeline C (VLM) 和 D (知识编译) 为 v0.2，但 schema 预留。
+> RepPipeline 编号约定：`rep_pipeline_<family>[_<variant>]`，family = a/b/c/d/e/f/g（与 PRD v0.1 旧编号保留对应关系）。
 
-### 13.3 Representation
+### 13.3 IndexPipeline（v0.1 内置）
+
+| pipeline_id | name | steps | required_reps | v0.1 |
+|---|---|---|---|---|
+| `index_pipeline_text` | 文本索引 | `chunk_and_embed_text` → `build_vector_index` → `build_fts_index` | `canonical_md` / `ocr_text`（任一） | ✅ |
+| `index_pipeline_image` | 图片索引 | `chunk_and_embed_image` → `build_vector_index` | `page_image` | ✅ |
+| `index_pipeline_audio` | 音频索引 | `chunk_and_embed_audio` → `build_vector_index` | `transcript` | v0.2 |
+| `index_pipeline_graph` | 图索引 | `build_graph_index` | `graph_json` | v0.2 |
+| `index_pipeline_table` | 表格索引 | `chunk_and_embed_table` → `build_vector_index` | `table_md` / `table_json` | v0.2 |
+
+### 13.4 ProjectorStep（v0.1 内置）
+
+| projector | registered_as | 目标消费者 | 状态 |
+|---|---|---|---|
+| `RagApiProjectorStep` | `project_rag_api` | 上层 RAG / Agent（§8 检索 API 路由） | ✅ v0.1 |
+| `WikiProjectorStep` | `project_wiki` | Karpathy LLM Wiki / Obsidian（§12） | v0.2（依赖 `compile_wiki_md`） |
+| `DashboardProjectorStep` | `project_dashboard` | 运维面板 | v0.2 |
+| `WebProjectorStep` | `project_web` | 前端 SPA | v0.2 |
+
+### 13.5 Rep
 
 ```text
 raw · canonical_md · plain_text · page_image · ocr_text
 transcript · transcript_segment · caption
+table_parquet · table_md · table_json
 ```
 
-> `vlm_extracted_md · mind_map · graph_json · wiki_md · summary` 为 v0.2，但 schema 预留。
+> `vlm_md · mind_map · graph_json · wiki_md · summary` 为 v0.2，但 schema 预留。
 
-### 13.4 Index
+### 13.6 Index
 
 ```text
 semantic · lexical · hybrid · grep · visual
@@ -4190,13 +4425,21 @@ semantic · lexical · hybrid · grep · visual
 
 > `audio · table · graph` 为 v0.2，但 schema 预留。
 
-### 13.5 状态
+### 13.7 状态
+
+**Rep Status**：
 
 ```text
-enabled · hidden · deleted · active · stale
+ready · skipped · failed · stale · deleted
 ```
 
-### 13.6 能力
+**Index Status**（§5.10 新增）：
+
+```text
+built · stale · failed · deleted
+```
+
+### 13.8 能力
 
 ```text
 ls · read · stat · grep · glob
@@ -4205,15 +4448,19 @@ semantic · lexical · hybrid · visual
 
 > `audio · table · graph` 为 v0.2。
 
-### 13.7 明确不在 v0.1 范围
+### 13.9 明确不在 v0.1 范围
 
 - VLM 视觉流水线（v0.2）
-- 知识编译流水线 / mind_map / graph_json（v0.2）
+- 知识编译流水线 / mind_map / graph_json / wiki_md / summary（v0.2）
+- Wiki Projector 完整实现（v0.2；v0.1 仅 ProjectorStep 基类与 Registry）
+- Dashboard / Web Projector（v0.2）
 - 视频 keyframe / 场景切分（v0.2）
 - 表格列式检索（v0.2）
 - 学习型 router（v0.2）
 - 多租户 / 计费（后续）
 - 端到端 RAG 答案生成（上层）
+- 第三方 Plugin 沙箱执行（v0.1 仅内置 RepStep/IndexStep；第三方注册限制为受信插件）
+- RepStep/IndexStep 运行时动态注册（v0.1 代码内注册；HTTP 注册 API 为 v0.2）
 
 ---
 
@@ -4283,6 +4530,40 @@ semantic · lexical · hybrid · visual
 }
 ```
 
+### 14.5 Plugin 注册 API（v0.2）
+
+> **v0.1 状态**：v0.1 仅支持**代码内注册**（`RepStepRegistry.register()` / `IndexStepRegistry.register()`），无 HTTP API。第三方 Plugin 需发版 Lake 时一起部署。
+>
+> **v0.2 状态**：新增 HTTP 动态注册 API，支持受信第三方 Plugin 热加载。
+
+| API | 说明 | v0.1 | v0.2 |
+| --- | --- | --- | --- |
+| `POST /v1/rep_steps` | 动态注册 RepStep（需要 mTLS + 授权） | ❌ | ✅ |
+| `POST /v1/index_steps` | 动态注册 IndexStep | ❌ | ✅ |
+| `GET /v1/rep_steps` | 列出已注册 RepStep | ✅ | ✅ |
+| `GET /v1/index_steps` | 列出已注册 IndexStep | ✅ | ✅ |
+| `DELETE /v1/rep_steps/{step_id}` | 注销 RepStep | ❌ | ✅ |
+| `DELETE /v1/index_steps/{step_id}` | 注销 IndexStep | ❌ | ✅ |
+| `POST /v1/edges` | 创建 Edge | ✅ | ✅ |
+| `GET /v1/edges?entity_id=...` | 查询 Edge | ✅ | ✅ |
+| `DELETE /v1/edges/{edge_id}` | 删除 Edge | ✅ | ✅ |
+
+### 14.6 Edge 操作 API（v0.1）
+
+```json
+// POST /v1/edges
+{
+  "src_entity_id": "...",
+  "src_entity_version": 2,
+  "dst_entity_id": "...",
+  "dst_entity_version": 1,
+  "relation": "mentions|cites|contradicts|supports|synthesizes|supersedes|derived_from",
+  "weight": 0.8,
+  "evidence_chunk_id": "ch_007",
+  "idempotency_key": "..."
+}
+```
+
 ---
 
 ## 15. 非功能需求（NFR）
@@ -4295,12 +4576,23 @@ semantic · lexical · hybrid · visual
 | | `read` P95 | ≤ 300 ms（OSS 读） |
 | | `preview` P95 | ≤ 500 ms（含 OSS 读 + 渲染数据准备） |
 | **吞吐** | `hybrid` QPS（单 workspace） | ≥ 50 |
+| **RepPipeline 执行延迟** | 100 页 PDF → `canonical_md` P95 | ≤ 30 s |
+| | 100 页 PDF → `ocr_text`（Pipeline B）P95 | ≤ 90 s |
+| | 1 小时 audio → `transcript` P95 | ≤ 5 min |
+| **IndexPipeline 执行延迟** | 10K chunks → vector + FTS P95 | ≤ 60 s |
+| | 1K images → visual index P95 | ≤ 30 s |
+| **Projector 投影延迟** | 单页 .md 写入 ~/wiki/（v0.2）P95 | ≤ 1 s |
+| **Registry 查询延迟** | RepStepRegistry.get P95 | ≤ 10 ms（内存查找） |
+| **并发 Entity** | 同时 ingest 数 | ≥ 10 Entity 无冲突 |
 | **可恢复** | raw → searchable 时间 | ≤ 5 min（PDF 100 页级别） |
 | **一致性** | reconcile 周期 | ≤ 15 min |
+| | Phase 1 延迟 | ≤ 1 min 检测 Rep↔Raw 不一致 |
+| | Phase 2 延迟 | ≤ 1 min 检测 Index↔Rep 不一致（Phase 1 完成后） |
+| | Phase 3 延迟 | ≤ 1 min 检测 Projector 漂移（Phase 1+2 完成后） |
 | **可用性** | retrieval gateway 月度可用性 | ≥ 99.5% |
-| **可观测** | 必埋点 | pipeline 各阶段耗时与失败率；检索 QPS / 延迟 / top1 命中率 |
-| **可扩展** | 横向扩展 | Pipeline Worker / Embedder / Indexer 各自独立扩缩容 |
-| **安全** | workspace 隔离 | 所有查询强制带 `workspace_id`；跨 ws 默认拒绝 |
+| **可观测** | 必埋点 | RepStep/IndexStep/ProjectorStep 各阶段耗时与失败率；Registry 注册事件；两阶段一致性指标；检索 QPS / 延迟 / top1 命中率 |
+| **可扩展** | 横向扩展 | RepStep/IndexStep/ProjectorStep Executor Pool 各自独立扩缩容 |
+| **安全** | workspace 隔离 | 所有查询强制带 `workspace_id`；跨 ws 默认拒绝；Plugin 注册需 mTLS + 授权（v0.2） |
 | **存储** | 1K 文档估算 | ~7 GB（向量 ~2 GB + FTS ~200 MB + OSS ~5 GB） |
 | | **fan-out 上限** | 单次跨 Entity 检索 ≤ 100 个 Entity（v0.1 简单 fan-out） |
 
@@ -4324,6 +4616,12 @@ semantic · lexical · hybrid · visual
 | **S12. 血缘级联失效** | raw 更新（content_hash 变化） | 沿 lineage 级联：page_image/ocr_text/canonical_md 全部标 stale；对应 chunks 检索不再命中 |
 | **S13. 血缘级联重建** | S12 之后 | pipeline 自动重跑；新 representation ready → chunks active → 检索恢复 |
 | **S14. 中间节点失效** | page_image 重建失败 | 下游 ocr_text/vlm_md 保持 stale；上游 canonical_md 不受影响（不同 lineage 分支） |
+| **S15. 两阶段一致性：Rep↔Raw 校验** | raw 更新 + Rep 未重建 | Phase 1 Reconciler 检测到 `source_content_hash` 不匹配 → 标 Rep stale → 触发 RepPipeline 重建 |
+| **S16. 两阶段一致性：Index↔Rep 校验** | Rep 重建后 Index 未更新 | Phase 2 Reconciler 检测到 `index_built_from_hash` ≠ `build_from_hash_set` → 标 Index stale → 触发 IndexPipeline 重建 |
+| **S17. 两阶段独立性** | IndexPipeline 重建失败 | Rep 文件仍可被读，状态 `ready`；Index `status=failed`；下一次 Reconcile 重试；Rep 不受影响 |
+| **S18. Projector 失败隔离** | Wiki Projector 投影失败（v0.2） | RepPipeline 标 `partial_success`；其他 step（如 compile_summary）继续执行；Rep 文件可用；Projector 单独告警 |
+| **S19. Plugin 热加载** | 动态注册新 RepStep（v0.2） | `POST /v1/rep_steps` 成功后立即可用；不影响正在执行的 RepPipeline |
+| **S20. Edge 状态联动** | src Entity 标 deleted | 关联 Edge 标 deleted；不可见 |
 
 ---
 
