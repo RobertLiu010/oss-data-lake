@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力。
 
 ---
 
@@ -76,6 +76,8 @@
 
 ### 2.2 核心链路
 
+> **关键分离**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，必须解耦。Rep 生成有血缘、有版本；Index 生成无血缘、可重建。两者通过独立的 Plugin 体系注入，互不依赖。
+
 ```text
 Raw Object (OSS, immutable)
     │
@@ -84,26 +86,42 @@ Raw Object (OSS, immutable)
     ▼
 [2] Detect  (mime / size / content_hash / language)
     ▼
-[3] Pipeline Dispatch  (根据 entity_type 选择 1..N 条流水线)
+[3] Rep Pipeline Dispatch  (根据 entity_type 选择 1..N 条 RepPipeline)
+    │                                    ← 内容变换阶段
+    ├── RepPipeline A: "直接提取" ──► rep(canonical_md) ──► rep(plain_text)
+    ├── RepPipeline B: "页面渲染" ──► rep(page_image)
+    ├── RepPipeline C: "OCR" ──► rep(ocr_text)
+    ├── RepPipeline D: "VLM" ──► rep(vlm_md)
+    ├── RepPipeline E: "知识编译" ──► rep(mind_map / graph_json / wiki_md / summary)
+    ├── RepPipeline F: "音频转写" ──► rep(audio_segment) ──► rep(transcript)
+    └── RepPipeline G: "表格获取" ──► rep(table_parquet / table_md)
     │
-    ├── Pipeline A: "直接提取" ──► representation(canonical_md) ──► chunks ──► embed(text)
-    ├── Pipeline B: "OCR 流水线" ──► representation(page_image) ──► representation(ocr_text) ──► chunks ──► embed(text)
-    ├── Pipeline C: "VLM 视觉" ──► representation(page_image) ──► representation(vlm_md) ──► chunks ──► embed(text)
-    ├── Pipeline D: "图片向量" ──► representation(page_image) ──► chunks ──► embed(image)
-    ├── Pipeline E: "知识编译" ──► representation(canonical_md) ──► representation(mind_map / graph_json / wiki_md)
-    └── Pipeline F: "音频转写" ──► representation(audio_segment) ──► representation(transcript) ──► chunks ──► embed(text + audio)
+    ▼  Rep 全部 ready 后
+    │
+[4] Index Pipeline Dispatch  (根据 rep 模态 + 可用性选择 1..N 条 IndexPipeline)
+    │                                    ← 搜索结构构建阶段
+    ├── IndexPipeline "文本索引" ──► chunk(text) ──► embed(text) ──► vector + FTS index
+    ├── IndexPipeline "图片索引" ──► chunk(image) ──► embed(image) ──► visual index
+    ├── IndexPipeline "音频索引" ──► chunk(audio) ──► embed(audio+text) ──► audio index
+    ├── IndexPipeline "表格索引" ──► chunk(table) ──► embed(table) ──► table index
+    └── IndexPipeline "图索引"   ──► parse(graph_json) ──► graph index
     │
     ▼
-[4] Index  (semantic / lexical / grep / graph / visual / audio)
+[5] Projector Dispatch  (根据配置选择 0..N 个 Projector)
+    │                                    ← 外部格式投影阶段
+    ├── WikiProjector ──► ~/wiki/*.md + wikilinks
+    ├── RAG API Projector ──► /tools/* HTTP 路由
+    └── Dashboard Projector ──► TSDB / WebSocket
+    │
     ▼
-[5] Publish  (mark active, visible to retrieval)
+[6] Publish  (mark active, visible to retrieval)
     ▼
-[6] Reconcile  (continuous; fix drift)
+[7] Reconcile  (continuous; fix drift)
 ```
 
 ### 2.3 一句话架构
 
-> **Raw Object → Entity → (Pipeline → Representation → Chunk → Embedding)×N → Index → Intelligent Engine**
+> **Raw Object → Entity → (RepPipeline → Representation)×N → (IndexPipeline → Chunk → Embedding → Index)×N → Projector×N → Intelligent Engine**
 
 ### 2.4 Representation 是"认知视角"
 
@@ -185,29 +203,36 @@ Entity: pricing.pdf
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│  L5  Intelligent Engine                                      │
+│  L6  Intelligent Engine                                      │
 │      Query Understanding · Capability Routing · Fusion · RAG │
 ├──────────────────────────────────────────────────────────────┤
-│  L4  Retrieval Capabilities (Tools)                          │
+│  L5  Retrieval Capabilities (Tools)                          │
 │      ls · read · stat · grep · glob                          │
 │      semantic · lexical · hybrid · visual · audio · table    │
 │      graph                                                   │
 ├──────────────────────────────────────────────────────────────┤
-│  L3.5  Virtual File System (VFS)                             │
+│  L4.5  Virtual File System (VFS)                             │
 │      事件驱动 + 迭代式 OSS prefix 扫描 → 目录树                │
 │      路径 ↔ Entity/Representation 映射                       │
 │      glob / grep / ls / stat / read 基于此层                  │
 ├──────────────────────────────────────────────────────────────┤
-│  L3  Indexing Layer (LanceDB)                                │
-│      representations.lance (vector + FTS + scalar filter)     │
+│  L4  Projector Layer                                         │
+│      WikiProjector → ~/wiki/*.md                             │
+│      RAG API Projector → /tools/* HTTP                       │
+│      Dashboard Projector → TSDB / WS                         │
+│      (可插拔，注册为 RepStep)                                  │
+├──────────────────────────────────────────────────────────────┤
+│  L3  Index Layer (LanceDB)                                   │
+│      IndexPipeline → chunk → embed → vector/FTS/graph index  │
+│      IndexStep Plugin 体系（可插拔）                           │
 │      Hybrid Search (RRF / CrossEncoder rerank)               │
 ├──────────────────────────────────────────────────────────────┤
 │  L2  Representation Layer                                    │
-│      Pipeline A → canonical_md → chunks → embeddings         │
-│      Pipeline B → page_image → ocr_text → chunks → embeds   │
-│      Pipeline C → page_image → vlm_md → chunks → embeds     │
-│      Pipeline D → mind_map / graph_json / wiki_md            │
-│      Pipeline E → page_image → image embeddings              │
+│      RepPipeline → RepStep → Representation 文件             │
+│      RepStep Plugin 体系（可插拔）                             │
+│      parse → canonical_md · render → page_image              │
+│      ocr → ocr_text · vlm → vlm_md                          │
+│      compile → mind_map / graph_json / wiki_md / summary     │
 ├──────────────────────────────────────────────────────────────┤
 │  L1  Entity Layer                                            │
 │      Entity registry (1 OSS Object = 1 Entity)               │
@@ -217,6 +242,8 @@ Entity: pricing.pdf
 │      oss://vector-lake/{ws}/{col}/{entity_id}/source/original│
 └──────────────────────────────────────────────────────────────┘
 ```
+
+> **L2 与 L3 的关键分离**：L2（Representation Layer）只做内容变换，产出文件；L3（Index Layer）只做搜索结构构建，消费 L2 产出的文件。两者通过独立的 Plugin 体系注入，互不依赖。L4（Projector Layer）消费 L2 产出的文件，投影为外部格式。
 
 ### 3.2 模块划分
 
@@ -365,12 +392,13 @@ class Entity:
     created_at: datetime
     updated_at: datetime
 
-    # ===== 表现管理（生成表现）=====
+    # ===== 表现管理（委托给 RepStepRegistry + RepPipelineOrchestrator）=====
     def generate_representation(self, rep_type: str) -> Representation:
-        """生成单个 representation。触发对应 pipeline，写入 staging。"""
+        """生成单个 representation。委托给 RepStepRegistry 找到能产出该 rep_type 的 step，
+        由 RepPipelineOrchestrator 执行。"""
 
     def generate_all_representations(self) -> list[Representation]:
-        """生成所有该 entity_type 适用的 representations。"""
+        """生成所有该 entity_type 适用的 representations。委托给 RepPipelineOrchestrator。"""
 
     def regenerate(self, rep_type: str) -> Representation:
         """重新生成单个 representation。血缘级联：标 stale → 重建 → publish。"""
@@ -378,15 +406,17 @@ class Entity:
     def regenerate_all(self) -> list[Representation]:
         """重新生成所有 representations。"""
 
-    # ===== 索引管理（生成索引）=====
+    # ===== 索引管理（委托给 IndexStepRegistry + IndexPipelineOrchestrator）=====
+    # 注意：索引管理与表现管理完全解耦。索引消费表现产出的文件，但不属于表现层。
     def build_index(self, index_type: str) -> None:
-        """对 representations.lance 建指定索引（vector / fts / scalar）。"""
+        """构建指定索引。委托给 IndexStepRegistry 找到对应 IndexStep，
+        由 IndexPipelineOrchestrator 执行。"""
 
     def build_all_indexes(self) -> None:
-        """建所有适用索引。"""
+        """构建所有适用索引。委托给 IndexPipelineOrchestrator。"""
 
     def rebuild_index(self, index_type: str) -> None:
-        """删除旧索引并重建。"""
+        """删除旧索引并重建。委托给 IndexStep。"""
 
     def rebuild_lance(self) -> None:
         """全量重建 Lance 数据集（从 OSS representation 文件 + staging Parquet）。
@@ -771,23 +801,70 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
 > 注意：不再有 `contains` edge。因为 1 OSS Object = 1 Entity，不存在父子实体关系。
 > 跨 Entity 关系由 Pipeline D（知识编译）产出，存储为 graph_json representation。
 
-### 4.5 Pipeline（流水线定义）
+### 4.5 Pipeline（两套独立流水线）
+
+> **关键分离**：RepPipeline（内容变换）和 IndexPipeline（索引构建）是两套独立的流水线，各自有独立的 Plugin 体系。RepPipeline 产出 Representation 文件；IndexPipeline 消费 Representation 文件产出搜索索引。两者不混合在同一条流水线中。
+
+#### 4.5.1 RepPipeline（内容变换流水线）
 
 ```json
 {
-  "pipeline_id": "pipeline_b",
-  "name": "OCR 流水线",
+  "pipeline_id": "rep_pipeline_b",
+  "pipeline_type": "rep",
+  "name": "OCR 内容变换",
   "entity_types": ["document"],
   "steps": [
-    { "action": "represent", "input_rep": "raw", "output_rep": "page_image" },
-    { "action": "represent", "input_rep": "page_image", "output_rep": "ocr_text" },
-    { "action": "chunk", "input_rep": "ocr_text", "strategy": "markdown_sliding_window" },
-    { "action": "embed", "modality": "text", "task": "retrieval.passage" }
+    { "step_id": "render_page", "input_rep": "raw", "output_rep": "page_image" },
+    { "step_id": "ocr", "input_rep": "page_image", "output_rep": "ocr_text" }
   ],
   "enabled": true,
   "priority": 2
 }
 ```
+
+**RepPipeline 特征**：
+- 每个 step 是一个 `RepStep`（§6.6），实现 `PipelineStep` Protocol
+- step 产出 Representation 文件（.md / .json / .png 等），写入 OSS
+- step 之间有血缘关系（上游变 → 下游 stale）
+- step 可由第三方 Plugin 注入（注册到 `RepStepRegistry`）
+
+#### 4.5.2 IndexPipeline（索引构建流水线）
+
+```json
+{
+  "pipeline_id": "index_pipeline_text",
+  "pipeline_type": "index",
+  "name": "文本索引构建",
+  "required_reps": ["canonical_md", "ocr_text", "vlm_md"],
+  "steps": [
+    { "step_id": "chunk_text", "source_reps": ["canonical_md", "ocr_text", "vlm_md"] },
+    { "step_id": "embed_text", "modality": "text", "task": "retrieval.passage" },
+    { "step_id": "build_vector_index", "index_type": "semantic" },
+    { "step_id": "build_fts_index", "index_type": "lexical" }
+  ],
+  "enabled": true
+}
+```
+
+**IndexPipeline 特征**：
+- 每个 step 是一个 `IndexStep`（§6.7），实现 `IndexStep` Protocol
+- step 消费 Representation 文件，产出索引结构（Lance index / 内存图等）
+- step 之间**无血缘**（索引是派生物，丢了可重建）
+- step 可由第三方 Plugin 注入（注册到 `IndexStepRegistry`）
+- **触发时机**：RepPipeline 全部完成后，由 IndexPipelineOrchestrator 自动调度
+
+#### 4.5.3 两套流水线的对比
+
+| 维度 | RepPipeline | IndexPipeline |
+|---|---|---|
+| 本质 | 内容变换 | 搜索结构构建 |
+| 产出 | Representation 文件 | 索引（vector / FTS / graph） |
+| 血缘 | 有（上游变 → 下游 stale） | 无（索引可重建） |
+| 触发 | 内容变化 / 用户请求 | Rep ready / 索引过期 |
+| 失败影响 | 知识缺失 | 检索能力缺失（内容仍在） |
+| 版本 | 跟随 entity_version | 跟随 lance_version |
+| Plugin 注册表 | `RepStepRegistry` | `IndexStepRegistry` |
+| 编排器 | `RepPipelineOrchestrator` | `IndexPipelineOrchestrator` |
 
 **Pipeline 定义的存储位置**：
 
@@ -2528,6 +2605,260 @@ def generate_all_representations(entity: Entity):
 | 表格中的图片 | G + E 并行：G 产 `table.parquet`，E 产 `page_image/`（图片向量） |
 | 公式 / 嵌入对象 | 暂不支持（v0.2+ 引入 Mathpix API / 公式抽取） |
 
+### 6.6 RepStep Plugin 体系（内容变换插件）
+
+> **核心定位**：RepStep 是 RepPipeline 的可插拔步骤。每个 RepStep 做一件事：把上游 Representation 文件变换为下游 Representation 文件。新增 rep_type = 新增 RepStep + 注册，不改已有代码。
+
+#### 6.6.1 RepStep Protocol
+
+```python
+from typing import Protocol, Optional
+from dataclasses import dataclass
+
+@dataclass
+class RepStepContext:
+    """RepStep 执行上下文，由 RepPipelineOrchestrator 注入。"""
+    entity_id: str
+    entity_type: str
+    workspace_id: str
+    collection_id: str
+    content_hash: str
+    entity_version: int
+    # 可访问上游 step 的产出
+    upstream_outputs: dict[str, "RepStepOutput"]
+
+@dataclass
+class RepStepOutput:
+    """RepStep 产出声明。"""
+    rep_type: str
+    stage: str                          # source/extract/recognize/compile
+    files: dict[str, bytes]             # 文件名 → 内容
+    tags: dict[str, str]                # OSS Representation Tag
+
+class RepStep(Protocol):
+    """可插拔的内容变换步骤。"""
+
+    # ── 声明（注册时读取，不执行）──
+    step_id: str                         # 全局唯一标识
+    name: str                            # 人类可读名称
+    input_reps: list[str]                # 依赖的上游 rep_type
+    output_reps: list[str]               # 产出的 rep_type
+    output_stage: str                    # 产出到哪个目录层级
+    supported_entity_types: list[str]    # 支持的 entity_type
+    modality: str                        # text / image / audio / table / graph / wiki
+
+    # ── 执行（运行时调用）──
+    def execute(self, ctx: RepStepContext) -> list[RepStepOutput]:
+        """执行步骤，返回产出列表。必须幂等。"""
+        ...
+
+    # ── 能力声明（可选覆盖）──
+    def capabilities(self) -> dict[str, bool]:
+        return {
+            "requires_llm": False,        # 是否需要 LLM 调用
+            "requires_gpu": False,        # 是否需要 GPU
+            "estimated_duration_ms": 1000, # 预估耗时
+        }
+```
+
+#### 6.6.2 RepStepRegistry（全局插件注册表）
+
+```python
+class RepStepRegistry:
+    """全局 RepStep 注册表。支持运行时动态注册（plugin 注入）。"""
+
+    _steps: dict[str, RepStep] = {}
+
+    @classmethod
+    def register(cls, step: RepStep):
+        """注册一个 RepStep。第三方 plugin 通过此接口注入。"""
+        cls._steps[step.step_id] = step
+
+    @classmethod
+    def get(cls, step_id: str) -> RepStep:
+        return cls._steps[step_id]
+
+    @classmethod
+    def steps_for_entity_type(cls, entity_type: str) -> list[RepStep]:
+        """返回支持该 entity_type 的所有 step。"""
+        return [s for s in cls._steps.values()
+                if entity_type in s.supported_entity_types]
+
+    @classmethod
+    def steps_producing_rep(cls, rep_type: str) -> list[RepStep]:
+        """返回能产出该 rep_type 的所有 step。"""
+        return [s for s in cls._steps.values()
+                if rep_type in s.output_reps]
+```
+
+#### 6.6.3 内置 RepStep 清单（v0.1）
+
+| step_id | name | input_reps | output_reps | output_stage | entity_types | modality |
+|---|---|---|---|---|---|---|
+| `parse` | 文档解析 | `raw` | `canonical_md`, `plain_text` | extract | document | text |
+| `render_page` | 页面渲染 | `raw` | `page_image` | extract | document, image | image |
+| `ocr` | OCR 识别 | `page_image` | `ocr_text` | recognize | document | text |
+| `vlm` | VLM 视觉 | `page_image` | `vlm_md` | recognize | document | text |
+| `transcribe` | 音频转写 | `raw` | `transcript`, `audio_segment` | recognize | audio | audio |
+| `table_parse` | 表格解析 | `raw` | `table_parquet`, `table_md`, `table_json` | compile | table | table |
+| `compile_mind_map` | 脑图编译 | `canonical_md` | `mind_map` | compile | document | text |
+| `compile_graph_json` | 关系图编译 | `canonical_md` | `graph_json` | compile | document | text |
+| `compile_summary` | 摘要编译 | `canonical_md` | `summary` | compile | document | text |
+| `compile_wiki_md` | Wiki 编译 | `canonical_md` | `wiki_md` | compile | document | wiki |
+| `project_wiki` | Wiki 投影 | `canonical_md`, `wiki_md`, `graph_json` | — | compile | wiki |
+
+> `project_wiki` 是 Projector 作为 RepStep 注册的示例（§11），产出不写回 Lake 内部，而是写外部 vault。
+
+#### 6.6.4 内置 RepPipeline 组装（v0.1）
+
+| pipeline_id | name | steps |
+|---|---|---|
+| `rep_pipeline_a` | 直接提取 | `parse` |
+| `rep_pipeline_b` | OCR 内容变换 | `render_page` → `ocr` |
+| `rep_pipeline_c` | VLM 内容变换 | `render_page` → `vlm` |
+| `rep_pipeline_d_mind_map` | 脑图编译 | `compile_mind_map` |
+| `rep_pipeline_d_graph` | 关系图编译 | `compile_graph_json` |
+| `rep_pipeline_d_summary` | 摘要编译 | `compile_summary` |
+| `rep_pipeline_d_wiki` | Wiki 编译 | `compile_wiki_md` |
+| `rep_pipeline_e` | 图片渲染 | `render_page` |
+| `rep_pipeline_f` | 音频转写 | `transcribe` |
+| `rep_pipeline_g` | 表格获取 | `table_parse` |
+
+#### 6.6.5 第三方 RepStep 注册示例
+
+```python
+# 第三方写的 FAQ 编译 step（不需要改 Lake 代码）
+class FaqCompileStep(RepStep):
+    step_id = "compile_faq"
+    name = "FAQ 编译"
+    input_reps = ["canonical_md"]
+    output_reps = ["faq_md"]
+    output_stage = "compile"
+    supported_entity_types = ["document"]
+    modality = "text"
+
+    def execute(self, ctx: RepStepContext) -> list[RepStepOutput]:
+        canonical = ctx.upstream_outputs["canonical_md"]
+        faq = my_faq_compiler(canonical)
+        return [RepStepOutput(
+            rep_type="faq_md", stage="compile",
+            files={"faq.md": faq.encode()},
+            tags={"transform": "faq_compiler", "modality": "text"},
+        )]
+
+# 注册
+RepStepRegistry.register(FaqCompileStep())
+```
+
+### 6.7 IndexStep Plugin 体系（索引构建插件）
+
+> **核心定位**：IndexStep 是 IndexPipeline 的可插拔步骤。每个 IndexStep 做一件事：消费 Representation 文件，构建搜索索引。新增 index_type = 新增 IndexStep + 注册，不改已有代码。IndexStep 与 RepStep 完全解耦——IndexStep 不知道 RepStep 的存在，只消费 Representation 文件。
+
+#### 6.7.1 IndexStep Protocol
+
+```python
+@dataclass
+class IndexStepContext:
+    """IndexStep 执行上下文，由 IndexPipelineOrchestrator 注入。"""
+    entity_id: str
+    entity_type: str
+    workspace_id: str
+    collection_id: str
+    lance_table: LanceTable              # 目标 Lance 表
+    available_reps: dict[str, str]       # rep_type → OSS URI（只读访问）
+
+class IndexStep(Protocol):
+    """可插拔的索引构建步骤。"""
+
+    # ── 声明 ──
+    step_id: str                         # 全局唯一标识
+    name: str                            # 人类可读名称
+    index_type: str                      # semantic / lexical / visual / graph / table / audio
+    required_reps: list[str]             # 需要哪些 rep_type 存在才能执行
+    supported_modalities: list[str]      # 支持的模态
+
+    # ── 执行 ──
+    def execute(self, ctx: IndexStepContext) -> None:
+        """构建索引。必须幂等。"""
+        ...
+
+    def is_built(self, ctx: IndexStepContext) -> bool:
+        """检查索引是否已存在。"""
+        ...
+
+    def rebuild(self, ctx: IndexStepContext) -> None:
+        """删除旧索引并重建。"""
+        ...
+
+    # ── 能力声明 ──
+    def capabilities(self) -> dict[str, bool]:
+        return {
+            "supports_hybrid": False,     # 是否支持 hybrid search
+            "requires_training": False,   # 是否需要训练（如 IVF）
+        }
+```
+
+#### 6.7.2 IndexStepRegistry（全局插件注册表）
+
+```python
+class IndexStepRegistry:
+    """全局 IndexStep 注册表。支持运行时动态注册。"""
+
+    _steps: dict[str, IndexStep] = {}
+
+    @classmethod
+    def register(cls, step: IndexStep):
+        cls._steps[step.step_id] = step
+
+    @classmethod
+    def steps_for_reps(cls, available_reps: list[str]) -> list[IndexStep]:
+        """返回所有 required_reps 已满足的 step。"""
+        return [s for s in cls._steps.values()
+                if all(r in available_reps for r in s.required_reps)]
+```
+
+#### 6.7.3 内置 IndexStep 清单（v0.1）
+
+| step_id | name | index_type | required_reps | supported_modalities | v0.1 |
+|---|---|---|---|---|---|
+| `chunk_and_embed_text` | 文本切片+嵌入 | semantic | `canonical_md`, `ocr_text`, `vlm_md`（任一） | text | ✅ |
+| `build_vector_index` | 向量索引 | semantic | — | text, image, audio | ✅ |
+| `build_fts_index` | 全文索引 | lexical | — | text | ✅ |
+| `chunk_and_embed_image` | 图片切片+嵌入 | visual | `page_image` | image | ✅ |
+| `chunk_and_embed_audio` | 音频切片+嵌入 | audio | `transcript`, `audio_segment` | audio | v0.2 |
+| `build_graph_index` | 图索引 | graph | `graph_json` | graph | v0.2 |
+| `chunk_and_embed_table` | 表格切片+嵌入 | table | `table_md`, `table_json` | table | v0.2 |
+
+#### 6.7.4 内置 IndexPipeline 组装（v0.1）
+
+| pipeline_id | name | steps |
+|---|---|---|
+| `index_pipeline_text` | 文本索引 | `chunk_and_embed_text` → `build_vector_index` → `build_fts_index` |
+| `index_pipeline_image` | 图片索引 | `chunk_and_embed_image` → `build_vector_index` |
+| `index_pipeline_audio` | 音频索引 | `chunk_and_embed_audio` → `build_vector_index` |
+| `index_pipeline_graph` | 图索引 | `build_graph_index` |
+| `index_pipeline_table` | 表格索引 | `chunk_and_embed_table` → `build_vector_index` |
+
+#### 6.7.5 IndexPipeline 触发时机
+
+```text
+RepPipeline 全部完成
+        ↓
+RepPipelineOrchestrator 发出 "rep_all_ready" 事件
+        ↓
+IndexPipelineOrchestrator 收到事件
+        ↓
+扫描 available_reps（从 OSS Tag 实时获取）
+        ↓
+IndexStepRegistry.steps_for_reps(available_reps)
+        ↓
+按 IndexPipeline 定义组装并执行
+        ↓
+索引构建完成 → Entity 可被检索
+```
+
+**关键不变量**：IndexPipeline **不触发** RepPipeline。索引构建失败不影响 Representation 文件的存在。
+
 ---
 
 ## 7. 多模态 Embedding 策略
@@ -3374,82 +3705,88 @@ class EvidencePack(BaseModel):
 
 ## 11. Projector 层（多目标投影）
 
-> **核心定位**：Vector-Lake 是**主体**，Projector 层是它面向不同外部消费者（RAG API / Wiki / Dashboard / Web 前端）暴露数据形态的**适配器集合**。Projector 订阅 Lake 内部事件（entity 创建、representation 完工、edge 写入、lint 完成），把内部数据**单向投影**为各消费者约定的格式。
+> **核心定位**：Vector-Lake 是**主体**，Projector 层是它面向不同外部消费者（RAG API / Wiki / Dashboard / Web 前端）暴露数据形态的**适配器集合**。
 >
-> **与检索层的关系**：§8 检索能力 / §9 智能引擎 是 Lake **被问** 时主动提供答案的 HTTP API；Projector 是 Lake **主动告知** 第三方（按事件驱动）的出站通道。两者正交。
+> **与 RepStep 的关系**：Projector 是 **RepStep 的一种特殊形态**——它消费 Lake 内部的 Representation 文件，但产出**不写回 Lake 内部**，而是写到外部目标（vault / HTTP / TSDB）。Projector 注册到 `RepStepRegistry`，由 `RepPipelineOrchestrator` 统一编排，复用拓扑排序、幂等、partial success 等能力。
+>
+> **与检索层的关系**：§8 检索能力 / §9 智能引擎 是 Lake **被问** 时主动提供答案的 HTTP API；Projector 是 Lake **主动告知** 第三方的出站通道。两者正交。
 
 ### 11.1 设计目标
 
 1. **Lake 内聚**：所有领域概念（Entity / Representation / Chunk / Edge / Event）只活在自己的边界内，不为外部消费者变形。
-2. **消费解耦**：新增消费者 = 新增一个 Projector，不改 Lake 核心代码。
-3. **最终一致**：投影允许秒级延迟；Lake 写入快，投影异步、可重放。
-4. **可回放**：每个 Projector 的输出是 Lake 事件的纯函数，支持全量重建（rebuild）。
+2. **消费解耦**：新增消费者 = 新增一个 Projector RepStep + 注册，不改 Lake 核心代码。
+3. **复用 RepPipeline 编排**：Projector 不自建事件系统，复用 RepPipeline 的拓扑排序、幂等、partial success。
+4. **可回放**：每个 Projector 的输出是 RepStep 产出的纯函数，支持全量重建（rebuild）。
 5. **不破坏消费者独立性**：消费者（如 Wiki）即使脱离 Lake 也能继续运行——因为拿到的是落地的 `.md` 文件，不是绑定到 Lake 的句柄。
 6. **幂等**：同一事件重复投影不产生副作用；artifact 命名带 idempotency key。
 
-### 11.2 Projector 抽象
+### 11.2 Projector 作为 RepStep
 
 ```python
-from typing import Protocol, Optional
-from datetime import datetime
+class ProjectorStep(RepStep):
+    """Projector 的基类。继承 RepStep，但产出不写回 Lake 内部。"""
 
-class Projector(Protocol):
-    """Lake 内部数据 → 外部消费者格式"""
+    # RepStep 标准声明
+    output_reps: list[str] = []           # Projector 不产出 Lake 内部 rep
+    output_stage: str = "compile"         # 逻辑上属于 compile 层
 
-    name: str                                    # 唯一标识（注册表 key）
-    consumer_type: str                           # 'wiki' | 'rag_api' | 'dashboard' | 'web'
+    # Projector 特有声明
+    consumer_type: str                    # 'wiki' | 'rag_api' | 'dashboard' | 'web'
+    target: str                           # 投影目标描述（如 '~/wiki/' 或 '/tools/*'）
 
-    # ── 单事件投影（事件驱动调用）──
-    def project_entity(self, entity: Entity) -> list[Artifact]: ...
-    def project_representation(self, rep: Representation) -> list[Artifact]: ...
-    def project_edge(self, edge: Edge) -> list[Artifact]: ...
-    def project_event(self, event: Event) -> list[Artifact]: ...
-    def project_lint(self, result: LintResult) -> list[Artifact]: ...
+    def execute(self, ctx: RepStepContext) -> list[RepStepOutput]:
+        """执行投影。返回空列表（产出不写回 Lake）。"""
+        self._project(ctx)
+        return []
 
-    # ── 全量重建接口（rebuild / schema 演进）──
+    def _project(self, ctx: RepStepContext) -> None:
+        """子类实现：把 ctx 中的 upstream_outputs 投影到外部目标。"""
+        ...
+
     def rebuild(self, since: Optional[datetime] = None) -> int:
-        """返回产出的 artifact 数量"""
+        """全量重建投影。"""
         ...
 ```
 
-`Artifact` 是 Projector 输出的"落地物"（OSS 写文件 / HTTP 推送 / WebSocket 消息 / DB 行）。
-
 ### 11.3 内置 Projector 清单
 
-| Projector | 消费者 | 输出形态 | 落地方式 | 状态 |
-|---|---|---|---|---|
-| `RagApiProjector` | 上层 RAG / Agent | JSON Evidence | HTTP `/tools/*` 路由（§8） | v0.1 |
-| `WikiProjector` | Karpathy LLM Wiki / Obsidian | `.md` 文件 + wikilink + log.md | OSS / 本地 vault | v0.1（详设见 §12） |
-| `DashboardProjector` | 运维面板 | 指标 / 状态卡片 | TSDB / WebSocket | v0.2 |
-| `WebProjector` | 前端 SPA | 视图模型 | HTTP `/v1/views/*` | v0.2 |
+| Projector | consumer_type | 输出形态 | 落地方式 | 注册为 RepStep | 状态 |
+|---|---|---|---|---|---|
+| `WikiProjectorStep` | wiki | `.md` 文件 + wikilink + log.md | OSS / 本地 vault | `project_wiki` | v0.1（详设见 §12） |
+| `RagApiProjectorStep` | rag_api | JSON Evidence | HTTP `/tools/*` 路由（§8） | `project_rag_api` | v0.1 |
+| `DashboardProjectorStep` | dashboard | 指标 / 状态卡片 | TSDB / WebSocket | `project_dashboard` | v0.2 |
+| `WebProjectorStep` | web | 视图模型 | HTTP `/v1/views/*` | `project_web` | v0.2 |
 
-> WikiProjector 是本次设计重点，详设见 §12。
+> WikiProjectorStep 是本次设计重点，详设见 §12。
 
-### 11.4 投影生命周期（事件驱动）
+### 11.4 投影生命周期（复用 RepPipeline 编排）
 
 ```text
-Lake 内部事件源                        Projector 运行时
-─────────────────                      ─────────────────
-Entity.published       ───┐
-Representation.ready   ───┤
-Edge.created           ───┼──→  Event Bus（pub/sub）  ──→  [WikiProjector]
-Event.appended         ───┤                                  │
-Lint.completed         ───┤                                  ├─→ 1. 收事件
-Supersede.occurred     ───┘                                  │   2. 调 project_xxx()
-                                                            │   3. 落 Artifact（带 idempotency）
-                                                            │   4. 失败 → DLQ + 告警
-                                                            ↓
-                                                     Artifact 落地
-                                                     (OSS / HTTP / WS)
+RepPipeline 执行链
+─────────────────
+RepStep: parse ──→ RepStep: ocr ──→ RepStep: compile_wiki_md ──→ ProjectorStep: project_wiki
+                                                                    │
+                                                                    ├─→ 1. 从 ctx.upstream_outputs 获取 rep
+                                                                    ├─→ 2. 渲染为 .md
+                                                                    ├─→ 3. 写入 ~/wiki/（带 idempotency）
+                                                                    └─→ 4. 失败 → RepPipeline 的 partial success 机制
 ```
 
-**幂等保证**：每个 Artifact 用 `sha256(input_event_id + projector_name + target_path)` 命名；重复投影覆盖同一目标，不产生重复条目。
+**与独立事件驱动方案的对比**：
+
+| 维度 | 独立事件驱动（旧方案） | RepStep 编排（新方案） |
+|---|---|---|
+| 触发 | Event Bus 订阅 | RepPipelineOrchestrator 调度 |
+| 依赖管理 | 手工 | 自动（拓扑排序） |
+| 幂等 | 自建 | 继承 RepStep |
+| 失败处理 | 自建 DLQ | 复用 RepPipeline partial success |
+| 新增 Projector | 新增事件处理逻辑 | 注册一个 RepStep |
 
 ### 11.5 投影一致性等级
 
 | 等级 | 适用 | 实现 |
 |---|---|---|
-| **最终一致**（默认） | 绝大多数 Projector | 事件驱动 + 异步执行，秒级延迟 |
+| **最终一致**（默认） | 绝大多数 Projector | RepPipeline 异步执行，秒级延迟 |
 | **强一致** | RAG API 的"写后即查" | 不走 Projector，直接调 Lake 内部 API（§8） |
 | **离线全量重建** | 投影损坏 / schema 演进 / 新接 Projector | `rebuild()` 接口，基于 `content_hash` 重放所有事件 |
 
@@ -3457,18 +3794,18 @@ Supersede.occurred     ───┘                                  │   2. �
 
 | 失败类型 | 检测 | 恢复 |
 |---|---|---|
-| 单事件投影失败 | DLQ 入队 + 告警 | 人工 replay 或自动重试 3 次后入 cold-DLQ |
+| 单次投影失败 | RepPipeline step 失败标记 | 自动重试 3 次 → 标 failed → 告警 |
 | 投影器进程崩溃 | 健康检查 | 启动时从 last_committed_offset 续接 |
-| 目标存储不可用 | 网络/权限错误 | 指数退避重试；最终进 DLQ |
+| 目标存储不可用 | 网络/权限错误 | 指数退避重试；最终标 failed |
 | 数据漂移（artifact 与 Lake 不一致） | 周期性 hash 比对 | 触发 `rebuild()` |
 
 ---
 
 ## 12. Wiki Projector 详设
 
-> **重新定位**：Vector-Lake 是**主体**，Wiki Projector 是其内部 Projector 层的成员。**Wiki 不是 Lake 的宿主，Wiki 也不是 Lake 的客户——Wiki 是 Lake 内部数据的一种"渲染格式"**。Lake 决定 wiki 长成什么样，wiki 用户可以选择消费或忽略这种格式。
+> **重新定位**：Vector-Lake 是**主体**，Wiki Projector 是其内部 RepStep Plugin 体系的一个成员（§6.6 / §11）。**Wiki 不是 Lake 的宿主，Wiki 也不是 Lake 的客户——Wiki 是 Lake 内部数据的一种"渲染格式"**。Lake 决定 wiki 长成什么样，wiki 用户可以选择消费或忽略这种格式。
 >
-> 这是对前两版（"Wiki 宿主 + Lake 后端" / "SBI 双边契约"）的最终修正：Lake 主体地位不动摇，Wiki Provider 是 Lake 内部 Projector 层的一个适配器。
+> Wiki Projector 注册为 `project_wiki` RepStep，由 `RepPipelineOrchestrator` 统一编排。它消费 `canonical_md` / `wiki_md` / `graph_json` 等 Representation，产出不写回 Lake 内部，而是写到外部 `~/wiki/` 目录。
 
 ### 12.1 设计目标
 
@@ -3636,18 +3973,17 @@ LOG_TEMPLATE = {
    │  2. 入 Ingest Queue
    │  3. Pipeline Orchestrator 调度
    ↓
-[Pipeline: represent → chunk → embed]
+[RepPipeline: parse → ocr → compile_wiki_md]
    │  产出 Entity + Representations
-   │  写入 Lance + Parquet 镜像
+   │  写入 OSS + Lance + Parquet 镜像
    ↓
-[Event Bus: entity.created, rep.ready, edge.created]
+[RepPipelineOrchestrator: 调度 project_wiki RepStep]
    ↓
 ┌──┴──────────────────────────────────────────┐
-│  Projector 层（订阅事件）                     │
-│  ┌────────────┐  ┌────────────┐  ┌───────┐  │
-│  │ RAG API    │  │ Wiki       │  │ Dash  │  │
-│  │ 重建索引    │  │ 写 .md    │  │ 刷新  │  │
-│  └────────────┘  └────────────┘  └───────┘  │
+│  ProjectorStep: project_wiki                 │
+│  - 从 ctx.upstream_outputs 获取 rep          │
+│  - 渲染为 .md + wikilinks                    │
+│  - 写入 ~/wiki/（带 idempotency）             │
 └──────────────────────────────────────────────┘
                      │
                      │ 写 ~/wiki/entities/foo.md
@@ -3906,11 +4242,15 @@ semantic · lexical · hybrid · visual
 | R5 | OSS 一致性 vs 索引一致性 | content_hash 检测 + publish 原子切换 + reconcile 兜底 |
 | R6 | 大文档增量更新成本 | v0.1 全量重建；v0.2 评估 page-level 增量 |
 | R7 | Embedding 模型升级 | model_version 字段 + reconcile 检测过期 + 按需重跑 |
-| R8 | Projector 事件消费积压（Lake 写快、Projector 慢） | Projector 自带 DLQ + 告警 + last_committed_offset 续接；监控 lag 指标 |
-| R9 | Wiki 投影 idempotency 漏洞（重复事件产生重复 wikilink） | artifact 命名带 `sha256(event_id + projector + target_path)`；重复事件覆盖同目标 |
-| R10 | 用户手改 `.md` 与 Lake 投影冲突 | Push 模式默认 `wiki.protect_user_edits=true` 不覆盖；编辑以 `user_edited_md` Representation 形式回流到 Lake |
-| R11 | Wiki vault 写入非原子（断电导致半截文件） | `os.replace` POSIX 原子 rename；OSS 端用 `PutObject → CopyObject + if-match` 替换 |
-| R12 | `rebuild()` 全量重投影与增量结果不一致 | 投影函数必须是事件的纯函数；以 `content_hash` 为基准做等价性比对 |
+| R8 | RepStep Plugin 版本兼容性（第三方 step 升级后与 Lake 不兼容） | Step 声明 `api_version`；Lake 拒绝加载不兼容版本 |
+| R9 | RepStep 执行超时 / 死循环 | Step 声明 `estimated_duration_ms`；Orchestrator 设超时，超时后标 failed |
+| R10 | 第三方 RepStep 的安全隔离 | v0.1 只允许内置 Step；v0.2 引入沙箱（容器 / WASM）执行第三方 Step |
+| R11 | IndexStep 与 Lance 版本耦合 | IndexStep 声明 `required_lance_version`；不满足则跳过 |
+| R12 | RepPipeline 与 IndexPipeline 的触发时序（Index 在 Rep 未完成时被触发） | IndexPipeline 只在收到 `rep_all_ready` 事件后调度；Orchestrator 保证顺序 |
+| R13 | Wiki 投影 idempotency 漏洞（重复事件产生重复 wikilink） | artifact 命名带 `sha256(event_id + projector + target_path)`；重复事件覆盖同目标 |
+| R14 | 用户手改 `.md` 与 Lake 投影冲突 | Push 模式默认 `wiki.protect_user_edits=true` 不覆盖；编辑以 `user_edited_md` Representation 形式回流到 Lake |
+| R15 | Wiki vault 写入非原子（断电导致半截文件） | `os.replace` POSIX 原子 rename；OSS 端用 `PutObject → CopyObject + if-match` 替换 |
+| R16 | `rebuild()` 全量重投影与增量结果不一致 | 投影函数必须是事件的纯函数；以 `content_hash` 为基准做等价性比对 |
 | Q1 | entity 是否需要"跨 collection 合并"？ | v0.1 不做；v0.2 讨论 `same_as` edge |
 | Q2 | wiki_md / mind_map 的 LLM 编译成本 | v0.2 实现；异步、按需、按版本 |
 | Q3 | graph index 用什么存储 | v0.1 用 graph_json representation + 内存遍历；v0.2 评估 Neo4j |
@@ -3918,6 +4258,8 @@ semantic · lexical · hybrid · visual
 | Q5 | multimodal embedding 与文本是否真的同空间 | V5 明确支持，但需回归测试 |
 | Q6 | VLM pipeline 的模型选型 | v0.2 评估 Qwen2-VL / GPT-4o / Gemini |
 | Q7 | Wiki Projector 是否要支持 Pull 模式（`GET /v1/wiki/project/*`） | v0.2 评估；v0.1 仅 Push 模式 |
+| Q8 | RepStep 之间是否允许共享状态（跨 step 缓存） | v0.1 不允许（纯函数）；v0.2 评估 `RepStepContext.cache` |
+| Q9 | RepPipeline 是否支持条件分支（if/else） | v0.1 不支持（线性拓扑）；v0.2 评估 DAG 条件边 |
 
 ---
 
@@ -3959,9 +4301,14 @@ semantic · lexical · hybrid · visual
 - **Manifest**：某次处理产物的注册清单。
 - **Provenance**：结果可追溯到来源 + 版本 + pipeline。
 - **Reconcile**：定期对账，修复状态漂移。
-- **Projector**：Lake 内部事件驱动的出站适配器（§11），把 Entity/Representation/Edge/Event 投影为外部消费者（RAG API / Wiki / Dashboard / Web）约定的格式。
-- **WikiProjector**：Projector 的一种（§12），目标消费者是 Karpathy LLM Wiki / Obsidian；投影产物是 `~/wiki/` 目录的 `.md` + wikilink + index.md + log.md，可独立运行。
-- **Artifact**：Projector 输出的"落地物"（OSS 文件 / HTTP 推送 / WebSocket 消息 / DB 行）。
+- **Projector**：Lake 内部 RepStep Plugin 体系的一种特殊 RepStep（§6.6 / §11），消费 Representation 文件但产出不写回 Lake 内部，而是投影到外部消费者（RAG API / Wiki / Dashboard / Web）约定的格式。
+- **WikiProjector**：Projector 的一种（§12），注册为 `project_wiki` RepStep，目标消费者是 Karpathy LLM Wiki / Obsidian；投影产物是 `~/wiki/` 目录的 `.md` + wikilink + index.md + log.md，可独立运行。
+- **RepStep**：RepPipeline 的可插拔步骤（§6.6），实现 `PipelineStep` Protocol，做一件事：把上游 Representation 文件变换为下游 Representation 文件。新增 rep_type = 新增 RepStep + 注册。
+- **IndexStep**：IndexPipeline 的可插拔步骤（§6.7），实现 `IndexStep` Protocol，做一件事：消费 Representation 文件构建搜索索引。新增 index_type = 新增 IndexStep + 注册。IndexStep 与 RepStep 完全解耦。
+- **RepStepRegistry**：全局 RepStep 注册表，支持运行时动态注册（plugin 注入）。
+- **IndexStepRegistry**：全局 IndexStep 注册表，支持运行时动态注册。
+- **RepPipeline**：内容变换流水线，由有序 RepStep 组装，产出 Representation 文件。有血缘、有版本。
+- **IndexPipeline**：索引构建流水线，由有序 IndexStep 组装，消费 Representation 文件产出搜索索引。无血缘、可重建。
 
 ### 19.5 开源项目 Review：血缘方案对比
 
