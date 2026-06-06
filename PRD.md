@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§21-§25）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）；(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例；(28) **Rep 继承链与级联传播（§5.13）**：新增 §5.13 Rep 继承链与级联传播——Rep Tag 从 7→9 个字段（新增 `input_content_hash` + `content_hash`），每个 Rep 记录直接上游的内容指纹；§5.9.1 `source_content_hash` 语义修正为 `input_content_hash`（直接上游，不一定是 raw）；新增 Rep 继承链定义（§5.13.1，含完整继承图示例 + 9 种 Rep 的 input_content_hash 映射表）；新增 Rep 变动级联传播（§5.13.2，含 BFS 级联算法 + 5 步级联场景）；新增 Index 增量重建（§5.13.3，required_reps ready 即可触发，不等全部 Rep ready，v0.1 先全量等待 v0.2 切增量）；新增继承链可观测性 API（§5.13.4，4 个查询端点）；新增继承链 vs 血缘对比（§5.13.5）；§5.7.1 Rep 联动表新增"上游 Rep content_hash 变化"行 + 引用 §5.13；§5.9.1 校验场景新增"上游 Rep 更新但下游 Rep 未重建"场景；Tag 示例 transform=ocr→visual_recognize；(29) **补全缺失的 3 条 Pipeline**：新增 `rep_pipeline_h` 视频关键帧抽取（RepStep `extract_keyframes`，依赖 ffmpeg，输出 `keyframe_image` + `keyframe_timeline`，适用于所有视频格式）；新增 `index_pipeline_video` 视频双模态索引（IndexStep `chunk_and_embed_video`，required_reps 为 `transcript` + `keyframe_image`，同时索引音轨和关键帧）；新增 `index_pipeline_structural` 结构化检索（IndexStep `register_duckdb_view`，将 `table_parquet` 注册到嵌入式 DuckDB 视图）；§2.2 树状图补全 video/structural/audio/table 分支；§6.1 映射总表新增 H 行；§6.5.6 路由总表 video 行从 F+E 改为 F+H；§6.7.3 IndexStep 表新增 `chunk_and_embed_video` + `register_duckdb_view`；§6.6.4/§13.2 RepPipeline 编号 family 扩展为 a/b/d/e/f/g/h；§13.3 IndexPipeline 补全 video/structural；§6.7.1 v0.1 限制 5 Index 调整为 text/image/video/structural/graph；(30) **完整变动管理（§5.14）**：新增 §5.14 完整变动管理（Change Management），集中覆盖 10 个变动相关维度——5.14.1 变动检测（5 个检测源：OSS 事件/Reconciler 周期/API 写入/Phase 0/Edge 主动）；5.14.2 变动分类（7 类 C1-C7：Raw/Rep 内容/Rep 状态/Index/Schema/Entity 元数据/Projector 配置）；5.14.3 变动追踪（两层日志 L1 version_log + L2 _log/v0.2 事务日志 + v0.1 简化追踪方案 6 项操作字段）；5.14.4 变动通知（4 个通知目标：Reconciler/Worker/Projector/Edge Resolver + change_detected 消息格式）；5.14.5 变动回滚（5 类回滚策略 + 3 条不变量：不删除历史/不破坏外引用/不绕过 Reconciler）；5.14.6 变动冲突（5 个冲突场景 + 3 条解决原则：锁优先/版本兜底/Reconciler 终极裁决）；5.14.7 变动回放/Time Travel（v0.1 基础快照 + v0.2 snapshot/diff API + v0.3 完整 Time Travel）；5.14.8 批量变动（3 种批量场景 API：批量导入/批量重打标签/批量删除 + 统一响应格式）；5.14.9 跨 Entity 变动（强/弱/嵌入 3 种 Edge 引用类型 + 决策矩阵）；5.14.10 投影端变动（Projector 4 步响应：评估/计算 diff/应用差异/记录历史 + 3 种同步模式 Realtime/Batch/On-demand）；5.14.11 变动 SLA 与可观测性（5 项 SLA 指标 + /changes/stats 端点）；(31) **Watch Mode 自动构建（§5.15）**：新增 §5.15 Watch Mode（自动构建模式），核心承诺"指定目录上传即自动构建索引，无需调用 API"；包含 10 个子节：5.15.1 启用与配置（OSS 监听 + 本地监听 + Reconciler 兜底 3 种源 + config.yaml 完整配置）；5.15.2 自动构建流程（5 步：检测→解析路径→创建 Entity→RepPipeline→Index）+ Redis Streams `vl:watch_ingest` 消息格式；5.15.3 entity_id 命名策略（5 种：filename/filepath/uuid/hash/template + 冲突处理）；5.15.4 4 类事件自动处理（新建/修改/删除/重命名）；5.15.5 文件过滤与安全（白/黑名单 + 大小限制 + 并发限流 + 文件稳定期 30s + 访问控制）；5.15.6 批量上传优化（5s flush 批量聚合 + 4 项性能指标）；5.15.7 与显式 API 协调（3 种范式并存 + 数据模型完全一致）；5.15.8 错误处理与告警（5 类错误 + Dead Letter 队列）；5.15.9 可观测性（3 个 API 端点 + 4 个 Prometheus 指标）；5.15.10 v0.1 实施范围（14 项功能 v0.1/v0.2 分布）；(32) **Watch Mode 监听/接入策略解耦**：§5.15.1 重构为 Watch Strategy（监听策略）+ Ingest Strategy（接入策略）两层解耦设计——Watch Strategy 只管"检测 prefix 下的文件变动"（prefix + type + recursive + 限流），Ingest Strategy 管"文件怎么变成 Entity"（entity_id_strategy + labels + allowed_extensions + max_file_size + on_conflict）；一个 Watch Strategy 绑定一个 Ingest Strategy，多个 Watch Strategy 可复用同一 Ingest Strategy；新增 4 个预置 Ingest Strategy（standard_doc/wps_doc/multimedia/tabular）+ 5 个 Watch Strategy 示例；§5.15.2 自动构建流程拆为 6 步（Watch 检测→Watch 匹配→Ingest 决定→投递消息→RepPipeline→Index ready）；§5.15.3 新增 on_conflict 冲突处理策略（update/skip/error）；§5.15.5 明确过滤规则归属 Ingest Strategy、限流归属 Watch Strategy；消息格式新增 watch_strategy_id + ingest_strategy_id + on_conflict 字段。(33) **§5.15 Watch Mode 深度 review 修复**：新增 §5.15.11 高级场景（9 个子节覆盖生产落地关键问题）——5.15.11.1 运行时更新 Watch/Ingest Strategy（热更新字段表 + PATCH/PUT API + 生命周期状态机 initializing/active/paused/error/stopped + 缓冲队列）；5.15.11.2 多租户隔离（workspace 强绑定 + cross_workspace_read 显式授权 + 5 维隔离机制）；5.15.11.3 竞态与一致性（3 类竞态 + Redis 分布式锁 lock:watch:entity:{entity_id} + 等待队列 + Entity/Rep/Index 三层幂等）；5.15.11.4 Dead Letter TTL 与自动清理（retention_days/cleanup_interval/max_total_size_gb 完整配置 + 5min/1h/6h 指数退避重试 + 4 类告警规则）；5.15.11.5 多 Watch Strategy 冲突（启动时拒绝重叠 prefix + allow_conflict opt-in + ETag 差异检测 create/update/skip 三态）；5.15.11.6 Per-Collection 配额（default + overrides 两层 + 4 类配额项 + 429 拒绝 + 令牌桶限流）；5.15.11.7 Delete-Only Watch（event_filter.types=[deleted] + auto_create_entity=false + 全功能 vs 仅删除对比表）；5.15.11.8 文件删除/中途失败边界（4 类场景：raw 已拷贝 RepPipeline 中途删 / 半截上传 / 格式损坏 / Watcher 宕机堆积）；5.15.11.9 MCP Tool 暴露（8 个 Tool 表 watch_list/status/create/pause/resume/replay/dead_letter_list/replay + watch:read/write/admin 权限模型）；§5.15.8 错误处理表扩展为 8 类（新增 OSS API 限流 + ETag 重复事件）；§5.15.9 可观测性 API 端点从 3 个扩展为 8 个（新增 ingest_strategy 详情 + 5 个运行时管理端点）+ Prometheus 指标从 4 个扩展为 8 个 + 新增结构化 JSON 日志规范；§5.15.10 v0.1 实施范围表从 14 行扩展为 23 行（新增 Ingest/Watch 解耦、5 种 entity_id 策略、on_conflict、TTL、多租户、运行时更新、多 Watch 冲突检测、MCP Tool 等项）。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§21-§25）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）；(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例；(28) **Rep 继承链与级联传播（§5.13）**：新增 §5.13 Rep 继承链与级联传播——Rep Tag 从 7→9 个字段（新增 `input_content_hash` + `content_hash`），每个 Rep 记录直接上游的内容指纹；§5.9.1 `source_content_hash` 语义修正为 `input_content_hash`（直接上游，不一定是 raw）；新增 Rep 继承链定义（§5.13.1，含完整继承图示例 + 9 种 Rep 的 input_content_hash 映射表）；新增 Rep 变动级联传播（§5.13.2，含 BFS 级联算法 + 5 步级联场景）；新增 Index 增量重建（§5.13.3，required_reps ready 即可触发，不等全部 Rep ready，v0.1 先全量等待 v0.2 切增量）；新增继承链可观测性 API（§5.13.4，4 个查询端点）；新增继承链 vs 血缘对比（§5.13.5）；§5.7.1 Rep 联动表新增"上游 Rep content_hash 变化"行 + 引用 §5.13；§5.9.1 校验场景新增"上游 Rep 更新但下游 Rep 未重建"场景；Tag 示例 transform=ocr→visual_recognize；(29) **补全缺失的 3 条 Pipeline**：新增 `rep_pipeline_h` 视频关键帧抽取（RepStep `extract_keyframes`，依赖 ffmpeg，输出 `keyframe_image` + `keyframe_timeline`，适用于所有视频格式）；新增 `index_pipeline_video` 视频双模态索引（IndexStep `chunk_and_embed_video`，required_reps 为 `transcript` + `keyframe_image`，同时索引音轨和关键帧）；新增 `index_pipeline_structural` 结构化检索（IndexStep `register_duckdb_view`，将 `table_parquet` 注册到嵌入式 DuckDB 视图）；§2.2 树状图补全 video/structural/audio/table 分支；§6.1 映射总表新增 H 行；§6.5.6 路由总表 video 行从 F+E 改为 F+H；§6.7.3 IndexStep 表新增 `chunk_and_embed_video` + `register_duckdb_view`；§6.6.4/§13.2 RepPipeline 编号 family 扩展为 a/b/d/e/f/g/h；§13.3 IndexPipeline 补全 video/structural；§6.7.1 v0.1 限制 5 Index 调整为 text/image/video/structural/graph；(30) **完整变动管理（§5.14）**：新增 §5.14 完整变动管理（Change Management），集中覆盖 10 个变动相关维度——5.14.1 变动检测（5 个检测源：OSS 事件/Reconciler 周期/API 写入/Phase 0/Edge 主动）；5.14.2 变动分类（7 类 C1-C7：Raw/Rep 内容/Rep 状态/Index/Schema/Entity 元数据/Projector 配置）；5.14.3 变动追踪（两层日志 L1 version_log + L2 _log/v0.2 事务日志 + v0.1 简化追踪方案 6 项操作字段）；5.14.4 变动通知（4 个通知目标：Reconciler/Worker/Projector/Edge Resolver + change_detected 消息格式）；5.14.5 变动回滚（5 类回滚策略 + 3 条不变量：不删除历史/不破坏外引用/不绕过 Reconciler）；5.14.6 变动冲突（5 个冲突场景 + 3 条解决原则：锁优先/版本兜底/Reconciler 终极裁决）；5.14.7 变动回放/Time Travel（v0.1 基础快照 + v0.2 snapshot/diff API + v0.3 完整 Time Travel）；5.14.8 批量变动（3 种批量场景 API：批量导入/批量重打标签/批量删除 + 统一响应格式）；5.14.9 跨 Entity 变动（强/弱/嵌入 3 种 Edge 引用类型 + 决策矩阵）；5.14.10 投影端变动（Projector 4 步响应：评估/计算 diff/应用差异/记录历史 + 3 种同步模式 Realtime/Batch/On-demand）；5.14.11 变动 SLA 与可观测性（5 项 SLA 指标 + /changes/stats 端点）；(31) **Watch Mode 自动构建（§5.15）**：新增 §5.15 Watch Mode（自动构建模式），核心承诺"指定目录上传即自动构建索引，无需调用 API"；包含 10 个子节：5.15.1 启用与配置（OSS 监听 + 本地监听 + Reconciler 兜底 3 种源 + config.yaml 完整配置）；5.15.2 自动构建流程（5 步：检测→解析路径→创建 Entity→RepPipeline→Index）+ Redis Streams `vl:watch_ingest` 消息格式；5.15.3 entity_id 命名策略（5 种：filename/filepath/uuid/hash/template + 冲突处理）；5.15.4 4 类事件自动处理（新建/修改/删除/重命名）；5.15.5 文件过滤与安全（白/黑名单 + 大小限制 + 并发限流 + 文件稳定期 30s + 访问控制）；5.15.6 批量上传优化（5s flush 批量聚合 + 4 项性能指标）；5.15.7 与显式 API 协调（3 种范式并存 + 数据模型完全一致）；5.15.8 错误处理与告警（5 类错误 + Dead Letter 队列）；5.15.9 可观测性（3 个 API 端点 + 4 个 Prometheus 指标）；5.15.10 v0.1 实施范围（14 项功能 v0.1/v0.2 分布）；(32) **Watch Mode 监听/接入策略解耦**：§5.15.1 重构为 Watch Strategy（监听策略）+ Ingest Strategy（接入策略）两层解耦设计——Watch Strategy 只管"检测 prefix 下的文件变动"（prefix + type + recursive + 限流），Ingest Strategy 管"文件怎么变成 Entity"（entity_id_strategy + labels + allowed_extensions + max_file_size + on_conflict）；一个 Watch Strategy 绑定一个 Ingest Strategy，多个 Watch Strategy 可复用同一 Ingest Strategy；新增 4 个预置 Ingest Strategy（standard_doc/wps_doc/multimedia/tabular）+ 5 个 Watch Strategy 示例；§5.15.2 自动构建流程拆为 6 步（Watch 检测→Watch 匹配→Ingest 决定→投递消息→RepPipeline→Index ready）；§5.15.3 新增 on_conflict 冲突处理策略（update/skip/error）；§5.15.5 明确过滤规则归属 Ingest Strategy、限流归属 Watch Strategy；消息格式新增 watch_strategy_id + ingest_strategy_id + on_conflict 字段。(33) **§5.15 Watch Mode 深度 review 修复**：新增 §5.15.11 高级场景（9 个子节覆盖生产落地关键问题）——5.15.11.1 运行时更新 Watch/Ingest Strategy（Watch Strategy 热更新字段表 + Ingest Strategy 热更新字段表 + PATCH/PUT/DELETE API + Ingest Strategy 删除保护（409 Conflict + bound_watch_strategies 引用检查 + force=true 强制删除）+ 生命周期状态机 initializing/active/paused/error/stopped + 缓冲队列）；5.15.11.2 多租户隔离（workspace 强绑定 + cross_workspace_read 显式授权 + 5 维隔离机制）；5.15.11.3 竞态与一致性（3 类竞态 + Redis 分布式锁 lock:watch:entity:{entity_id} + 等待队列 + Entity/Rep/Index 三层幂等）；5.15.11.4 Dead Letter TTL 与自动清理（retention_days/cleanup_interval/max_total_size_gb 完整配置 + 5min/1h/6h 指数退避重试 + 4 类告警规则）；5.15.11.5 多 Watch Strategy 冲突（启动时拒绝重叠 prefix + allow_conflict opt-in + ETag 差异检测 create/update/skip 三态）；5.15.11.6 Per-Collection 配额（default + overrides 两层 + 4 类配额项 + 429 拒绝 + 令牌桶限流）；5.15.11.7 Delete-Only Watch（event_filter.types=[deleted] + auto_create_entity=false + 全功能 vs 仅删除对比表）；5.15.11.8 文件删除/中途失败边界（4 类场景：raw 已拷贝 RepPipeline 中途删 / 半截上传 / 格式损坏 / Watcher 宕机堆积）；5.15.11.9 MCP Tool 暴露（8 个 Tool 表 watch_list/status/create/pause/resume/replay/dead_letter_list/replay + watch:read/write/admin 权限模型）；§5.15.8 错误处理表扩展为 8 类（新增 OSS API 限流 + ETag 重复事件）；§5.15.9 可观测性 API 端点从 3 个扩展为 8 个（新增 ingest_strategy 详情 + 5 个运行时管理端点）+ Prometheus 指标从 4 个扩展为 8 个 + 新增结构化 JSON 日志规范；§5.15.10 v0.1 实施范围表从 14 行扩展为 23 行（新增 Ingest/Watch 解耦、5 种 entity_id 策略、on_conflict、TTL、多租户、运行时更新、多 Watch 冲突检测、MCP Tool 等项）；§21.6 启动顺序补充 Watch Listener 启动流程（6 步：加载配置→配置校验→初始化监听→注册 Producer→状态上报→开始接收事件 + prefix 重叠检测引用 §5.15.11.5）；§21.7 优雅关闭补充 Watch Listener 关闭流程（5 步：停止接收→缓冲队列处理→状态上报→关闭监听→关闭 Producer + 缓冲上限 10000 条 + 本地暂存超限部分）；§21.8 运维命令补充 Watch/Ingest/Dead Letter 管理（watch list/status/pause/resume/replay + ingest list/show/update + dead-letter list/replay/cleanup）。
 
 ---
 
@@ -4501,7 +4501,7 @@ POST   /watch/strategies/{id}:resume        # 恢复
 
 **为什么需要**：用户改完 `config.yaml` 后，**不应**必须重启整个 Vector-Lake 进程（重启期间会丢失事件）。监听/接入策略应支持热更新。
 
-**支持变更**（无需重启）：
+**Watch Strategy 热更新**（无需重启）：
 
 | 字段 | 可热更新 | 行为 |
 | --- | --- | --- |
@@ -4513,9 +4513,24 @@ POST   /watch/strategies/{id}:resume        # 恢复
 | `type`（oss→local 等） | ❌ | 需 stop → recreate |
 | `workspace` / `collection` | ❌ | 需 stop → recreate（涉及数据迁移） |
 
+**Ingest Strategy 热更新**（无需重启）：
+
+| 字段 | 可热更新 | 行为 |
+| --- | --- | --- |
+| `allowed_extensions` | ✅ | 对**新接入**生效，旧 Entity 不变 |
+| `blocked_patterns` | ✅ | 对**新接入**生效 |
+| `max_file_size_mb` | ✅ | 对**新接入**生效 |
+| `default_labels` | ✅ | 对**新接入**生效，旧 Entity 不变 |
+| `on_conflict` | ✅ | 对**新接入**生效 |
+| `entity_id_strategy` | ✅ | 对**新接入**生效，旧 Entity 不变 |
+| `inherit_labels_from` | ✅ | 对**新接入**生效 |
+
+> **注意**：Ingest Strategy 热更新只影响**新接入的文件**，已创建的 Entity 不受影响。如需更新旧 Entity 的 labels，需通过 API 显式调用 `Entity.update_labels()`。
+
 **API**：
 
 ```python
+# Watch Strategy 管理
 # 部分更新（PATCH 语义）
 PATCH /watch/strategies/{id}
   { "max_concurrent_ingest": 20, "require_stable_seconds": 60 }
@@ -4530,6 +4545,49 @@ POST /watch/strategies/{id}:pause
   → 后续事件进入 Redis Streams 缓冲（缓冲上限 10000 条），不丢
 POST /watch/strategies/{id}:resume
   → 消费缓冲 + 恢复实时监听
+
+# 删除（停用）
+DELETE /watch/strategies/{id}
+  → state=stopped，不再接收事件，已创建 Entity 不受影响
+
+# Ingest Strategy 管理
+# 部分更新（PATCH 语义）
+PATCH /watch/ingest_strategies/{id}
+  { "allowed_extensions": [".pdf", ".md", ".docx"], "on_conflict": "skip" }
+  → 200 OK，返回新 config + 生效时间戳 + bound_watch_strategies 列表
+
+# 替换（PUT 语义）
+PUT /watch/ingest_strategies/{id}
+  { ... 完整 ingest_strategy 配置 ... }
+
+# 删除（需引用检查）
+DELETE /watch/ingest_strategies/{id}
+  → 若 bound_watch_strategies 非空 → 409 Conflict + 返回引用列表
+  → 若 bound_watch_strategies 为空 → 200 OK，删除成功
+```
+
+**Ingest Strategy 删除保护**：
+
+```python
+# 删除前检查引用
+def delete_ingest_strategy(ingest_strategy_id):
+    bound = list_watch_strategies(ingest_strategy=ingest_strategy_id)
+    if bound:
+        return {
+            "error": "VL-INGEST-REFERENCED",
+            "message": f"Ingest Strategy '{ingest_strategy_id}' is referenced by {len(bound)} Watch Strategies",
+            "bound_watch_strategies": [s.strategy_id for s in bound],
+            "hint": "Unbind or delete Watch Strategies first, or use force=true"
+        }, 409
+    else:
+        delete_strategy_config(ingest_strategy_id)
+        return {"ok": True}, 200
+
+# 强制删除（同时解绑所有 Watch Strategy）
+DELETE /watch/ingest_strategies/{id}?force=true
+  → 所有 bound Watch Strategy 的 ingest_strategy 字段置空 → state=error
+  → 删除 Ingest Strategy → 200 OK
+  → 需 admin role
 ```
 
 **Watch Strategy 生命周期状态机**：
@@ -7609,18 +7667,75 @@ vector_lake:
 1. Redis / MinIO 启动（docker-compose 自动处理）
 2. API Server 启动 → 等待 Redis + MinIO 就绪
 3. Worker 启动 → 连接 Redis Streams Consumer Group
-4. Reconciler 启动 → 获取 Redis 分布式锁，开始周期检查
-5. MCP Server 按需启动（LLM 会话建立时）
+4. Watch Listener 启动 → 加载 Watch Strategy 配置 → 连接 OSS EventNotification / inotify → 注册 Redis Streams Producer
+5. Reconciler 启动 → 获取 Redis 分布式锁，开始周期检查
+6. MCP Server 按需启动（LLM 会话建立时）
+```
+
+**Watch Listener 启动细节**：
+
+```text
+Watch Listener 启动流程：
+  │
+  ▼
+[1] 加载 config.yaml 中的 watch_strategies + ingest_strategies
+  │
+  ▼
+[2] 配置校验
+  ├─ 检查 prefix 重叠冲突（§5.15.11.5）
+  ├─ 检查 ingest_strategy 引用是否存在
+  ├─ 检查 workspace/collection 权限
+  └─ 校验失败 → state=error + 告警
+  │
+  ▼
+[3] 初始化 OSS EventNotification / inotify 监听
+  ├─ OSS: 配置 S3 EventNotification → SQS/SNS → Watch Listener
+  ├─ OSS (Aliyun): 配置 OSS MNS → Watch Listener
+  └─ Local: inotify 监听本地目录
+  │
+  ▼
+[4] 注册 Redis Streams Producer（vl:watch_ingest）
+  │
+  ▼
+[5] 状态上报 → state=active + Prometheus watch_strategy_state=1
+  │
+  ▼
+[6] 开始接收事件 → 进入 §5.15.2 自动构建流程
 ```
 
 ### 21.7 优雅关闭
 
 ```text
 1. SIGTERM → API Server 停止接受新请求
-2. Worker 完成当前正在执行的 Pipeline Step（不中断）
-3. Reconciler 完成当前批次后释放锁
-4. 所有组件关闭 Redis 连接
-5. SIGKILL（超时 30s 后强制终止）
+2. Watch Listener 停止接收新事件 → 缓冲队列中的事件继续投递到 Redis Streams（不丢）
+3. Worker 完成当前正在执行的 Pipeline Step（不中断）
+4. Reconciler 完成当前批次后释放锁
+5. 所有组件关闭 Redis 连接
+6. SIGKILL（超时 30s 后强制终止）
+```
+
+**Watch Listener 关闭细节**：
+
+```text
+Watch Listener 关闭流程：
+  │
+  ▼
+[1] 收到 SIGTERM → 停止接收 OSS/inotify 新事件
+  │
+  ▼
+[2] 缓冲队列处理
+  ├─ Redis Streams 缓冲队列 ≤ 10000 条 → 继续投递
+  ├─ 缓冲队列 > 10000 → 超出部分写入本地暂存（重启后恢复）
+  └─ 等待队列中的事件全部投递完成（最长 10s）
+  │
+  ▼
+[3] 状态上报 → state=stopped + Prometheus watch_strategy_state=0
+  │
+  ▼
+[4] 关闭 OSS EventNotification / inotify 连接
+  │
+  ▼
+[5] 关闭 Redis Streams Producer 连接
 ```
 
 ### 21.8 运维命令
@@ -7630,7 +7745,7 @@ vector_lake:
 docker-compose up -d
 
 # 查看日志
-docker-compose logs -f api worker
+docker-compose logs -f api worker watch-listener
 
 # 扩容 Worker
 docker-compose up -d --scale worker=4
@@ -7643,6 +7758,23 @@ vector-lake entity rebuild --entity-id <id> --pipeline canonical_md
 
 # 查看 Stream 队列深度
 vector-lake queue status
+
+# Watch Strategy 管理
+vector-lake watch list                           # 列出所有 Watch Strategy
+vector-lake watch status <strategy_id>           # 查看单个 Strategy 状态
+vector-lake watch pause <strategy_id>            # 暂停
+vector-lake watch resume <strategy_id>           # 恢复
+vector-lake watch replay <strategy_id> --from 2026-06-01 --to 2026-06-06  # 补单
+
+# Ingest Strategy 管理
+vector-lake ingest list                          # 列出所有 Ingest Strategy
+vector-lake ingest show <strategy_id>            # 查看详情 + bound Watch Strategy
+vector-lake ingest update <strategy_id> --set allowed_extensions=.pdf,.md  # 热更新
+
+# Dead Letter 管理
+vector-lake dead-letter list <strategy_id> --limit 20  # 查看死信
+vector-lake dead-letter replay <error_id>              # 重放单个死信
+vector-lake dead-letter cleanup --older-than 30d      # 清理过期死信
 
 # 清理软删除过期数据
 vector-lake cleanup --dry-run
