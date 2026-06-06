@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例；(28) **Rep 继承链与级联传播（§5.13）**：新增 §5.13 Rep 继承链与级联传播——Rep Tag 从 7→9 个字段（新增 `input_content_hash` + `content_hash`），每个 Rep 记录直接上游的内容指纹；§5.9.1 `source_content_hash` 语义修正为 `input_content_hash`（直接上游，不一定是 raw）；新增 Rep 继承链定义（§5.13.1，含完整继承图示例 + 9 种 Rep 的 input_content_hash 映射表）；新增 Rep 变动级联传播（§5.13.2，含 BFS 级联算法 + 5 步级联场景）；新增 Index 增量重建（§5.13.3，required_reps ready 即可触发，不等全部 Rep ready，v0.1 先全量等待 v0.2 切增量）；新增继承链可观测性 API（§5.13.4，4 个查询端点）；新增继承链 vs 血缘对比（§5.13.5）；§5.7.1 Rep 联动表新增"上游 Rep content_hash 变化"行 + 引用 §5.13；§5.9.1 校验场景新增"上游 Rep 更新但下游 Rep 未重建"场景；Tag 示例 transform=ocr→visual_recognize；(29) **补全缺失的 3 条 Pipeline**：新增 `rep_pipeline_h` 视频关键帧抽取（RepStep `extract_keyframes`，依赖 ffmpeg，输出 `keyframe_image` + `keyframe_timeline`，适用于所有视频格式）；新增 `index_pipeline_video` 视频双模态索引（IndexStep `chunk_and_embed_video`，required_reps 为 `transcript` + `keyframe_image`，同时索引音轨和关键帧）；新增 `index_pipeline_structural` 结构化检索（IndexStep `register_duckdb_view`，将 `table_parquet` 注册到嵌入式 DuckDB 视图）；§2.2 树状图补全 video/structural/audio/table 分支；§6.1 映射总表新增 H 行；§6.5.6 路由总表 video 行从 F+E 改为 F+H；§6.8.3 IndexStep 表新增 `chunk_and_embed_video` + `register_duckdb_view`；§6.7.4/§13.2 RepPipeline 编号 family 扩展为 a/b/d/e/f/g/h；§13.3 IndexPipeline 补全 video/structural；§6.8.1 v0.1 限制 5 Index 调整为 text/image/video/structural/graph；(30) **完整变动管理（§5.14）**：新增 §5.14 完整变动管理（Change Management），集中覆盖 10 个变动相关维度——5.14.1 变动检测（5 个检测源：OSS 事件/Reconciler 周期/API 写入/Phase 0/Edge 主动）；5.14.2 变动分类（7 类 C1-C7：Raw/Rep 内容/Rep 状态/Index/Schema/Entity 元数据/Projector 配置）；5.14.3 变动追踪（两层日志 L1 version_log + L2 _log/v0.2 事务日志 + v0.1 简化追踪方案 6 项操作字段）；5.14.4 变动通知（4 个通知目标：Reconciler/Worker/Projector/Edge Resolver + change_detected 消息格式）；5.14.5 变动回滚（5 类回滚策略 + 3 条不变量：不删除历史/不破坏外引用/不绕过 Reconciler）；5.14.6 变动冲突（5 个冲突场景 + 3 条解决原则：锁优先/版本兜底/Reconciler 终极裁决）；5.14.7 变动回放/Time Travel（v0.1 基础快照 + v0.2 snapshot/diff API + v0.3 完整 Time Travel）；5.14.8 批量变动（3 种批量场景 API：批量导入/批量重打标签/批量删除 + 统一响应格式）；5.14.9 跨 Entity 变动（强/弱/嵌入 3 种 Edge 引用类型 + 决策矩阵）；5.14.10 投影端变动（Projector 4 步响应：评估/计算 diff/应用差异/记录历史 + 3 种同步模式 Realtime/Batch/On-demand）；5.14.11 变动 SLA 与可观测性（5 项 SLA 指标 + /changes/stats 端点）；(31) **Watch Mode 自动构建（§5.15）**：新增 §5.15 Watch Mode（自动构建模式），核心承诺"指定目录上传即自动构建索引，无需调用 API"；包含 10 个子节：5.15.1 启用与配置（OSS 监听 + 本地监听 + Reconciler 兜底 3 种源 + config.yaml 完整配置）；5.15.2 自动构建流程（5 步：检测→解析路径→创建 Entity→RepPipeline→Index）+ Redis Streams `vl:watch_ingest` 消息格式；5.15.3 entity_id 命名策略（5 种：filename/filepath/uuid/hash/template + 冲突处理）；5.15.4 4 类事件自动处理（新建/修改/删除/重命名）；5.15.5 文件过滤与安全（白/黑名单 + 大小限制 + 并发限流 + 文件稳定期 30s + 访问控制）；5.15.6 批量上传优化（5s flush 批量聚合 + 4 项性能指标）；5.15.7 与显式 API 协调（3 种范式并存 + 数据模型完全一致）；5.15.8 错误处理与告警（5 类错误 + Dead Letter 队列）；5.15.9 可观测性（3 个 API 端点 + 4 个 Prometheus 指标）；5.15.10 v0.1 实施范围（14 项功能 v0.1/v0.2 分布）；(32) **Watch Mode 监听/接入策略解耦**：§5.15.1 重构为 Watch Strategy（监听策略）+ Ingest Strategy（接入策略）两层解耦设计——Watch Strategy 只管"检测 prefix 下的文件变动"（prefix + type + recursive + 限流），Ingest Strategy 管"文件怎么变成 Entity"（entity_id_strategy + labels + allowed_extensions + max_file_size + on_conflict）；一个 Watch Strategy 绑定一个 Ingest Strategy，多个 Watch Strategy 可复用同一 Ingest Strategy；新增 5 个预置 Ingest Strategy（standard_doc/wps_doc/multimedia/tabular/web_crawl）+ 5 个 Watch Strategy 示例；§5.15.2 自动构建流程拆为 6 步（Watch 检测→Watch 匹配→Ingest 决定→投递消息→RepPipeline→Index ready）；§5.15.3 新增 on_conflict 冲突处理策略（update/skip/error）；§5.15.5 明确过滤规则归属 Ingest Strategy、限流归属 Watch Strategy；消息格式新增 watch_strategy_id + ingest_strategy_id + on_conflict 字段。(33) **§5.15 Watch Mode 深度 review 修复**：新增 §5.15.11 高级场景（9 个子节覆盖生产落地关键问题）——5.15.11.1 运行时更新 Watch/Ingest Strategy（Watch Strategy 热更新字段表 + Ingest Strategy 热更新字段表 + PATCH/PUT/DELETE API + Ingest Strategy 删除保护（409 Conflict + bound_watch_strategies 引用检查 + force=true 强制删除）+ 生命周期状态机 initializing/active/paused/error/stopped + 缓冲队列）；5.15.11.2 多租户隔离（workspace 强绑定 + cross_workspace_read 显式授权 + 5 维隔离机制）；5.15.11.3 竞态与一致性（4 类竞态 + Redis 分布式锁 lock:watch:entity:{entity_id} + 等待队列 + Entity/Rep/Index 三层幂等 + 同 Entity 多 RepPipeline 并发 RepPipeline 级锁引用 §6.9）；5.15.11.4 Dead Letter TTL 与自动清理（retention_days/cleanup_interval/max_total_size_gb 完整配置 + 5min/1h/6h 指数退避重试 + 清理失败 3 次重试 + WatchCleanupFailed 告警 + 4 类告警规则）；5.15.11.5 多 Watch Strategy 冲突（启动时拒绝重叠 prefix + allow_conflict opt-in + 父子 prefix 最长匹配去重机制 Longest Prefix Match + processed_by Redis 标记 + ETag 差异检测 create/update/skip 三态）；5.15.11.6 Per-Collection 配额（v0.1 仅全局默认 + v0.2 per-collection 覆盖 + default + overrides 两层 + 4 类配额项 + 429 拒绝 + 令牌桶限流）；5.15.11.7 Delete-Only Watch（event_filter.types=[deleted] + auto_create_entity=false + 全功能 vs 仅删除对比表）；5.15.11.8 文件删除/中途失败边界（5 类场景：raw 已拷贝 RepPipeline 中途删 / 半截上传 / 格式损坏 / Watcher 宕机堆积 / API 创建 Entity 的 source_oss_path 外部删除 + source_oss_path/source_etag/source_type 三字段 + Reconciler Phase 1 兜底检测）；5.15.11.9 MCP Tool 暴露（8 个 Tool 表 watch_list/status/create/pause/resume/replay/dead_letter_list/replay + v0.1 列标注 + watch:read/write/admin 权限模型）；§5.15.8 错误处理表扩展为 8 类（新增 OSS API 限流 + ETag 重复事件）；§5.15.9 可观测性 API 端点从 3 个扩展为 8 个（新增 ingest_strategy 详情 + 5 个运行时管理端点）+ Prometheus 指标从 4 个扩展为 8 个 + 新增结构化 JSON 日志规范；§5.15.10 v0.1 实施范围表从 14 行扩展为 25 行（新增 Ingest/Watch 解耦、5 种 entity_id 策略、on_conflict、TTL、多租户、运行时更新、多 Watch 冲突检测、Ingest Strategy 删除保护、Watch Listener 启动/关闭、MCP Tool、Per-collection 配额 v0.1 全局默认等项）；§20.6 启动顺序补充 Watch Listener 启动流程（6 步：加载配置→配置校验→初始化监听→注册 Producer→状态上报→开始接收事件 + prefix 重叠检测引用 §5.15.11.5）；§20.7 优雅关闭补充 Watch Listener 关闭流程（5 步：停止接收→缓冲队列处理→状态上报→关闭监听→关闭 Producer + 缓冲上限 10000 条 + 本地暂存超限部分）；§20.8 运维命令补充 Watch/Ingest/Dead Letter 管理（watch list/status/pause/resume/replay + ingest list/show/update + dead-letter list/replay/cleanup）。(34) **PRD 框架整理**：修复 §5.12/§5.13 顺序颠倒（5.13 在 5.12 前→交换为正确顺序）；修复 §25.5 评审清单旧编号 19.6→25.5；修复全文交叉引用（§6.6→§6.7 RepStep、§6.7→§6.8 IndexStep、§6.8→§6.9 并发模型、§6.9→§6.10 Redis Streams、§8.7→§8.6 DuckDB、§20→§19 开源选型、§21→§20 部署、§22→§21 SDK、§21.6/7/8→§20.6/7/8 等）；新增文档头部完整目录（§0-§25 共 26 章 + 83 子节）。(35) **PRD 化繁为简**：修复 §5.9.3 重复编号→§5.9.4；§4 删除实现级行为代码（Entity Python 类方法 ~150 行、L1-L3 Stage 函数 ~200 行、PyArrow/Pydantic schema ~105 行），保留 Schema JSON 定义；§5.12.9-5.12.13 五节压缩为一节对比表（~190 行→~15 行）；§5.14 七个 v0.2 子节压缩为占位（~120 行→~28 行）；§5.15.11.5/6/7 三个 v0.2 子节压缩为占位（~206 行→~9 行）；§4.2 Rep Tag 表引用 §4.6 去重 + Tag 字段数修正 7→9；修订记录 #1-#24 移至 §25.6 变更历史；§7/§10/§16/§17 空壳章节加待补充标注。(36) **URL Entity 支持**：§4.1 标题从"1 OSS Object = 1 Entity"扩展为"1 Source = 1 Entity"；Entity Schema 新增 `source_type` 字段（oss | url）；新增 URL Entity 完整设计——1 URL = 1 Entity，`entity_id_strategy` 新增 `url_hash`（推荐）/ `url_path` / `template`；URL 抓取后写入 `source/original` + `.meta.json` sidecar（存 source_url / fetched_at / http_etag / content_type 等抓取元数据）；新增文件 Entity vs URL Entity 对比表；§4.5 新增 `fetch_url` 标准 RepStep（输入 source_url → 输出 source/original，按 Content-Type 路由 entity_type，Reconciler 定期 HEAD 请求检测变更）；§5.15.1 新增第 5 个预置 Ingest Strategy `web_crawl`（source_type: url + crawl_config + poll_config）；预置策略数从 4 更新为 5。(37) **v0.1 核心流路定义**：§6.7.3 RepStep 清单新增 `fetch_url`（URL 抓取）、`parse_html`（HTML→MD）、`convert_to_pdf`（办公文档转 PDF，依赖 LibreOffice headless）三个 v0.1 RepStep；`render_page` 输入扩展为 `raw` / `source/pdf`；§6.7.4 RepPipeline 组装新增 `rep_pipeline_url`（fetch_url → parse_html），`rep_pipeline_b` 更新为 `convert_to_pdf` → `render_page` → `visual_recognize`；§6.3 映射表新增 `url` entity_type 行；新增 §6.7.6 v0.1 核心流路"一切皆 MD"——流路 1：URL → HTML → MD（fetch_url → parse_html）；流路 2：Office → PDF → VLM → MD（convert_to_pdf → render_page → visual_recognize）；流路 3：直接 MD（parse）；含完整 v0.1 Pipeline 路由总表（12 行）。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例；(28) **Rep 继承链与级联传播（§5.13）**：新增 §5.13 Rep 继承链与级联传播——Rep Tag 从 7→9 个字段（新增 `input_content_hash` + `content_hash`），每个 Rep 记录直接上游的内容指纹；§5.9.1 `source_content_hash` 语义修正为 `input_content_hash`（直接上游，不一定是 raw）；新增 Rep 继承链定义（§5.13.1，含完整继承图示例 + 9 种 Rep 的 input_content_hash 映射表）；新增 Rep 变动级联传播（§5.13.2，含 BFS 级联算法 + 5 步级联场景）；新增 Index 增量重建（§5.13.3，required_reps ready 即可触发，不等全部 Rep ready，v0.1 先全量等待 v0.2 切增量）；新增继承链可观测性 API（§5.13.4，4 个查询端点）；新增继承链 vs 血缘对比（§5.13.5）；§5.7.1 Rep 联动表新增"上游 Rep content_hash 变化"行 + 引用 §5.13；§5.9.1 校验场景新增"上游 Rep 更新但下游 Rep 未重建"场景；Tag 示例 transform=ocr→visual_recognize；(29) **补全缺失的 3 条 Pipeline**：新增 `rep_pipeline_h` 视频关键帧抽取（RepStep `extract_keyframes`，依赖 ffmpeg，输出 `keyframe_image` + `keyframe_timeline`，适用于所有视频格式）；新增 `index_pipeline_video` 视频双模态索引（IndexStep `chunk_and_embed_video`，required_reps 为 `transcript` + `keyframe_image`，同时索引音轨和关键帧）；新增 `index_pipeline_structural` 结构化检索（IndexStep `register_duckdb_view`，将 `table_parquet` 注册到嵌入式 DuckDB 视图）；§2.2 树状图补全 video/structural/audio/table 分支；§6.1 映射总表新增 H 行；§6.5.6 路由总表 video 行从 F+E 改为 F+H；§6.8.3 IndexStep 表新增 `chunk_and_embed_video` + `register_duckdb_view`；§6.7.4/§13.2 RepPipeline 编号 family 扩展为 a/b/d/e/f/g/h；§13.3 IndexPipeline 补全 video/structural；§6.8.1 v0.1 限制 5 Index 调整为 text/image/video/structural/graph；(30) **完整变动管理（§5.14）**：新增 §5.14 完整变动管理（Change Management），集中覆盖 10 个变动相关维度——5.14.1 变动检测（5 个检测源：OSS 事件/Reconciler 周期/API 写入/Phase 0/Edge 主动）；5.14.2 变动分类（7 类 C1-C7：Raw/Rep 内容/Rep 状态/Index/Schema/Entity 元数据/Projector 配置）；5.14.3 变动追踪（两层日志 L1 version_log + L2 _log/v0.2 事务日志 + v0.1 简化追踪方案 6 项操作字段）；5.14.4 变动通知（4 个通知目标：Reconciler/Worker/Projector/Edge Resolver + change_detected 消息格式）；5.14.5 变动回滚（5 类回滚策略 + 3 条不变量：不删除历史/不破坏外引用/不绕过 Reconciler）；5.14.6 变动冲突（5 个冲突场景 + 3 条解决原则：锁优先/版本兜底/Reconciler 终极裁决）；5.14.7 变动回放/Time Travel（v0.1 基础快照 + v0.2 snapshot/diff API + v0.3 完整 Time Travel）；5.14.8 批量变动（3 种批量场景 API：批量导入/批量重打标签/批量删除 + 统一响应格式）；5.14.9 跨 Entity 变动（强/弱/嵌入 3 种 Edge 引用类型 + 决策矩阵）；5.14.10 投影端变动（Projector 4 步响应：评估/计算 diff/应用差异/记录历史 + 3 种同步模式 Realtime/Batch/On-demand）；5.14.11 变动 SLA 与可观测性（5 项 SLA 指标 + /changes/stats 端点）；(31) **Watch Mode 自动构建（§5.15）**：新增 §5.15 Watch Mode（自动构建模式），核心承诺"指定目录上传即自动构建索引，无需调用 API"；包含 10 个子节：5.15.1 启用与配置（OSS 监听 + 本地监听 + Reconciler 兜底 3 种源 + config.yaml 完整配置）；5.15.2 自动构建流程（5 步：检测→解析路径→创建 Entity→RepPipeline→Index）+ Redis Streams `vl:watch_ingest` 消息格式；5.15.3 entity_id 命名策略（5 种：filename/filepath/uuid/hash/template + 冲突处理）；5.15.4 4 类事件自动处理（新建/修改/删除/重命名）；5.15.5 文件过滤与安全（白/黑名单 + 大小限制 + 并发限流 + 文件稳定期 30s + 访问控制）；5.15.6 批量上传优化（5s flush 批量聚合 + 4 项性能指标）；5.15.7 与显式 API 协调（3 种范式并存 + 数据模型完全一致）；5.15.8 错误处理与告警（5 类错误 + Dead Letter 队列）；5.15.9 可观测性（3 个 API 端点 + 4 个 Prometheus 指标）；5.15.10 v0.1 实施范围（14 项功能 v0.1/v0.2 分布）；(32) **Watch Mode 监听/接入策略解耦**：§5.15.1 重构为 Watch Strategy（监听策略）+ Ingest Strategy（接入策略）两层解耦设计——Watch Strategy 只管"检测 prefix 下的文件变动"（prefix + type + recursive + 限流），Ingest Strategy 管"文件怎么变成 Entity"（entity_id_strategy + labels + allowed_extensions + max_file_size + on_conflict）；一个 Watch Strategy 绑定一个 Ingest Strategy，多个 Watch Strategy 可复用同一 Ingest Strategy；新增 5 个预置 Ingest Strategy（standard_doc/wps_doc/multimedia/tabular/web_crawl）+ 5 个 Watch Strategy 示例；§5.15.2 自动构建流程拆为 6 步（Watch 检测→Watch 匹配→Ingest 决定→投递消息→RepPipeline→Index ready）；§5.15.3 新增 on_conflict 冲突处理策略（update/skip/error）；§5.15.5 明确过滤规则归属 Ingest Strategy、限流归属 Watch Strategy；消息格式新增 watch_strategy_id + ingest_strategy_id + on_conflict 字段。(33) **§5.15 Watch Mode 深度 review 修复**：新增 §5.15.11 高级场景（9 个子节覆盖生产落地关键问题）——5.15.11.1 运行时更新 Watch/Ingest Strategy（Watch Strategy 热更新字段表 + Ingest Strategy 热更新字段表 + PATCH/PUT/DELETE API + Ingest Strategy 删除保护（409 Conflict + bound_watch_strategies 引用检查 + force=true 强制删除）+ 生命周期状态机 initializing/active/paused/error/stopped + 缓冲队列）；5.15.11.2 多租户隔离（workspace 强绑定 + cross_workspace_read 显式授权 + 5 维隔离机制）；5.15.11.3 竞态与一致性（4 类竞态 + Redis 分布式锁 lock:watch:entity:{entity_id} + 等待队列 + Entity/Rep/Index 三层幂等 + 同 Entity 多 RepPipeline 并发 RepPipeline 级锁引用 §6.9）；5.15.11.4 Dead Letter TTL 与自动清理（retention_days/cleanup_interval/max_total_size_gb 完整配置 + 5min/1h/6h 指数退避重试 + 清理失败 3 次重试 + WatchCleanupFailed 告警 + 4 类告警规则）；5.15.11.5 多 Watch Strategy 冲突（启动时拒绝重叠 prefix + allow_conflict opt-in + 父子 prefix 最长匹配去重机制 Longest Prefix Match + processed_by Redis 标记 + ETag 差异检测 create/update/skip 三态）；5.15.11.6 Per-Collection 配额（v0.1 仅全局默认 + v0.2 per-collection 覆盖 + default + overrides 两层 + 4 类配额项 + 429 拒绝 + 令牌桶限流）；5.15.11.7 Delete-Only Watch（event_filter.types=[deleted] + auto_create_entity=false + 全功能 vs 仅删除对比表）；5.15.11.8 文件删除/中途失败边界（5 类场景：raw 已拷贝 RepPipeline 中途删 / 半截上传 / 格式损坏 / Watcher 宕机堆积 / API 创建 Entity 的 source_oss_path 外部删除 + source_oss_path/source_etag/source_type 三字段 + Reconciler Phase 1 兜底检测）；5.15.11.9 MCP Tool 暴露（8 个 Tool 表 watch_list/status/create/pause/resume/replay/dead_letter_list/replay + v0.1 列标注 + watch:read/write/admin 权限模型）；§5.15.8 错误处理表扩展为 8 类（新增 OSS API 限流 + ETag 重复事件）；§5.15.9 可观测性 API 端点从 3 个扩展为 8 个（新增 ingest_strategy 详情 + 5 个运行时管理端点）+ Prometheus 指标从 4 个扩展为 8 个 + 新增结构化 JSON 日志规范；§5.15.10 v0.1 实施范围表从 14 行扩展为 25 行（新增 Ingest/Watch 解耦、5 种 entity_id 策略、on_conflict、TTL、多租户、运行时更新、多 Watch 冲突检测、Ingest Strategy 删除保护、Watch Listener 启动/关闭、MCP Tool、Per-collection 配额 v0.1 全局默认等项）；§20.6 启动顺序补充 Watch Listener 启动流程（6 步：加载配置→配置校验→初始化监听→注册 Producer→状态上报→开始接收事件 + prefix 重叠检测引用 §5.15.11.5）；§20.7 优雅关闭补充 Watch Listener 关闭流程（5 步：停止接收→缓冲队列处理→状态上报→关闭监听→关闭 Producer + 缓冲上限 10000 条 + 本地暂存超限部分）；§20.8 运维命令补充 Watch/Ingest/Dead Letter 管理（watch list/status/pause/resume/replay + ingest list/show/update + dead-letter list/replay/cleanup）。(34) **PRD 框架整理**：修复 §5.12/§5.13 顺序颠倒（5.13 在 5.12 前→交换为正确顺序）；修复 §25.5 评审清单旧编号 19.6→25.5；修复全文交叉引用（§6.6→§6.7 RepStep、§6.7→§6.8 IndexStep、§6.8→§6.9 并发模型、§6.9→§6.10 Redis Streams、§8.7→§8.6 DuckDB、§20→§19 开源选型、§21→§20 部署、§22→§21 SDK、§21.6/7/8→§20.6/7/8 等）；新增文档头部完整目录（§0-§25 共 26 章 + 83 子节）。(35) **PRD 化繁为简**：修复 §5.9.3 重复编号→§5.9.4；§4 删除实现级行为代码（Entity Python 类方法 ~150 行、L1-L3 Stage 函数 ~200 行、PyArrow/Pydantic schema ~105 行），保留 Schema JSON 定义；§5.12.9-5.12.13 五节压缩为一节对比表（~190 行→~15 行）；§5.14 七个 v0.2 子节压缩为占位（~120 行→~28 行）；§5.15.11.5/6/7 三个 v0.2 子节压缩为占位（~206 行→~9 行）；§4.2 Rep Tag 表引用 §4.6 去重 + Tag 字段数修正 7→9；修订记录 #1-#24 移至 §25.6 变更历史；§7/§10/§16/§17 空壳章节加待补充标注。(36) **URL Entity 支持**：§4.1 标题从"1 OSS Object = 1 Entity"扩展为"1 Source = 1 Entity"；Entity Schema 新增 `source_type` 字段（oss | url）；新增 URL Entity 完整设计——1 URL = 1 Entity，`entity_id_strategy` 新增 `url_hash`（推荐）/ `url_path` / `template`；URL 抓取后写入 `source/original` + `.meta.json` sidecar（存 source_url / fetched_at / http_etag / content_type 等抓取元数据）；新增文件 Entity vs URL Entity 对比表；§4.5 新增 `fetch_url` 标准 RepStep（输入 source_url → 输出 source/original，按 Content-Type 路由 entity_type，Reconciler 定期 HEAD 请求检测变更）；§5.15.1 新增第 5 个预置 Ingest Strategy `web_crawl`（source_type: url + crawl_config + poll_config）；预置策略数从 4 更新为 5。(37) **v0.1 核心流路定义**：§6.7.3 RepStep 清单新增 `fetch_url`（URL 抓取）、`parse_html`（HTML→MD）、`convert_to_pdf`（办公文档转 PDF，依赖 LibreOffice headless）三个 v0.1 RepStep；`render_page` 输入扩展为 `raw` / `source/pdf`；§6.7.4 RepPipeline 组装新增 `rep_pipeline_url`（fetch_url → parse_html），`rep_pipeline_b` 更新为 `convert_to_pdf` → `render_page` → `visual_recognize`；§6.3 映射表新增 `url` entity_type 行；新增 §6.7.6 v0.1 核心流路"一切皆 MD"——流路 1：URL → HTML → MD（fetch_url → parse_html）；流路 2：Office → PDF → VLM → MD（convert_to_pdf → render_page → visual_recognize）；流路 3：直接 MD（parse）；含完整 v0.1 Pipeline 路由总表（12 行）。(38) **实现就绪缺失文档补全**：§9.5 新增集中式 API Reference（8 子节 31 个 REST 端点 + 8 个 MCP Tool）；§9.7 新增 HTTP 错误码定义（10 个状态码 + 统一错误响应格式）；§9.8 新增认证与授权（v0.1 workspace 级 API Key，v0.2 OAuth2+RBAC）；§6.11 新增 Redis Key 命名规范（15 个 Key 模式 + 命名规则）；§19.7 新增 config.yaml 完整 Schema（14 个顶级配置块 + 环境变量注入 + 6 个热更新字段）；原 §9.5 VFS MCP Server 重编号为 §9.6。
 
 ## 目录
 
@@ -78,7 +78,8 @@
   - [§9.2 流程](#92-流程)
   - [§9.3 路由策略（v0.1 规则版）](#93-路由策略v01-规则版)
   - [§9.4 智能引擎与 §8 检索能力的映射](#94-智能引擎与-8-检索能力的映射)
-  - [§9.5 VFS MCP Server（向 LLM 暴露 Lake）](#95-vfs-mcp-server向-llm-暴露-lake)
+  - [§9.5 API Reference（v0.1 端点汇总）](#95-api-referencev01-端点汇总)
+  - [§9.6 VFS MCP Server（向 LLM 暴露 Lake）](#96-vfs-mcp-server向-llm-暴露-lake)
 - [§10. 设计原则（不可妥协）](#10-设计原则不可妥协)
 - [§11. Projector 层（多目标投影）](#11-projector-层多目标投影)
   - [§11.1 设计目标](#111-设计目标)
@@ -228,7 +229,7 @@
 | 角色 | 职责 | 核心诉求 | 交互方式 |
 | --- | --- | --- | --- |
 | **数据工程师 / Pipeline 开发者** | 开发 RepStep / IndexStep / ProjectorStep Plugin；定义 RepPipeline 拓扑；调试 Pipeline 编排 | 清晰的 Plugin 接口（Protocol）；可复用的 Step 注册机制；丰富的日志与调试工具 | Python SDK (§21) + CLI + RepStepRegistry API |
-| **AI 应用开发者** | 构建 RAG 应用、Agent、问答系统；调用检索 API 获取知识证据 | 统一的检索入口（semantic + structural + textual）；可解释的检索结果（provenance + snippet）；低延迟 | REST API + MCP Server (§9.5) + Python SDK |
+| **AI 应用开发者** | 构建 RAG 应用、Agent、问答系统；调用检索 API 获取知识证据 | 统一的检索入口（semantic + structural + textual）；可解释的检索结果（provenance + snippet）；低延迟 | REST API + MCP Server (§9.6) + Python SDK |
 | **知识管理者 / 数据管家** | 管理 Entity 生命周期（ingest / label / delete）；配置 Projector 输出目标；监控数据质量 | Entity 状态可视化；血缘追溯；批量操作（label / delete）；数据质量报告 | CLI + REST API + Dashboard（v0.2） |
 | **DevOps / 平台工程师** | 部署与运维 Vector-Lake 服务；监控系统健康；配置 OSS / Redis / LanceDB 连接 | 一键部署（Docker Compose / K8s）；健康检查与告警；日志聚合；配置热更新 | 配置文件（YAML + ENV）+ Prometheus + Grafana |
 | **终端用户（通过 MCP / API）** | 通过 LLM Agent 间接使用知识检索能力 | 准确、快速的知识检索结果；支持自然语言查询 | 间接（通过 MCP Server → LLM → 终端用户） |
@@ -4866,6 +4867,34 @@ v0.2: Redis Streams → Kafka（仅在以下条件满足时迁移）
   └─ 需要更长的消息保留（Redis 内存有限）
 ```
 
+### 6.11 Redis Key 命名规范
+
+> **全局前缀**：所有 Key 以 `vl:` 开头，避免与其他应用冲突。
+
+| Key 模式 | 类型 | 用途 | TTL |
+| --- | --- | --- | --- |
+| `vl:lock:rep:{ws}:{col}:{entity_id}:{rep_type}` | String | RepPipeline 级分布式锁 | 300s（step_timeout） |
+| `vl:lock:index:{ws}:{col}:{entity_id}:{index_type}` | String | IndexPipeline 级分布式锁 | 300s |
+| `vl:lock:watch:entity:{entity_id}` | String | Watch 竞态锁 | 60s |
+| `vl:stream:rep:{ws}:{col}` | Stream | RepPipeline 任务流 | 无限 |
+| `vl:stream:index:{ws}:{col}` | Stream | IndexPipeline 任务流 | 无限 |
+| `vl:stream:watch:{ws}` | Stream | Watch 事件流 | 无限 |
+| `vl:cg:rep-worker:{ws}:{col}` | Consumer Group | Rep Worker 消费组 | — |
+| `vl:cg:index-worker:{ws}:{col}` | Consumer Group | Index Worker 消费组 | — |
+| `vl:processed:{ws}:{col}:{entity_id}:{event_id}` | String | 事件去重标记 | 24h |
+| `vl:etag:{ws}:{col}:{entity_id}` | String | 上次处理的 ETag | 7d |
+| `vl:entity:status:{ws}:{col}:{entity_id}` | Hash | Entity 运行时状态 | 无限 |
+| `vl:rep:status:{ws}:{col}:{entity_id}:{rep_type}` | Hash | Rep 运行时状态 | 无限 |
+| `vl:index:status:{ws}:{col}:{entity_id}:{index_type}` | Hash | Index 运行时状态 | 无限 |
+| `vl:dead-letter:{ws}` | Stream | Dead Letter 队列 | retention_days |
+| `vl:stats:{ws}` | Hash | Workspace 统计计数器 | 无限 |
+
+**命名规则**：
+- 层级用 `:` 分隔
+- 动态部分用 `{placeholder}` 表示
+- TTL 优先使用可配置值（如 `step_timeout`、`retention_days`）
+- Consumer Group 名 = `vl:cg:{角色}:{ws}:{col}`
+
 ---
 
 ## 7. 多模态 Embedding 策略
@@ -5697,7 +5726,90 @@ class EvidencePack(BaseModel):
 | **§8.6 DuckDB 联邦** | **`capability_structural_federated`** | **跨表 JOIN** | **TableRow（多 Entity）** |
 | **§8.6 DuckDB + Lance** | **`capability_hybrid_structural_semantic`** | **结构化 + 语义** | **TableRow + Chunk** |
 
-### 9.5 VFS MCP Server（向 LLM 暴露 Lake）
+### 9.5 API Reference（v0.1 端点汇总）
+
+> 以下为 v0.1 全部 REST API 端点集中汇总。各端点的详细请求/响应格式见对应章节。
+
+#### 9.5.1 Entity 管理
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| POST | `/api/v1/workspaces/{ws}/collections/{col}/entities` | 创建 Entity（上传文件或指定 URL） | §9.1 |
+| GET | `/api/v1/workspaces/{ws}/collections/{col}/entities` | 列出 Entity（分页 + 过滤） | §9.1 |
+| GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}` | 获取 Entity 详情 | §9.1 |
+| PATCH | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}` | 更新 Entity 元数据（labels/status） | §9.1 |
+| DELETE | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}` | 删除 Entity（逻辑删除） | §9.1 |
+
+#### 9.5.2 Representation 管理
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/representations` | 列出所有 Rep | §9.1 |
+| GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/representations/{rep_type}` | 获取指定 Rep 内容 | §9.1 |
+| POST | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/representations/{rep_type}/rebuild` | 触发 Rep 重建 | §9.1 |
+
+#### 9.5.3 搜索与检索
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| POST | `/api/v1/workspaces/{ws}/collections/{col}/search` | 混合检索（语义 + 全文 + 结构化） | §8 |
+| POST | `/api/v1/workspaces/{ws}/collections/{col}/query` | SQL 查询（DuckDB） | §8.6 |
+| GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/anchor-jump` | 锚点跳转 | §4.3.1 |
+
+#### 9.5.4 Lineage 与一致性
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/lineage` | 查询血缘关系 | §5.13.4 |
+| GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/consistency` | 一致性校验状态 | §5.9 |
+| POST | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/reconcile` | 手动触发 Reconciler | §5.9 |
+
+#### 9.5.5 Watch / Ingest Strategy 管理
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/workspaces/{ws}/watch-strategies` | 列出 Watch Strategy | §5.15.11.9 |
+| POST | `/api/v1/workspaces/{ws}/watch-strategies` | 创建 Watch Strategy | §5.15.11.9 |
+| GET | `/api/v1/workspaces/{ws}/watch-strategies/{id}` | 查看 Watch Strategy 详情 | §5.15.11.9 |
+| PATCH | `/api/v1/workspaces/{ws}/watch-strategies/{id}` | 更新 Watch Strategy | §5.15.11.9 |
+| DELETE | `/api/v1/workspaces/{ws}/watch-strategies/{id}` | 删除 Watch Strategy | §5.15.11.9 |
+| POST | `/api/v1/workspaces/{ws}/watch-strategies/{id}/pause` | 暂停 Watch | §5.15.11.9 |
+| POST | `/api/v1/workspaces/{ws}/watch-strategies/{id}/resume` | 恢复 Watch | §5.15.11.9 |
+| GET | `/api/v1/workspaces/{ws}/ingest-strategies` | 列出 Ingest Strategy | §5.15.11.9 |
+| GET | `/api/v1/workspaces/{ws}/ingest-strategies/{id}` | 查看 Ingest Strategy 详情 | §5.15.11.9 |
+| PATCH | `/api/v1/workspaces/{ws}/ingest-strategies/{id}` | 更新 Ingest Strategy | §5.15.11.9 |
+
+#### 9.5.6 Dead Letter 管理
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/workspaces/{ws}/dead-letters` | 列出 Dead Letter | §5.15.8 |
+| POST | `/api/v1/workspaces/{ws}/dead-letters/{id}/replay` | 重试 Dead Letter | §5.15.8 |
+| POST | `/api/v1/workspaces/{ws}/dead-letters/cleanup` | 清理过期 Dead Letter | §5.15.8 |
+
+#### 9.5.7 可观测性
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/workspaces/{ws}/stats` | Workspace 统计 | §5.15.9 |
+| GET | `/api/v1/workspaces/{ws}/changes/stats` | 变动统计 | §5.14.11 |
+| GET | `/metrics` | Prometheus 指标 | §5.15.9 |
+| GET | `/health` | 健康检查 | §20 |
+
+#### 9.5.8 MCP Tool（VFS）
+
+| Tool | 说明 | 章节 |
+| --- | --- | --- |
+| `vfs_ls` | 列出目录 | §8.1 |
+| `vfs_stat` | 文件元信息 | §8.1 |
+| `vfs_read` | 读取文件内容 | §8.1 |
+| `vfs_glob` | 模式匹配搜索 | §8.1 |
+| `vfs_grep` | 内容搜索 | §8.1 |
+| `search` | 语义+全文混合检索 | §8.3 |
+| `watch_list` | 列出 Watch Strategy | §5.15.11.9 |
+| `watch_status` | Watch 运行状态 | §5.15.11.9 |
+
+### 9.6 VFS MCP Server（向 LLM 暴露 Lake）
 
 > **设计目标**：让 LLM（Claude / GPT / 开源模型）通过 **MCP (Model Context Protocol)** 直接浏览和查询 Vector-Lake，无需人工写 API 调用。
 >
@@ -5707,7 +5819,7 @@ class EvidencePack(BaseModel):
 > - MCP 支持 stdio（本地）和 SSE（远程）两种传输
 > - 比 REST API + OpenAPI spec 更轻量（一个 Python 文件即可启动）
 
-#### 9.5.1 MCP Tools 定义
+#### 9.6.1 MCP Tools 定义
 
 ```python
 # vector_lake_vfs_mcp/server.py
@@ -5776,7 +5888,7 @@ async def vfs_get_status(workspace_id: str) -> dict:
     ...
 ```
 
-#### 9.5.2 部署模式
+#### 9.6.2 部署模式
 
 ```text
 模式 A：本地 stdio（开发 / 单用户）
@@ -5798,7 +5910,7 @@ async def vfs_get_status(workspace_id: str) -> dict:
   限流：Redis 令牌桶（per user）
 ```
 
-#### 9.5.3 MCP Tools 与 §9 智能引擎的映射
+#### 9.6.3 MCP Tools 与 §9 智能引擎的映射
 
 | MCP Tool | 智能引擎能力 | 底层调用 |
 |---|---|---|
@@ -5816,7 +5928,7 @@ async def vfs_get_status(workspace_id: str) -> dict:
 > - MCP Tools = stdio / SSE（面向 LLM Agent）
 > - 两者共享 `VectorLakeService` 类，不重复实现
 
-#### 9.5.4 v0.1 范围
+#### 9.6.4 v0.1 范围
 
 | Tool | v0.1 | required_role | 说明 |
 |---|---|---|---|
@@ -5835,6 +5947,72 @@ async def vfs_get_status(workspace_id: str) -> dict:
 > - `vfs_search` 自动过滤 `rag_status=hidden` 的 Entity（对 `user` 角色不可见）
 
 > **实现**：v0.1 用 `mcp` Python SDK（`pip install mcp`），单文件 `server.py`，约 300 行代码。
+
+### 9.7 HTTP 错误码定义
+
+| HTTP 状态码 | 错误码 | 说明 | 典型场景 |
+| --- | --- | --- | --- |
+| 400 | `INVALID_REQUEST` | 请求参数不合法 | 缺少必填字段 / 格式错误 |
+| 401 | `UNAUTHORIZED` | 未认证 | 缺少 API Key |
+| 403 | `FORBIDDEN` | 无权限 | 跨 workspace 访问 |
+| 404 | `NOT_FOUND` | 资源不存在 | Entity / Rep / Index 不存在 |
+| 409 | `CONFLICT` | 资源冲突 | 同 URL Entity 已存在 / Ingest Strategy 绑定中不可删除 |
+| 422 | `UNPROCESSABLE` | 业务逻辑不合法 | 不支持的文件格式 / Pipeline 配置错误 |
+| 429 | `RATE_LIMITED` | 请求限流 | 超过 QPS / 配额限制 |
+| 500 | `INTERNAL_ERROR` | 内部错误 | 未预期异常 |
+| 502 | `UPSTREAM_ERROR` | 上游服务错误 | Embedding API 超时 / VLM API 不可用 |
+| 503 | `SERVICE_UNAVAILABLE` | 服务暂不可用 | Reconciler 正在启动 / 维护模式 |
+
+**错误响应格式**：
+
+```json
+{
+  "error": {
+    "code": "CONFLICT",
+    "message": "Entity already exists with source_url=https://example.com/doc",
+    "details": {
+      "entity_id": "abc123",
+      "conflict_field": "source_url"
+    }
+  }
+}
+```
+
+**v0.1 限制**：错误码不细分子类型，`details` 为可选扩展字段。
+
+### 9.8 认证与授权（v0.1：API Key）
+
+> v0.1 采用最简方案：**workspace 级 API Key**。v0.2 扩展为 OAuth2 + RBAC。
+
+**认证方式**：
+
+| 方式 | Header | 示例 | v0.1 |
+| --- | --- | --- | --- |
+| API Key | `X-API-Key: {key}` | `X-API-Key: vl_ws001_abc123` | ✅ |
+| Bearer Token | `Authorization: Bearer {token}` | v0.2 OAuth2 | ❌ |
+
+**授权模型**：
+
+```
+API Key → workspace_id → 该 workspace 下所有资源
+```
+
+- 1 个 API Key 绑定 1 个 workspace
+- API Key 在 config.yaml 中配置（`auth.api_keys`）
+- 跨 workspace 访问返回 403
+- v0.2 新增 `cross_workspace_read` 显式授权
+
+**权限分级**（v0.2 实现，v0.1 全部为 admin）：
+
+| 角色 | 权限 | v0.1 |
+| --- | --- | --- |
+| `admin` | 全部操作 | ✅（默认） |
+| `write` | 创建/更新/删除 Entity + 触发 Pipeline | v0.2 |
+| `read` | 查询/搜索/预览 | v0.2 |
+
+**MCP Server 认证**：
+- MCP Tool 调用通过 `X-API-Key` header 传递
+- 每个 MCP session 绑定一个 workspace
 
 ---
 
@@ -6574,7 +6752,7 @@ semantic · lexical · hybrid · visual
 │  Vector:         LanceDB（embedded）                         │
 │  Pipeline:       自研 RepStep / IndexStep 调度（§6）          │
 │  Queue:          Redis Streams（§6.9，不使用 Celery）         │
-│  VFS→LLM:        MCP Server（§9.5，stdio / SSE）             │
+│  VFS→LLM:        MCP Server（§9.6，stdio / SSE）             │
 │  Config:         YAML + 环境变量                              │
 │  Observability:  OpenTelemetry + Prometheus + Grafana        │
 │  Errors:         Sentry                                       │
@@ -6638,6 +6816,131 @@ semantic · lexical · hybrid · visual
 | **VFS→LLM** | MCP Server（v0.1） | REST API + OpenAPI | MCP 是 LLM 工具调用标准；自带 schema 描述 |
 | **可观测性** | OTel + Prometheus + Grafana | ELK / 商业方案 | 云原生标准 |
 | **元数据治理** | 自研 VFS（v0.1） → OpenMetadata（v0.2） | DataHub / Atlas | v0.1 简单；v0.2 集成 |
+
+---
+
+### 19.7 config.yaml 完整 Schema（v0.1）
+
+> v0.1 全部配置项集中定义。运行时可通过 API 热更新的字段标注 `🔥`。
+
+```yaml
+# vector-lake config.yaml — v0.1
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4                          # API Server worker 数
+  cors_origins: ["*"]
+
+storage:
+  backend: oss                        # oss | s3 | minio | local
+  oss:
+    endpoint: "https://oss-cn-hangzhou.aliyuncs.com"
+    bucket: "vector-lake"
+    access_key_id: "${OSS_ACCESS_KEY_ID}"
+    access_key_secret: "${OSS_ACCESS_KEY_SECRET}"
+    prefix: "vector-lake"             # OSS 根前缀
+  local:                              # backend=local 时使用
+    root: "./data"
+
+lance:
+  data_dir: "./lance_data"            # LanceDB 数据目录
+  cache_size_mb: 512                  # Lance 读缓存
+
+redis:
+  url: "redis://localhost:6379/0"
+  max_connections: 20
+  key_prefix: "vl"                    # 全局 key 前缀
+
+embedding:
+  default_model: "jina-embeddings-v3"
+  models:
+    jina-embeddings-v3:
+      provider: jina
+      api_key: "${JINA_API_KEY}"
+      dimension: 1024
+      max_batch_size: 64
+    bge-m3:
+      provider: local
+      model_path: "./models/bge-m3"
+      dimension: 1024
+
+vlm:
+  default_model: "qwen-vl-max"
+  models:
+    qwen-vl-max:
+      provider: dashscope
+      api_key: "${DASHSCOPE_API_KEY}"
+      max_pages_per_minute: 30
+    gpt-4o:
+      provider: openai
+      api_key: "${OPENAI_API_KEY}"
+      max_pages_per_minute: 20
+
+pipeline:
+  max_concurrent_rep: 8               # 同一 Entity 最大并发 RepPipeline
+  max_concurrent_index: 4             # 同一 Entity 最大并发 IndexPipeline
+  step_timeout: 300                   # 单步超时（秒）
+  retry_max: 3
+  retry_backoff: exponential          # linear | exponential
+
+reconciler:
+  enabled: true
+  poll_interval: 60                   # 扫描间隔（秒）
+  batch_size: 100                     # 每次扫描 Entity 数
+  phase0_on_startup: true             # 启动时执行 Phase 0 全量校验
+
+watch:
+  enabled: true
+  file_stable_period: 30              # 文件稳定期（秒）
+  batch_flush_interval: 5             # 批量聚合间隔（秒）
+  buffer_limit: 10000                 # 缓冲队列上限
+  dead_letter:
+    retention_days: 7
+    cleanup_interval: 3600            # 清理间隔（秒）
+    max_total_size_gb: 10
+    retry_schedule: [300, 3600, 21600] # 重试间隔（秒）：5min, 1h, 6h
+
+convert_to_pdf:
+  libreoffice_path: "/usr/bin/soffice"
+  timeout: 120                        # 转换超时（秒）
+  max_concurrent: 4                   # 最大并发转换数
+
+fetch_url:
+  timeout: 30                         # HTTP 请求超时（秒）
+  follow_redirects: true
+  max_content_size: 52428800          # 50MB
+  user_agent: "VectorLake/0.1"
+  default_poll_interval: 3600         # URL 变更检测间隔（秒）
+
+auth:
+  enabled: true                       # v0.1: workspace 级 API Key
+  type: api_key                       # api_key（v0.1）| oauth2（v0.2）
+  api_keys:                           # workspace → API Key 映射
+    ws_001: "${WS_001_API_KEY}"
+    ws_002: "${WS_002_API_KEY}"
+
+logging:
+  level: INFO
+  format: json                        # json | text
+  output: stdout                      # stdout | file
+  file_path: "./logs/vector-lake.log"
+
+metrics:
+  enabled: true
+  port: 9090                          # Prometheus metrics 端口
+  path: "/metrics"
+```
+
+**环境变量注入**：所有 `${VAR}` 格式的值从环境变量读取，未设置时启动报错。
+
+**热更新字段**（通过 PATCH API 修改，无需重启）：
+- `watch.dead_letter.retention_days` 🔥
+- `watch.dead_letter.cleanup_interval` 🔥
+- `watch.file_stable_period` 🔥
+- `pipeline.step_timeout` 🔥
+- `reconciler.poll_interval` 🔥
+- `fetch_url.default_poll_interval` 🔥
 
 ---
 
@@ -7138,7 +7441,7 @@ vl reconcile --once
 }
 ```
 
-LLM 通过 MCP 自动获得以下工具（§9.5.3）：
+LLM 通过 MCP 自动获得以下工具（§9.6.3）：
 
 | 工具 | 功能 |
 | --- | --- |
