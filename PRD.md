@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）。
 
 ---
 
@@ -433,39 +433,44 @@ class Entity:
     created_at: datetime
     updated_at: datetime
 
-    # ===== 表现管理（委托给 RepStepRegistry + RepPipelineOrchestrator）=====
-    def generate_representation(self, rep_type: str) -> Representation:
-        """生成单个 representation。委托给 RepStepRegistry 找到能产出该 rep_type 的 step，
-        由 RepPipelineOrchestrator 执行。"""
+    # ===== 表现管理（Entity = 触发器，投递消息到 Redis Streams）=====
+    # 注意：Entity 是领域模型 + 触发器，不是执行者。
+    # generate_* / build_* 方法只做 XADD 到 Redis Streams，不直接执行 RepStep/IndexStep。
+    # 执行由 Worker 进程完成（§6.9）。
+    def generate_representation(self, rep_type: str) -> str:
+        """投递 RepStep 任务到 Redis Streams。返回 entry_id。
+        委托给 RepStepRegistry 找到能产出该 rep_type 的 step，
+        由 RepPipelineOrchestrator 投递消息，Worker 执行。"""
 
-    def generate_all_representations(self) -> list[Representation]:
-        """生成所有该 entity_type 适用的 representations。委托给 RepPipelineOrchestrator。"""
+    def generate_all_representations(self) -> list[str]:
+        """投递所有该 entity_type 适用的 RepStep 任务。返回 entry_id 列表。"""
 
-    def regenerate(self, rep_type: str) -> Representation:
-        """重新生成单个 representation。血缘级联：标 stale → 重建 → publish。"""
+    def regenerate(self, rep_type: str) -> str:
+        """投递重新生成任务。血缘级联：标 stale → 投递重建任务。"""
 
-    def regenerate_all(self) -> list[Representation]:
-        """重新生成所有 representations。"""
+    def regenerate_all(self) -> list[str]:
+        """投递重新生成所有 representations 的任务。"""
 
-    # ===== 索引管理（委托给 IndexStepRegistry + IndexPipelineOrchestrator）=====
+    # ===== 索引管理（Entity = 触发器，投递消息到 Redis Streams）=====
     # 注意：索引管理与表现管理完全解耦。索引消费表现产出的文件，但不属于表现层。
-    def build_index(self, index_type: str) -> None:
-        """构建指定索引。委托给 IndexStepRegistry 找到对应 IndexStep，
-        由 IndexPipelineOrchestrator 执行。"""
+    def build_index(self, index_type: str) -> str:
+        """投递 IndexStep 任务到 Redis Streams。返回 entry_id。
+        委托给 IndexStepRegistry 找到对应 IndexStep，
+        由 IndexPipelineOrchestrator 投递消息，Worker 执行。"""
 
-    def build_all_indexes(self) -> None:
-        """构建所有适用索引。委托给 IndexPipelineOrchestrator。"""
+    def build_all_indexes(self) -> list[str]:
+        """投递所有适用索引构建任务。"""
 
-    def rebuild_index(self, index_type: str) -> None:
-        """删除旧索引并重建。委托给 IndexStep。"""
+    def rebuild_index(self, index_type: str) -> str:
+        """投递删除旧索引并重建的任务。"""
 
-    def rebuild_lance(self) -> None:
-        """全量重建 Lance 数据集（从 OSS representation 文件 + staging Parquet）。
+    def rebuild_lance(self) -> str:
+        """投递全量重建 Lance 数据集的任务（从 OSS representation 文件 + staging Parquet）。
         适用场景：schema 变更 / Lance 损坏 / 碎片率过高 / 索引失效。
         支持 MVCC 回滚：重建失败自动回退到旧 version。"""
 
-    def refresh_indexes(self) -> None:
-        """representation 变动后增量更新索引。"""
+    def refresh_indexes(self) -> str:
+        """投递 representation 变动后的增量索引更新任务。"""
 
     # ===== 查询表现清单 =====
     def list_representations(self) -> list[Representation]:
@@ -936,7 +941,7 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
 **核心决策**：
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
 2. **准零持久化元数据** — 运行时从 OSS Tag + 路径实时组装（零持久化运行）；但关键不可推导信息（`rag_status` / `labels` / `version`）以 sidecar 文件持久化（`.entity_manifest.json` + `.version_log.jsonl`），作为灾难恢复的 Ground Truth（详见 §5.12）。
-3. **两套 OSS Object Tagging** — Entity Tag（10个，打在 original 上）+ Representation Tag（7个，打在每个 rep 文件上），作为运行时加速缓存（Tag 可从 Ground Truth 重建）。
+3. **两套 OSS Object Tagging** — Entity Tag（7个，打在 original 上）+ Representation Tag（7个，打在每个 rep 文件上），作为运行时加速缓存（Tag 可从 Ground Truth 重建）。
 4. **VFS 实时扫描 prefix** 重建目录树 + 从**目录层级 + Pipeline 注册表**推导血缘 DAG，所有元数据从 OSS 实时获取。
 5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。每行 = 一个可检索单元（chunk），PK = `(entity_id, rep_type, chunk_index)`。
 
@@ -1007,7 +1012,9 @@ vector-lake/{workspace_id}/{collection_id}/
 - **Entity Tag**（打在 `{entity_id}/original` 对象上）：Entity 级元数据 + 同步状态
 - **Representation Tag**（打在每个 representation 文件上）：血缘 + 变换 + 状态
 
-##### Entity Tag Schema（10 个 Tag，打在 original 对象上）
+##### Entity Tag Schema（7 个 Tag，打在 original 对象上）
+
+> **设计决策**：Entity Tag 从 10 个精简为 7 个，移除 `workspace_id` / `collection_id` / `entity_id`（可从 OSS 路径推导），为 v0.2 预留 3 个位置（`sync_state` / `quality_score` / `custom_1`）。
 
 | Key | 取值 | 说明 |
 | --- | --- | --- |
@@ -1018,9 +1025,19 @@ vector-lake/{workspace_id}/{collection_id}/
 | `version` | `1` | Entity 版本号 |
 | `labels` | `pricing,finance,Q3,strategy,Q3-review` | 业务标签（合并 category/project，逗号分隔） |
 | `model_version` | `embedding-v5-retrieval` | 最新 embedding 模型版本 |
-| `sync_state` | `idle` / `syncing` / `rebuilding` / `ready` / `failed` / `stale` | 同步状态（覆盖增量/全量/重试/级联/失败） |
-| `sync_version` | `42` | Lance MVCC version 号 |
-| `sync_error` | `oom` | 失败原因（failed 时才有） |
+
+> **v0.2 预留 Tag**（当前不写入，v0.2 启用）：
+> - `sync_state`：`idle` / `syncing` / `ready` / `failed` / `stale` — Projector 同步状态
+> - `quality_score`：`0.0` - `1.0` — Entity 质量评分
+> - `custom_1`：自定义扩展字段
+
+**从路径推导的字段**（不存 Tag，从 OSS 路径实时解析）：
+
+| 字段 | 推导方式 |
+|---|---|
+| `workspace_id` | 路径第 2 段：`vector-lake/{workspace_id}/...` |
+| `collection_id` | 路径第 3 段：`vector-lake/{ws}/{collection_id}/...` |
+| `entity_id` | 路径第 4 段：`vector-lake/{ws}/{col}/{entity_id}/...` |
 
 **示例**：
 
@@ -1034,9 +1051,6 @@ oss://bucket/vector-lake/ws_001/kb_001/abc123/source/original
     version=1
     labels=pricing,finance,Q3,strategy,Q3-review
     model_version=embedding-v5-retrieval
-    sync_state=ready
-    sync_version=42
-    sync_error=
 ```
 
 ##### Representation Tag Schema（7 个 Tag，打在 representation 文件上）
@@ -1123,11 +1137,30 @@ ossutil put-object-tagging --bucket ... --key .../ocr.md --tagging '{"Tags":[{"K
 ```
 
 **OSS Tag 的限制**：
-- 最多 10 个 tag → Entity Tag 用 10 个（满），Representation Tag 用 7 个（预留 3 个）
+- 最多 10 个 tag → Entity Tag 用 7 个（预留 3 个给 v0.2），Representation Tag 用 7 个（预留 3 个）
 - 每个 tag value 最大 128 字节 → 当前所有字段值远小于此限制
 - 只能打在具体对象上 → Entity Tag 打在 `original` 上，Representation Tag 打在各自文件上
 - 列表过滤只能精确匹配 → 业务标签过滤在 VFS 内存中做
 - PutObjectTagging 不支持原子 CAS → 用 `CopyObject` + `x-oss-copy-source-if-match` 实现（见 §4.6 同步协议 Stage 2）
+
+**OSS LIST API 限制**（F3）：
+- 每次 LIST 最多返回 1000 个对象（`max-keys=1000`）
+- 10K Entity × 10 文件 = 100K 对象 → 100 次 LIST → ~10s（可接受）
+- 100K Entity × 10 = 1M 对象 → 1000 次 LIST → ~100s（不可接受）
+- **v0.1 策略**：VFS 维护 Redis 缓存，冷启动时全量 LIST + 增量 Event 更新
+- **v0.2 策略**：引入 `_manifest/reps.jsonl`（§5.12.11）替代全量 LIST
+
+**多文件 Rep 的 Tag 策略**（E1）：
+- 一个 100 页 PDF 产出 100 个 `page_image/page_001.png` ... `page_image/page_100.png`
+- 逐文件打 Tag = 100 × 7 = 700 次 `PutObjectTagging` API 调用（代价高）
+- **v0.1 策略**：多文件 Rep 只在目录的 `.meta.json` 打一次 Tag（包含 `rep_type` / `count` / `content_hash_set`），不在每个文件上打 Tag
+- **v0.2 策略**：引入 `_manifest/reps.jsonl` 统一管理
+
+**Lance metadata 大小限制**（F5）：
+- Lance `manifest.metadata` 是 Protobuf `map<string, bytes>`，理论上无大小限制
+- 但每次 `update_metadata()` 会重写整个 Manifest
+- **v0.1 限制**：每个 Entity 最多 5 个 Index（semantic / textual / structural / graph / multimodal），metadata 大小可控
+- **v0.2 迁移**：Index metadata 迁移到 `_manifest/indexes.jsonl`
 
 #### `representations.lance`（Entity 目录内，核心检索表）
 
@@ -2771,7 +2804,18 @@ lance_dataset.update_metadata({
 | Rep `status` 变化（`build_from_hash_set` 变化） | 标 `index_status=stale` |
 | Phase 2 Reconciler 检测不一致 | 标 `index_status=stale` + 触发 IndexPipeline 重建 |
 | embedding 模型升级（`index_model_version` 不匹配） | 标 `index_status=stale` + 触发重跑 |
-| entity `status=deleted` | 标 `index_status=deleted` + 实际删除 Lance 数据集 |
+| entity `status=deleted` | 标 `index_status=deleted` + **保留 Lance 数据 30 天**（软删除）；`destroy()` 才物理删除 Lance |
+| embedding 模型升级（全量重建） | 按 **Index 重建优先级** 分批重建（见下方） |
+
+**Index 重建优先级**（E4 修复，解决全量重建代价过高问题）：
+
+| 优先级 | 条件 | 示例 |
+|---|---|---|
+| **high** | Entity 近 7 天被检索过 + `rag_status=enabled` | 热点数据，优先重建 |
+| **medium** | Entity 近 30 天被检索过 | 温数据，第二批重建 |
+| **low** | Entity 30 天内未被检索 | 冷数据，最后重建或跳过 |
+
+> 模型升级时按优先级分批投递到 `index_pipeline`，每批 100 个 Entity，避免一次性打满 GPU/API 配额。
 
 ### 5.11 Edge 生命周期
 
@@ -2833,7 +2877,9 @@ lance_dataset.update_metadata({
 }
 ```
 
-> 写入时机：与 Tag 写入绑定——先写 `.entity_manifest.json`（Conditional Write `if-match etag`），再写 Tag。Tag 写入失败不影响 manifest。
+> 写入时机：与 Tag 写入绑定——先写 `.entity_manifest.json`，再写 Tag。Tag 写入失败不影响 manifest。
+>
+> **关键约束**：OSS `PutObject` **不支持** `if-match`（阿里云 OSS / AWS S3 / MinIO 均不支持，只有 `CopyObject` 支持）。v0.1 采用 **last-writer-wins** 策略，v0.2 用 `CopyObject` + `if-match` 实现原子交换。
 
 **版本日志文件**（`source/.version_log.jsonl`）：
 
@@ -2845,13 +2891,14 @@ lance_dataset.update_metadata({
 
 > 追加写入（append-only），不修改历史行。Tag 丢失时从最后一行恢复 `version` 字段。
 
-#### 5.12.2 Tag 写入原子性协议
+#### 5.12.2 Tag 写入原子性协议 + 元数据写入状态机
 
 ```text
-RepStep 写入协议（两阶段）：
+RepStep 写入协议（v0.1: last-writer-wins + Reconciler 修复）：
   Phase 1: 写 Rep 文件到 OSS（内容就绪）
   Phase 2: 写 OSS Tag（PutObjectTagging，单次 API 原子操作）
   Phase 2b: 写 .entity_manifest.json（如果涉及 Entity 级 Tag 变更）
+  Phase 2c: 写 .version_log.jsonl（append-only，如果 version 变更）
 
 读取协议：
   正常路径：读 Tag（快）
@@ -2862,17 +2909,43 @@ RepStep 写入协议（两阶段）：
   文件存在 + Tag 不完整 → 以 .entity_manifest.json 为准 → 重写 Tag
 ```
 
-#### 5.12.3 Reconciler Phase 0：body_hash 校验
+**元数据写入状态机**（解决 Tag / manifest / 文件 三重冗余一致性）：
+
+```text
+写入状态（per Entity，存储在 Redis）：
+  CLEAN ──写文件──► FILE_WRITTEN ──写manifest──► MANIFEST_WRITTEN ──写Tag──► CLEAN
+    │                    │                          │                       │
+    │                    │ (crash)                  │ (crash)               │ (crash)
+    │                    ▼                          ▼                       ▼
+    │               STALE_FILE                 MANIFEST_ONLY            TAG_MISSING
+    │               (Reconciler:               (Reconciler:            (Reconciler:
+    │                标stale→重建)               从manifest重建Tag)       从manifest重建Tag)
+    │
+    └── Reconciler 每次扫描检测非 CLEAN 状态 → 自动修复 → 回到 CLEAN
+```
+
+| 状态 | 含义 | 检测方式 | 自动修复 |
+|---|---|---|---|
+| `CLEAN` | 文件 + manifest + Tag 三者一致 | — | — |
+| `FILE_WRITTEN` | 文件存在但 manifest 未写 | 文件存在 + manifest 缺失/旧 | 标 stale → 触发重建 |
+| `MANIFEST_WRITTEN` | manifest 已写但 Tag 未写 | manifest 比 Tag 新 | 从 manifest 重建 Tag |
+| `TAG_MISSING` | Tag 缺失/不完整 | Tag 缺失关键字段 | 从 manifest 重建 Tag |
+
+#### 5.12.3 Reconciler Phase 0：ETag 校验（零下载）
 
 > 在现有 Phase 1（Rep↔Raw）和 Phase 2（Index↔Rep）之前，增加 Phase 0 校验 Tag 与文件内容的一致性。
+>
+> **关键优化**：Phase 0 使用 **ETag 校验**（`HeadObject` 获取 OSS ETag），不下载文件计算 SHA-256。代价从 O(file_size) 降到 O(1)。只有 ETag 不匹配时才下载文件计算完整 SHA-256。
 
 ```text
 Reconciler Phase 0（每天一次，非每 15 min）:
   ├─ 随机采样 1% 的 Rep 文件
-  ├─ 计算文件内容 SHA-256（body_hash）
-  ├─ 对比 body_hash vs Tag content_hash
-  ├─ 不匹配 → 以 body_hash 为准，重写 Tag + 告警
-  ├─ Tag 缺失 → 从路径 + 命名约定 + body_hash 重建 Tag
+  ├─ HeadObject 获取 ETag（零下载，O(1)）
+  ├─ 对比 ETag vs Tag content_hash
+  │   ├─ ETag = MD5（小文件）→ 直接对比 Tag content_hash 前 32 字符
+  │   └─ ETag = multipart hash（大文件）→ 需下载计算 SHA-256
+  ├─ 不匹配 → 下载文件计算完整 SHA-256 → 以 body_hash 为准，重写 Tag + 告警
+  └─ Tag 缺失 → 从路径 + 命名约定 + ETag 重建 Tag
   └─ .entity_manifest.json 缺失 → 从 Tag 重建 manifest
 
 手动触发：
@@ -3567,18 +3640,20 @@ IndexStepRegistry.steps_for_reps(available_reps)
 
 ### 6.8 RepStep / IndexStep 并发模型
 
-> **核心规则**：**Entity 内串行，Entity 间并行**。
+> **核心规则**：**Entity 内 RepPipeline 间并行、RepPipeline 内 step 串行、IndexPipeline 串行，Entity 间完全并行**。
 
 #### 6.8.1 并发粒度
 
-| 层级 | 并发策略 | 原因 |
-|---|---|---|
-| **同一 RepPipeline 内 step** | 串行（按拓扑序） | step 之间有数据依赖（如 ocr 需要 page_image） |
-| **同一 Entity 内 RepPipeline** | 并行 | 不同 RepPipeline 写入不同 OSS 路径，无冲突 |
-| **同一 Entity 内 IndexPipeline** | 串行（每个 IndexPipeline 独占 Lance 写锁） | Lance 同一 dataset 写入需排他 |
-| **不同 Entity 的 RepPipeline** | 完全并行 | OSS 路径天然隔离 |
-| **不同 Entity 的 IndexPipeline** | 完全并行 | Lance 数据集在不同 Entity 目录下，无冲突 |
-| **同一 RepStep 的多实例** | 串行（per entity） | 避免同一 Entity 的 Rep 写入冲突 |
+| 层级 | 并发策略 | 原因 | 锁粒度 |
+|---|---|---|---|
+| **同一 RepPipeline 内 step** | 串行（按拓扑序） | step 之间有数据依赖（如 ocr 需要 page_image） | 无锁（单 Worker 执行） |
+| **同一 Entity 内 RepPipeline** | 并行 | 不同 RepPipeline 写入不同 OSS 路径，无冲突 | `rep_pipeline:{entity_id}:{pipeline_id}` |
+| **同一 Entity 内 IndexPipeline** | 串行（每个 IndexPipeline 独占 Lance 写锁） | Lance 同一 dataset 写入需排他 | `index:{entity_id}` |
+| **不同 Entity 的 RepPipeline** | 完全并行 | OSS 路径天然隔离 | 无锁 |
+| **不同 Entity 的 IndexPipeline** | 完全并行 | Lance 数据集在不同 Entity 目录下，无冲突 | 无锁 |
+| **同一 RepStep 的多实例** | 串行（per entity per pipeline） | 避免同一 Entity 同一 Pipeline 的 Rep 写入冲突 | `rep_step:{entity_id}:{pipeline_id}:{step_id}` |
+
+> **锁粒度优化**（E2 修复）：从"Entity 级锁"改为"RepPipeline 级锁"。同一 Entity 的 `parse` 和 `render_page` 可以并行执行（写不同 OSS 路径），只有同一 RepPipeline 内的 step 才需要串行。
 | **RepPipeline 与 IndexPipeline** | 不能并行 | IndexPipeline 必须等 RepPipeline 完成后（`rep_all_ready` 事件） |
 
 #### 6.8.2 锁模型
@@ -3664,6 +3739,10 @@ Entity 维度的锁：
   "workspace_id": "ws1",
   "collection_id": "col1",
   "trigger": "oss_event",          // oss_event | reconciler | manual
+  "input_reps": {                   // 运行时由 Orchestrator 填充（从 RepStepRegistry 解析）
+    "required": ["source/original"],  // step.required_input_reps → 具体路径
+    "optional": ["extract/page_image"] // step.optional_input_reps → 具体路径（可能不存在）
+  },
   "trace_id": "abc-def-123",       // OpenTelemetry trace ID
   "retry_count": 0,
   "max_retries": 3,
@@ -3688,8 +3767,9 @@ async def rep_worker():
                 entity_id = fields["entity_id"]
                 step_id = fields["step_id"]
 
-                # 2. Entity 内串行：用 Redis 分布式锁
-                async with redis_lock(f"rep:{entity_id}", timeout=300):
+                # 2. RepPipeline 级锁（而非 Entity 级锁）
+                pipeline_id = fields.get("pipeline_id", "default")
+                async with redis_lock(f"rep_pipeline:{entity_id}:{pipeline_id}", timeout=300):
                     try:
                         # 3. 执行 RepStep
                         step = RepStepRegistry.get(step_id)
@@ -3733,7 +3813,23 @@ async def rep_worker():
 | **延迟** | 高（broker → worker → result） | 低（直连 Redis） |
 | **运维** | 复杂（worker 进程管理 + concurrency pool） | 简单（asyncio + Consumer Group） |
 
-#### 6.9.6 v0.2 演进路径
+#### 6.9.6 背压策略
+
+```text
+Redis Streams 背压机制：
+  1. XADD 时设置 MAXLEN ~ 100000（近似裁剪，保留最近 10 万条）
+  2. Worker 消费延迟 > 5 min → 告警（XPENDING 检测）
+  3. 积压 > 50K → 触发背压：
+     ├─ OSS Event Webhook 返回 429（拒绝新事件）
+     ├─ Reconciler 暂停投递新任务
+     └─ 管理员 API: POST /v1/admin/backpressure?mode=drain（排空模式）
+  4. 锁超时策略：
+     ├─ 锁超时 = step 预估耗时 × 3（如 render_page 30s → 锁超时 90s）
+     ├─ 加锁时写入 worker_id + timestamp
+     └─ 超时后其他 worker 可安全抢占（检查 worker_id 是否存活）
+```
+
+#### 6.9.7 v0.2 演进路径
 
 ```text
 v0.1: Redis Streams（单 Redis 实例 / Sentinel）
@@ -4690,18 +4786,28 @@ async def vfs_get_status(workspace_id: str) -> dict:
 | `vfs_search` | `capability_semantic` / `structural` / `textual` | §9.2 智能引擎路由 |
 | `vfs_get_status` | — | Redis XINFO + Reconciler 状态 |
 
+> **架构原则**：MCP Tools 与 REST API（§14）共享同一套 **Service 层**（Python 函数），不是两套独立实现。MCP Server 和 REST API 是同一套业务逻辑的两种暴露方式：
+> - REST API = HTTP + JSON（面向前端 / 第三方集成）
+> - MCP Tools = stdio / SSE（面向 LLM Agent）
+> - 两者共享 `VectorLakeService` 类，不重复实现
+
 #### 9.5.4 v0.1 范围
 
-| Tool | v0.1 | 说明 |
-|---|---|---|
-| `vfs_list_collections` | ✅ | 必须 |
-| `vfs_list_entities` | ✅ | 必须 |
-| `vfs_get_entity` | ✅ | 必须 |
-| `vfs_list_reps` | ✅ | 必须 |
-| `vfs_get_rep_content` | ✅ | 必须（LLM 需要读内容做推理） |
-| `vfs_get_lineage` | ✅ | 必须（LLM 需要理解数据来源） |
-| `vfs_search` | ✅ | 必须（核心检索能力） |
-| `vfs_get_status` | ✅ | 运维 + LLM 自诊断 |
+| Tool | v0.1 | required_role | 说明 |
+|---|---|---|---|
+| `vfs_list_collections` | ✅ | `user` | 必须 |
+| `vfs_list_entities` | ✅ | `user` | 必须 |
+| `vfs_get_entity` | ✅ | `user` | 必须 |
+| `vfs_list_reps` | ✅ | `user` | 必须 |
+| `vfs_get_rep_content` | ✅ | `user` | 必须（LLM 需要读内容做推理） |
+| `vfs_get_lineage` | ✅ | `user` | 必须（LLM 需要理解数据来源） |
+| `vfs_search` | ✅ | `user` | 必须（核心检索能力） |
+| `vfs_get_status` | ✅ | `admin` | 运维 + LLM 自诊断（仅管理员） |
+
+> **权限模型**：MCP Tools 按 `required_role` 分级（`admin` / `user` / `readonly`）。
+> - stdio 模式：继承本地用户权限（默认 admin）
+> - SSE 模式：按 Bearer Token 中的 role 字段过滤。`vfs_get_status` 仅 `admin` 可用。
+> - `vfs_search` 自动过滤 `rag_status=hidden` 的 Entity（对 `user` 角色不可见）
 
 > **实现**：v0.1 用 `mcp` Python SDK（`pip install mcp`），单文件 `server.py`，约 300 行代码。
 
