@@ -4662,6 +4662,111 @@ IndexStepRegistry.steps_for_reps(available_reps)
 
 **关键不变量**：IndexPipeline **不触发** RepPipeline。索引构建失败不影响 Representation 文件的存在。
 
+#### 6.8.6 IndexPipeline 参数配置（v0.1）
+
+> IndexPipeline 的行为由 **IndexStrategy** 控制——类似 Ingest Strategy 控制"文件如何变成 Entity"，IndexStrategy 控制"MD 如何变成索引"。
+
+**IndexStrategy 定义**：
+
+```yaml
+index_strategies:
+  - id: default_text
+    pipeline: index_pipeline_text
+    chunking:
+      method: markdown_heading          # markdown_heading | fixed_size | semantic | sentence
+      config:
+        min_chunk_size: 200             # 最小 chunk 字符数
+        max_chunk_size: 1500            # 最大 chunk 字符数
+        overlap_size: 200               # 滑窗重叠字符数
+        heading_levels: [1, 2, 3]       # 按哪些标题级别切分
+        respect_code_blocks: true       # 代码块不切断
+        respect_table_blocks: true      # 表格不切断
+    embedding:
+      model: jina-embeddings-v3         # 引用 config.yaml embedding.models 中的 key
+      dimension: 1024                   # 输出向量维度
+      batch_size: 64                    # 单次 embedding API 调用的最大文档数
+      task: "retrieval.passage"         # Jina 任务类型：retrieval.passage | retrieval.query | text-matching
+    fts:
+      enabled: true                     # 是否构建全文索引
+      tokenizer: icu                    # icu（多语言）| simple（英文）| cjk（中日韩）
+    vector_index:
+      metric: cosine                    # cosine | l2 | ip
+    entity_types: [document, url]       # 适用的 entity_type
+    input_reps: [canonical_md, vlm_md]  # 可消费的 Rep 类型
+```
+
+**Chunking 方法**：
+
+| 方法 | 说明 | 适用场景 | v0.1 |
+| --- | --- | --- | --- |
+| `markdown_heading` | 按 Markdown 标题（H1-H6）切分，标题作为 chunk 上下文 | 结构化文档、API 文档、技术文档 | ✅ |
+| `fixed_size` | 固定字符数 + 滑窗重叠 | 无标题结构的纯文本 | ✅ |
+| `semantic` | 基于 embedding 相似度在语义断点切分 | 长文无明确结构 | v0.2 |
+| `sentence` | 按句子边界切分 | 短文本、对话记录 | v0.2 |
+
+**`markdown_heading` 切分规则**（v0.1 默认）：
+
+```text
+输入：canonical_md
+
+1. 解析 Markdown AST → 提取 heading + content 节点
+2. 按 heading_levels 指定的级别切分（默认 H1/H2/H3）
+3. 每个 chunk = [heading_path] + [content]
+   - heading_path：从根到当前标题的完整路径（如 "第3章 > 3.2 架构设计 > 3.2.1 存储层"）
+   - content：该标题下的正文内容
+4. 如果 content < min_chunk_size → 与下一个同级标题合并
+5. 如果 content > max_chunk_size → 按 overlap_size 滑窗二次切分
+6. 代码块（```...```）和表格（|...|）不切断，整体归入 chunk
+7. 每个 chunk 附加 layout 映射（start_pos / end_pos → layout_json blocks）
+```
+
+**Embedding 模型选择**：
+
+| 模型 | Provider | 维度 | 特点 | v0.1 |
+| --- | --- | --- | --- | --- |
+| `jina-embeddings-v3` | Jina AI | 1024（可配置 256/512/1024/2048） | 多语言、多任务（retrieval.passage/query/text-matching） | ✅ 默认 |
+| `bge-m3` | 本地 | 1024 | 多语言、本地部署、无 API 费用 | ✅ |
+| `text-embedding-3-small` | OpenAI | 1536 | 英文优化 | v0.2 |
+| `text-embedding-3-large` | OpenAI | 3072 | 高精度 | v0.2 |
+
+**维度选择策略**：
+
+| 维度 | 存储成本 | 检索质量 | 适用场景 |
+| --- | --- | --- | --- |
+| 256 | 最低 | 一般 | 大规模粗筛 |
+| 512 | 低 | 较好 | 平衡场景 |
+| **1024** | **中** | **好** | **v0.1 默认，推荐** |
+| 2048 | 高 | 最佳 | 高精度需求 |
+
+> **同一 Collection 内所有 Entity 必须使用相同的 embedding 模型和维度**。模型/维度变更需要全量重建索引。
+
+**IndexStrategy 与 Ingest Strategy 的关系**：
+
+```text
+Ingest Strategy（接入策略）     IndexStrategy（索引策略）
+  ┌──────────────────┐          ┌──────────────────┐
+  │ 文件/URL → Entity │          │ MD → Chunk → 索引 │
+  │                  │          │                  │
+  │ · entity_id 策略  │          │ · chunking 方法   │
+  │ · 文件过滤       │          │ · embedding 模型  │
+  │ · on_conflict    │          │ · 输出维度        │
+  └──────────────────┘          └──────────────────┘
+         ↓                              ↓
+    RepPipeline                    IndexPipeline
+```
+
+- Ingest Strategy 决定"用什么 RepPipeline 处理"→ 产出 `canonical_md` / `vlm_md`
+- IndexStrategy 决定"用什么参数建索引"→ 产出 Lance 向量索引 + FTS 索引
+- 一个 Collection 绑定一个 IndexStrategy（v0.1）；v0.2 支持 per-entity-type 绑定
+
+**v0.1 IndexStrategy 预置**：
+
+| ID | chunking | embedding | dimension | 适用 |
+| --- | --- | --- | --- | --- |
+| `default_text` | markdown_heading | jina-embeddings-v3 | 1024 | 文档/URL（默认） |
+| `local_text` | markdown_heading | bge-m3 | 1024 | 本地部署场景 |
+| `fixed_size_text` | fixed_size | jina-embeddings-v3 | 1024 | 无标题结构的纯文本 |
+
 ### 6.9 RepStep / IndexStep 并发模型
 
 > **核心规则**：**Entity 内 RepPipeline 间并行、RepPipeline 内 step 串行、IndexPipeline 串行，Entity 间完全并行**。
