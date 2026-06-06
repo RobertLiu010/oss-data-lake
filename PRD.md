@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.7）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.8）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.9 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §19 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.10 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§19 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§19.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§20-§24）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）；(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例；(28) **Rep 继承链与级联传播（§5.13）**：新增 §5.13 Rep 继承链与级联传播——Rep Tag 从 7→9 个字段（新增 `input_content_hash` + `content_hash`），每个 Rep 记录直接上游的内容指纹；§5.9.1 `source_content_hash` 语义修正为 `input_content_hash`（直接上游，不一定是 raw）；新增 Rep 继承链定义（§5.13.1，含完整继承图示例 + 9 种 Rep 的 input_content_hash 映射表）；新增 Rep 变动级联传播（§5.13.2，含 BFS 级联算法 + 5 步级联场景）；新增 Index 增量重建（§5.13.3，required_reps ready 即可触发，不等全部 Rep ready，v0.1 先全量等待 v0.2 切增量）；新增继承链可观测性 API（§5.13.4，4 个查询端点）；新增继承链 vs 血缘对比（§5.13.5）；§5.7.1 Rep 联动表新增"上游 Rep content_hash 变化"行 + 引用 §5.13；§5.9.1 校验场景新增"上游 Rep 更新但下游 Rep 未重建"场景；Tag 示例 transform=ocr→visual_recognize；(29) **补全缺失的 3 条 Pipeline**：新增 `rep_pipeline_h` 视频关键帧抽取（RepStep `extract_keyframes`，依赖 ffmpeg，输出 `keyframe_image` + `keyframe_timeline`，适用于所有视频格式）；新增 `index_pipeline_video` 视频双模态索引（IndexStep `chunk_and_embed_video`，required_reps 为 `transcript` + `keyframe_image`，同时索引音轨和关键帧）；新增 `index_pipeline_structural` 结构化检索（IndexStep `register_duckdb_view`，将 `table_parquet` 注册到嵌入式 DuckDB 视图）；§2.2 树状图补全 video/structural/audio/table 分支；§6.1 映射总表新增 H 行；§6.5.6 路由总表 video 行从 F+E 改为 F+H；§6.8.3 IndexStep 表新增 `chunk_and_embed_video` + `register_duckdb_view`；§6.7.4/§13.2 RepPipeline 编号 family 扩展为 a/b/d/e/f/g/h；§13.3 IndexPipeline 补全 video/structural；§6.8.1 v0.1 限制 5 Index 调整为 text/image/video/structural/graph；(30) **完整变动管理（§5.14）**：新增 §5.14 完整变动管理（Change Management），集中覆盖 10 个变动相关维度——5.14.1 变动检测（5 个检测源：OSS 事件/Reconciler 周期/API 写入/Phase 0/Edge 主动）；5.14.2 变动分类（7 类 C1-C7：Raw/Rep 内容/Rep 状态/Index/Schema/Entity 元数据/Projector 配置）；5.14.3 变动追踪（两层日志 L1 version_log + L2 _log/v0.2 事务日志 + v0.1 简化追踪方案 6 项操作字段）；5.14.4 变动通知（4 个通知目标：Reconciler/Worker/Projector/Edge Resolver + change_detected 消息格式）；5.14.5 变动回滚（5 类回滚策略 + 3 条不变量：不删除历史/不破坏外引用/不绕过 Reconciler）；5.14.6 变动冲突（5 个冲突场景 + 3 条解决原则：锁优先/版本兜底/Reconciler 终极裁决）；5.14.7 变动回放/Time Travel（v0.1 基础快照 + v0.2 snapshot/diff API + v0.3 完整 Time Travel）；5.14.8 批量变动（3 种批量场景 API：批量导入/批量重打标签/批量删除 + 统一响应格式）；5.14.9 跨 Entity 变动（强/弱/嵌入 3 种 Edge 引用类型 + 决策矩阵）；5.14.10 投影端变动（Projector 4 步响应：评估/计算 diff/应用差异/记录历史 + 3 种同步模式 Realtime/Batch/On-demand）；5.14.11 变动 SLA 与可观测性（5 项 SLA 指标 + /changes/stats 端点）；(31) **Watch Mode 自动构建（§5.15）**：新增 §5.15 Watch Mode（自动构建模式），核心承诺"指定目录上传即自动构建索引，无需调用 API"；包含 10 个子节：5.15.1 启用与配置（OSS 监听 + 本地监听 + Reconciler 兜底 3 种源 + config.yaml 完整配置）；5.15.2 自动构建流程（5 步：检测→解析路径→创建 Entity→RepPipeline→Index）+ Redis Streams `vl:watch_ingest` 消息格式；5.15.3 entity_id 命名策略（5 种：filename/filepath/uuid/hash/template + 冲突处理）；5.15.4 4 类事件自动处理（新建/修改/删除/重命名）；5.15.5 文件过滤与安全（白/黑名单 + 大小限制 + 并发限流 + 文件稳定期 30s + 访问控制）；5.15.6 批量上传优化（5s flush 批量聚合 + 4 项性能指标）；5.15.7 与显式 API 协调（3 种范式并存 + 数据模型完全一致）；5.15.8 错误处理与告警（5 类错误 + Dead Letter 队列）；5.15.9 可观测性（3 个 API 端点 + 4 个 Prometheus 指标）；5.15.10 v0.1 实施范围（14 项功能 v0.1/v0.2 分布）；(32) **Watch Mode 监听/接入策略解耦**：§5.15.1 重构为 Watch Strategy（监听策略）+ Ingest Strategy（接入策略）两层解耦设计——Watch Strategy 只管"检测 prefix 下的文件变动"（prefix + type + recursive + 限流），Ingest Strategy 管"文件怎么变成 Entity"（entity_id_strategy + labels + allowed_extensions + max_file_size + on_conflict）；一个 Watch Strategy 绑定一个 Ingest Strategy，多个 Watch Strategy 可复用同一 Ingest Strategy；新增 4 个预置 Ingest Strategy（standard_doc/wps_doc/multimedia/tabular）+ 5 个 Watch Strategy 示例；§5.15.2 自动构建流程拆为 6 步（Watch 检测→Watch 匹配→Ingest 决定→投递消息→RepPipeline→Index ready）；§5.15.3 新增 on_conflict 冲突处理策略（update/skip/error）；§5.15.5 明确过滤规则归属 Ingest Strategy、限流归属 Watch Strategy；消息格式新增 watch_strategy_id + ingest_strategy_id + on_conflict 字段。(33) **§5.15 Watch Mode 深度 review 修复**：新增 §5.15.11 高级场景（9 个子节覆盖生产落地关键问题）——5.15.11.1 运行时更新 Watch/Ingest Strategy（Watch Strategy 热更新字段表 + Ingest Strategy 热更新字段表 + PATCH/PUT/DELETE API + Ingest Strategy 删除保护（409 Conflict + bound_watch_strategies 引用检查 + force=true 强制删除）+ 生命周期状态机 initializing/active/paused/error/stopped + 缓冲队列）；5.15.11.2 多租户隔离（workspace 强绑定 + cross_workspace_read 显式授权 + 5 维隔离机制）；5.15.11.3 竞态与一致性（4 类竞态 + Redis 分布式锁 lock:watch:entity:{entity_id} + 等待队列 + Entity/Rep/Index 三层幂等 + 同 Entity 多 RepPipeline 并发 RepPipeline 级锁引用 §6.9）；5.15.11.4 Dead Letter TTL 与自动清理（retention_days/cleanup_interval/max_total_size_gb 完整配置 + 5min/1h/6h 指数退避重试 + 清理失败 3 次重试 + WatchCleanupFailed 告警 + 4 类告警规则）；5.15.11.5 多 Watch Strategy 冲突（启动时拒绝重叠 prefix + allow_conflict opt-in + 父子 prefix 最长匹配去重机制 Longest Prefix Match + processed_by Redis 标记 + ETag 差异检测 create/update/skip 三态）；5.15.11.6 Per-Collection 配额（v0.1 仅全局默认 + v0.2 per-collection 覆盖 + default + overrides 两层 + 4 类配额项 + 429 拒绝 + 令牌桶限流）；5.15.11.7 Delete-Only Watch（event_filter.types=[deleted] + auto_create_entity=false + 全功能 vs 仅删除对比表）；5.15.11.8 文件删除/中途失败边界（5 类场景：raw 已拷贝 RepPipeline 中途删 / 半截上传 / 格式损坏 / Watcher 宕机堆积 / API 创建 Entity 的 source_oss_path 外部删除 + source_oss_path/source_etag/source_type 三字段 + Reconciler Phase 1 兜底检测）；5.15.11.9 MCP Tool 暴露（8 个 Tool 表 watch_list/status/create/pause/resume/replay/dead_letter_list/replay + v0.1 列标注 + watch:read/write/admin 权限模型）；§5.15.8 错误处理表扩展为 8 类（新增 OSS API 限流 + ETag 重复事件）；§5.15.9 可观测性 API 端点从 3 个扩展为 8 个（新增 ingest_strategy 详情 + 5 个运行时管理端点）+ Prometheus 指标从 4 个扩展为 8 个 + 新增结构化 JSON 日志规范；§5.15.10 v0.1 实施范围表从 14 行扩展为 25 行（新增 Ingest/Watch 解耦、5 种 entity_id 策略、on_conflict、TTL、多租户、运行时更新、多 Watch 冲突检测、Ingest Strategy 删除保护、Watch Listener 启动/关闭、MCP Tool、Per-collection 配额 v0.1 全局默认等项）；§20.6 启动顺序补充 Watch Listener 启动流程（6 步：加载配置→配置校验→初始化监听→注册 Producer→状态上报→开始接收事件 + prefix 重叠检测引用 §5.15.11.5）；§20.7 优雅关闭补充 Watch Listener 关闭流程（5 步：停止接收→缓冲队列处理→状态上报→关闭监听→关闭 Producer + 缓冲上限 10000 条 + 本地暂存超限部分）；§20.8 运维命令补充 Watch/Ingest/Dead Letter 管理（watch list/status/pause/resume/replay + ingest list/show/update + dead-letter list/replay/cleanup）。(34) **PRD 框架整理**：修复 §5.12/§5.13 顺序颠倒（5.13 在 5.12 前→交换为正确顺序）；修复 §25.5 评审清单旧编号 19.6→25.5；修复全文交叉引用（§6.6→§6.7 RepStep、§6.7→§6.8 IndexStep、§6.8→§6.9 并发模型、§6.9→§6.10 Redis Streams、§8.7→§8.6 DuckDB、§20→§19 开源选型、§21→§20 部署、§22→§21 SDK、§21.6/7/8→§20.6/7/8 等）；新增文档头部完整目录（§0-§25 共 26 章 + 83 子节）。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type；(26) **排版保留与 Rep 对齐（§4.3.1）**：索引时保留排版信息，chunk 增加 `layout` 字段（含 blocks/bbox/page_number/page_size），与 Representation 对齐；新增 layout_json 完整 Schema（8 种 block 类型 + start_pos/end_pos 区间映射）；IndexStep chunk_and_embed_text/image/table 新增 `optional_reps: layout_json`；RepStep parse 产出新增 `layout_json`；排版一致性保证（layout↔canonical_md 覆盖率检测 + chunk↔layout 区间重叠校验 + layout↔page_image 引用完整性）；排版在多 Rep 间共享（同一 Entity 的 canonical_md/ocr_text/vlm_md 共享同一份 layout_json）；锚点跳转机制（5 种锚点类型：Markdown slug / 页码 / bbox 坐标 / 字符偏移 / 时间戳）；锚点跳转 REST API（anchor-jump + cross_rep_anchors 跨 Rep 一致性）；block_id 作为锚点唯一标识保证跨 Rep 定位一致；(27) **OCR+VLM 合并为视觉识别 Pipeline**：`rep_pipeline_b`（OCR）+ `rep_pipeline_c`（VLM）合并为 `rep_pipeline_b`（视觉识别），步骤 `render_page` → `visual_recognize`，单步同时产出 `ocr_text` + `vlm_md`；RepStep `ocr` + `vlm` 合并为 `visual_recognize`；消除 pipeline_c 编号，family 缩减为 a/b/d/e/f/g；同步更新依赖图、Pipeline 映射表、RepPipeline JSON 示例、PIPELINE_REGISTRY 代码块、RepStep 清单、OSS Tag 示例；(28) **Rep 继承链与级联传播（§5.13）**：新增 §5.13 Rep 继承链与级联传播——Rep Tag 从 7→9 个字段（新增 `input_content_hash` + `content_hash`），每个 Rep 记录直接上游的内容指纹；§5.9.1 `source_content_hash` 语义修正为 `input_content_hash`（直接上游，不一定是 raw）；新增 Rep 继承链定义（§5.13.1，含完整继承图示例 + 9 种 Rep 的 input_content_hash 映射表）；新增 Rep 变动级联传播（§5.13.2，含 BFS 级联算法 + 5 步级联场景）；新增 Index 增量重建（§5.13.3，required_reps ready 即可触发，不等全部 Rep ready，v0.1 先全量等待 v0.2 切增量）；新增继承链可观测性 API（§5.13.4，4 个查询端点）；新增继承链 vs 血缘对比（§5.13.5）；§5.7.1 Rep 联动表新增"上游 Rep content_hash 变化"行 + 引用 §5.13；§5.9.1 校验场景新增"上游 Rep 更新但下游 Rep 未重建"场景；Tag 示例 transform=ocr→visual_recognize；(29) **补全缺失的 3 条 Pipeline**：新增 `rep_pipeline_h` 视频关键帧抽取（RepStep `extract_keyframes`，依赖 ffmpeg，输出 `keyframe_image` + `keyframe_timeline`，适用于所有视频格式）；新增 `index_pipeline_video` 视频双模态索引（IndexStep `chunk_and_embed_video`，required_reps 为 `transcript` + `keyframe_image`，同时索引音轨和关键帧）；新增 `index_pipeline_structural` 结构化检索（IndexStep `register_duckdb_view`，将 `table_parquet` 注册到嵌入式 DuckDB 视图）；§2.2 树状图补全 video/structural/audio/table 分支；§6.1 映射总表新增 H 行；§6.5.6 路由总表 video 行从 F+E 改为 F+H；§6.8.3 IndexStep 表新增 `chunk_and_embed_video` + `register_duckdb_view`；§6.7.4/§13.2 RepPipeline 编号 family 扩展为 a/b/d/e/f/g/h；§13.3 IndexPipeline 补全 video/structural；§6.8.1 v0.1 限制 5 Index 调整为 text/image/video/structural/graph；(30) **完整变动管理（§5.14）**：新增 §5.14 完整变动管理（Change Management），集中覆盖 10 个变动相关维度——5.14.1 变动检测（5 个检测源：OSS 事件/Reconciler 周期/API 写入/Phase 0/Edge 主动）；5.14.2 变动分类（7 类 C1-C7：Raw/Rep 内容/Rep 状态/Index/Schema/Entity 元数据/Projector 配置）；5.14.3 变动追踪（两层日志 L1 version_log + L2 _log/v0.2 事务日志 + v0.1 简化追踪方案 6 项操作字段）；5.14.4 变动通知（4 个通知目标：Reconciler/Worker/Projector/Edge Resolver + change_detected 消息格式）；5.14.5 变动回滚（5 类回滚策略 + 3 条不变量：不删除历史/不破坏外引用/不绕过 Reconciler）；5.14.6 变动冲突（5 个冲突场景 + 3 条解决原则：锁优先/版本兜底/Reconciler 终极裁决）；5.14.7 变动回放/Time Travel（v0.1 基础快照 + v0.2 snapshot/diff API + v0.3 完整 Time Travel）；5.14.8 批量变动（3 种批量场景 API：批量导入/批量重打标签/批量删除 + 统一响应格式）；5.14.9 跨 Entity 变动（强/弱/嵌入 3 种 Edge 引用类型 + 决策矩阵）；5.14.10 投影端变动（Projector 4 步响应：评估/计算 diff/应用差异/记录历史 + 3 种同步模式 Realtime/Batch/On-demand）；5.14.11 变动 SLA 与可观测性（5 项 SLA 指标 + /changes/stats 端点）；(31) **Watch Mode 自动构建（§5.15）**：新增 §5.15 Watch Mode（自动构建模式），核心承诺"指定目录上传即自动构建索引，无需调用 API"；包含 10 个子节：5.15.1 启用与配置（OSS 监听 + 本地监听 + Reconciler 兜底 3 种源 + config.yaml 完整配置）；5.15.2 自动构建流程（5 步：检测→解析路径→创建 Entity→RepPipeline→Index）+ Redis Streams `vl:watch_ingest` 消息格式；5.15.3 entity_id 命名策略（5 种：filename/filepath/uuid/hash/template + 冲突处理）；5.15.4 4 类事件自动处理（新建/修改/删除/重命名）；5.15.5 文件过滤与安全（白/黑名单 + 大小限制 + 并发限流 + 文件稳定期 30s + 访问控制）；5.15.6 批量上传优化（5s flush 批量聚合 + 4 项性能指标）；5.15.7 与显式 API 协调（3 种范式并存 + 数据模型完全一致）；5.15.8 错误处理与告警（5 类错误 + Dead Letter 队列）；5.15.9 可观测性（3 个 API 端点 + 4 个 Prometheus 指标）；5.15.10 v0.1 实施范围（14 项功能 v0.1/v0.2 分布）；(32) **Watch Mode 监听/接入策略解耦**：§5.15.1 重构为 Watch Strategy（监听策略）+ Ingest Strategy（接入策略）两层解耦设计——Watch Strategy 只管"检测 prefix 下的文件变动"（prefix + type + recursive + 限流），Ingest Strategy 管"文件怎么变成 Entity"（entity_id_strategy + labels + allowed_extensions + max_file_size + on_conflict）；一个 Watch Strategy 绑定一个 Ingest Strategy，多个 Watch Strategy 可复用同一 Ingest Strategy；新增 4 个预置 Ingest Strategy（standard_doc/wps_doc/multimedia/tabular）+ 5 个 Watch Strategy 示例；§5.15.2 自动构建流程拆为 6 步（Watch 检测→Watch 匹配→Ingest 决定→投递消息→RepPipeline→Index ready）；§5.15.3 新增 on_conflict 冲突处理策略（update/skip/error）；§5.15.5 明确过滤规则归属 Ingest Strategy、限流归属 Watch Strategy；消息格式新增 watch_strategy_id + ingest_strategy_id + on_conflict 字段。(33) **§5.15 Watch Mode 深度 review 修复**：新增 §5.15.11 高级场景（9 个子节覆盖生产落地关键问题）——5.15.11.1 运行时更新 Watch/Ingest Strategy（Watch Strategy 热更新字段表 + Ingest Strategy 热更新字段表 + PATCH/PUT/DELETE API + Ingest Strategy 删除保护（409 Conflict + bound_watch_strategies 引用检查 + force=true 强制删除）+ 生命周期状态机 initializing/active/paused/error/stopped + 缓冲队列）；5.15.11.2 多租户隔离（workspace 强绑定 + cross_workspace_read 显式授权 + 5 维隔离机制）；5.15.11.3 竞态与一致性（4 类竞态 + Redis 分布式锁 lock:watch:entity:{entity_id} + 等待队列 + Entity/Rep/Index 三层幂等 + 同 Entity 多 RepPipeline 并发 RepPipeline 级锁引用 §6.9）；5.15.11.4 Dead Letter TTL 与自动清理（retention_days/cleanup_interval/max_total_size_gb 完整配置 + 5min/1h/6h 指数退避重试 + 清理失败 3 次重试 + WatchCleanupFailed 告警 + 4 类告警规则）；5.15.11.5 多 Watch Strategy 冲突（启动时拒绝重叠 prefix + allow_conflict opt-in + 父子 prefix 最长匹配去重机制 Longest Prefix Match + processed_by Redis 标记 + ETag 差异检测 create/update/skip 三态）；5.15.11.6 Per-Collection 配额（v0.1 仅全局默认 + v0.2 per-collection 覆盖 + default + overrides 两层 + 4 类配额项 + 429 拒绝 + 令牌桶限流）；5.15.11.7 Delete-Only Watch（event_filter.types=[deleted] + auto_create_entity=false + 全功能 vs 仅删除对比表）；5.15.11.8 文件删除/中途失败边界（5 类场景：raw 已拷贝 RepPipeline 中途删 / 半截上传 / 格式损坏 / Watcher 宕机堆积 / API 创建 Entity 的 source_oss_path 外部删除 + source_oss_path/source_etag/source_type 三字段 + Reconciler Phase 1 兜底检测）；5.15.11.9 MCP Tool 暴露（8 个 Tool 表 watch_list/status/create/pause/resume/replay/dead_letter_list/replay + v0.1 列标注 + watch:read/write/admin 权限模型）；§5.15.8 错误处理表扩展为 8 类（新增 OSS API 限流 + ETag 重复事件）；§5.15.9 可观测性 API 端点从 3 个扩展为 8 个（新增 ingest_strategy 详情 + 5 个运行时管理端点）+ Prometheus 指标从 4 个扩展为 8 个 + 新增结构化 JSON 日志规范；§5.15.10 v0.1 实施范围表从 14 行扩展为 25 行（新增 Ingest/Watch 解耦、5 种 entity_id 策略、on_conflict、TTL、多租户、运行时更新、多 Watch 冲突检测、Ingest Strategy 删除保护、Watch Listener 启动/关闭、MCP Tool、Per-collection 配额 v0.1 全局默认等项）；§20.6 启动顺序补充 Watch Listener 启动流程（6 步：加载配置→配置校验→初始化监听→注册 Producer→状态上报→开始接收事件 + prefix 重叠检测引用 §5.15.11.5）；§20.7 优雅关闭补充 Watch Listener 关闭流程（5 步：停止接收→缓冲队列处理→状态上报→关闭监听→关闭 Producer + 缓冲上限 10000 条 + 本地暂存超限部分）；§20.8 运维命令补充 Watch/Ingest/Dead Letter 管理（watch list/status/pause/resume/replay + ingest list/show/update + dead-letter list/replay/cleanup）。(34) **PRD 框架整理**：修复 §5.12/§5.13 顺序颠倒（5.13 在 5.12 前→交换为正确顺序）；修复 §25.5 评审清单旧编号 19.6→25.5；修复全文交叉引用（§6.6→§6.7 RepStep、§6.7→§6.8 IndexStep、§6.8→§6.9 并发模型、§6.9→§6.10 Redis Streams、§8.7→§8.6 DuckDB、§20→§19 开源选型、§21→§20 部署、§22→§21 SDK、§21.6/7/8→§20.6/7/8 等）；新增文档头部完整目录（§0-§25 共 26 章 + 83 子节）。(35) **PRD 化繁为简**：修复 §5.9.3 重复编号→§5.9.4；§4 删除实现级行为代码（Entity Python 类方法 ~150 行、L1-L3 Stage 函数 ~200 行、PyArrow/Pydantic schema ~105 行），保留 Schema JSON 定义；§5.12.9-5.12.13 五节压缩为一节对比表（~190 行→~15 行）；§5.14 七个 v0.2 子节压缩为占位（~120 行→~28 行）；§5.15.11.5/6/7 三个 v0.2 子节压缩为占位（~206 行→~9 行）；§4.2 Rep Tag 表引用 §4.6 去重 + Tag 字段数修正 7→9；修订记录 #1-#24 移至 §25.6 变更历史；§7/§10/§16/§17 空壳章节加待补充标注。
 
 ## 目录
 
@@ -171,6 +171,7 @@
   - [§25.3 名词表](#253-名词表)
   - [§25.4 开源项目 Review：血缘方案对比](#254-开源项目-review血缘方案对比)
   - [§25.5 评审清单（Review Checklist）](#255-评审清单review-checklist)
+  - [§25.6 变更历史](#256-变更历史)
 
 ---
 
@@ -638,177 +639,7 @@ document · table · image · audio · video
 - 目录名即 entity_id，VFS 扫描时直接从目录名解析。
 - 同一 raw object 重复上传时，content_hash 检测到相同则复用已有 entity_id。
 
-#### Entity 作为类：方法抽象
-
-**Entity 是一个对象**，所有操作以 Entity 为入口组织。方法和属性在 OSS 上实时反映（无持久化元数据）。
-
-```python
-class Entity:
-    """一个知识对象 = 一个 OSS 目录 + 一个 OSS Tag。"""
-
-    # ===== 标识属性（从 OSS Tag 实时读取）=====
-    entity_id: str                # 目录名 = entity_id
-    workspace_id: str             # 从路径前缀解析
-    collection_id: str            # 从路径前缀解析
-    entity_type: str              # document / image / audio / video / table（OSS Tag）
-    name: str                     # pricing.pdf（OSS Tag）
-    content_hash: str             # raw SHA-256（OSS Tag）
-    version: int                  # 单调递增（OSS Tag）
-    status: str                   # enabled / hidden / deleted（OSS Tag）
-    labels: list[str]             # 业务标签（OSS Tag，合并 category/project）
-    oss_path: str                 # oss://bucket/vector-lake/{ws}/{col}/{entity_id}/source/original
-    created_at: datetime
-    updated_at: datetime
-
-    # ===== 表现管理（Entity = 触发器，投递消息到 Redis Streams）=====
-    # 注意：Entity 是领域模型 + 触发器，不是执行者。
-    # generate_* / build_* 方法只做 XADD 到 Redis Streams，不直接执行 RepStep/IndexStep。
-    # 执行由 Worker 进程完成（§6.10）。
-    def generate_representation(self, rep_type: str) -> str:
-        """投递 RepStep 任务到 Redis Streams。返回 entry_id。
-        委托给 RepStepRegistry 找到能产出该 rep_type 的 step，
-        由 RepPipelineOrchestrator 投递消息，Worker 执行。"""
-
-    def generate_all_representations(self) -> list[str]:
-        """投递所有该 entity_type 适用的 RepStep 任务。返回 entry_id 列表。"""
-
-    def regenerate(self, rep_type: str) -> str:
-        """投递重新生成任务。血缘级联：标 stale → 投递重建任务。"""
-
-    def regenerate_all(self) -> list[str]:
-        """投递重新生成所有 representations 的任务。"""
-
-    # ===== 索引管理（Entity = 触发器，投递消息到 Redis Streams）=====
-    # 注意：索引管理与表现管理完全解耦。索引消费表现产出的文件，但不属于表现层。
-    def build_index(self, index_type: str) -> str:
-        """投递 IndexStep 任务到 Redis Streams。返回 entry_id。
-        委托给 IndexStepRegistry 找到对应 IndexStep，
-        由 IndexPipelineOrchestrator 投递消息，Worker 执行。"""
-
-    def build_all_indexes(self) -> list[str]:
-        """投递所有适用索引构建任务。"""
-
-    def rebuild_index(self, index_type: str) -> str:
-        """投递删除旧索引并重建的任务。"""
-
-    def rebuild_lance(self) -> str:
-        """投递全量重建 Lance 数据集的任务（从 OSS representation 文件 + staging Parquet）。
-        适用场景：schema 变更 / Lance 损坏 / 碎片率过高 / 索引失效。
-        支持 MVCC 回滚：重建失败自动回退到旧 version。"""
-
-    def refresh_indexes(self) -> str:
-        """投递 representation 变动后的增量索引更新任务。"""
-
-    # ===== 查询表现清单 =====
-    def list_representations(self) -> list[Representation]:
-        """列出所有 representation（含 status / quality / mtime）。"""
-
-    def get_representation(self, rep_type: str) -> Representation:
-        """获取指定 rep_type 的 representation（含 content / metadata）。"""
-
-    def list_pipelines(self) -> list[Pipeline]:
-        """列出已执行过的 pipeline（含运行历史）。"""
-
-    def list_indexes(self) -> list[Index]:
-        """列出已构建的索引（含索引状态、文件大小）。"""
-
-    def list_chunks(self, rep_type: str = None) -> list[Chunk]:
-        """列出可检索单元（来自 representations.lance）。"""
-
-    # ===== 血缘（Lineage）=====
-    def get_lineage(self, rep_type: str = None) -> LineageDAG:
-        """获取血缘 DAG（实时从文件结构推算）。"""
-
-    def get_upstream(self, rep_type: str) -> list[Representation]:
-        """获取指定 rep 的所有上游。"""
-
-    def get_downstream(self, rep_type: str) -> list[Representation]:
-        """获取指定 rep 的所有下游。"""
-
-    def cascade_invalidate(self, rep_type: str) -> None:
-        """级联失效：从指定 rep 开始，所有下游标 stale → 触发重建。"""
-
-    # ===== 状态管理 =====
-    def hide(self) -> None:
-        """隐藏：OSS Tag rag_status=hidden。检索默认不可见。"""
-
-    def show(self) -> None:
-        """显示：OSS Tag rag_status=enabled。"""
-
-    def delete(self) -> None:
-        """软删除：OSS Tag rag_status=deleted。文件保留，永不返回。"""
-
-    def restore(self) -> None:
-        """恢复：OSS Tag rag_status=enabled。"""
-
-    def update_tags(self, **tags) -> None:
-        """更新任意 OSS Tag（labels / ...）。"""
-
-    # ===== 检索（基于 representations.lance）=====
-    def search(
-        self,
-        query: str = None,
-        query_vector: list[float] = None,
-        rep_types: list[str] = None,
-        modalities: list[str] = None,
-        top_k: int = 10,
-        reranker: str = "rrf"
-    ) -> list[Chunk]:
-        """在该 Entity 内执行 hybrid search。"""
-
-    def grep(self, pattern: str, rep_types: list[str] = None) -> list[GrepHit]:
-        """在该 Entity 内执行文本匹配（带 metadata）。"""
-
-    # ===== 预览（基于 VFS）=====
-    def preview(self, rep_type: str, page: int = None) -> PreviewContent:
-        """预览指定 representation 的内容。"""
-
-    def perspectives(self) -> PerspectivesView:
-        """返回视角面板（所有可用 rep + 状态 + preview_url）。"""
-
-    # ===== 表格查询（基于 DuckDB + Parquet）=====
-    def to_parquet(self) -> str:
-        """将表格型 Entity 转为 Parquet 格式。
-        触发 Pipeline G（表格获取），产出 compile/table.parquet。
-        返回 OSS 路径。"""
-
-    def query_table(self, sql: str) -> list[dict]:
-        """通过 DuckDB 对该 Entity 的 table.parquet 执行 SQL 查询。
-        支持 SELECT / WHERE / GROUP BY / JOIN / 窗口函数。
-        返回 list of dicts。"""
-
-    def get_table_schema(self) -> dict:
-        """获取 table.parquet 的 schema（列名 + 类型 + 行数统计）。
-        通过 DuckDB 的 DESCRIBE + COUNT(*) 实现。"""
-
-    def get_table_stats(self) -> dict:
-        """获取 table.parquet 的统计信息（行数、列数、文件大小、空值率等）。
-        通过 DuckDB 的 SUMMARIZE 实现。"""
-
-    # ===== 生命周期 =====
-    def export(self) -> EntityBundle:
-        """导出整个 Entity 目录为可迁移包。"""
-
-    def destroy(self) -> None:
-        """物理删除：删除整个 OSS 目录。"""
-
-    def exists(self) -> bool:
-        """检查 Entity 是否存在（OSS 目录存在）。"""
-```
-
-**方法分组**：
-
-| 类别 | 方法 | 操作对象 |
-| --- | --- | --- |
-| **生成表现** | `generate_*` / `regenerate_*` | 触发 pipeline |
-| **生成索引** | `build_index*` / `rebuild_index*` / `rebuild_lance` | Lance 索引 / Lance 数据集 |
-| **查询清单** | `list_*` / `get_*` | 表现 / 流水线 / 索引 / chunk |
-| **血缘** | `get_lineage*` / `cascade_invalidate` | 血缘 DAG |
-| **状态** | `hide` / `show` / `delete` / `restore` / `update_tags` | OSS Tag |
-| **检索** | `search` / `grep` | representations.lance + OSS |
-| **表格查询** | `to_parquet` / `query_table` / `get_table_schema` / `get_table_stats` | DuckDB + compile/table.parquet |
-| **预览** | `preview` / `perspectives` | VFS |
-| **生命周期** | `export` / `destroy` / `exists` | OSS 目录 |
+> Entity 行为接口详见 §5 Pipeline 体系与 §6 搜索与检索。
 
 **Entity vs LanceDB 行**：
 
@@ -917,18 +748,8 @@ vector-lake/{ws}/{col}/{entity_id}/{stage}/{rep_basename}
 
 每个 representation 文件通过 **OSS Object Tagging** 携带业务元数据，**不再存血缘元数据**（血缘从目录层级推导）：
 
-| Tag Key | 示例值 | 说明 |
-| --- | --- | --- |
-| `rep_type` | `vlm_extracted_md` | 认知视角类型（与路径后缀冗余，用于过滤） |
-| `pipeline_id` | `pipeline_b` | 产出该 rep 的流水线 |
-| `transform` | `visual_recognize` | 具体变换方法 |
-| `modality` | `text` | 模态 |
-| `status` | `ready` | representation 状态 |
-| `model_version` | `qwen2vl_v3` | 产出该 rep 的模型版本 |
-| `entity_version` | `3` | 所属 Entity 版本 |
+> Representation Tag 9 字段详见 §4.6。
 
-> 共 7 个 Tag，在 OSS 10 个 Tag 限制内，预留 3 个空位用于 evolution。
-> 与之前 8 个 Tag 方案相比，去掉了 `derived_from`（从目录层级推导）。
 > 若未来需要复杂元数据（超过 10 个 Tag 或嵌套 JSON），可在同目录放 `.meta.json` sidecar，并用 Tag `status=meta_extended` 标记"查看 sidecar 获取完整元数据"。此为 v0.2+ 演进路径。
 
 **Representation 身份三元组（用于跨系统引用）**：
@@ -1164,31 +985,7 @@ IndexStep chunk_and_embed_text
 
 **Chunk layout 字段映射规则**：
 
-```python
-def map_layout_to_chunk(chunk_text: str, chunk_start: int, chunk_end: int,
-                        layout: LayoutJSON) -> ChunkLayout:
-    """将 layout_json 中与 chunk 区间 [start_pos, end_pos) 重叠的 blocks 映射到 chunk。"""
-    matched_blocks = []
-    for page in layout.pages:
-        for block in page.blocks:
-            # 区间重叠判定
-            if block.start_pos is not None and block.end_pos is not None:
-                if block.start_pos < chunk_end and block.end_pos > chunk_start:
-                    matched_blocks.append({
-                        "type": block.type,
-                        "level": block.get("level"),
-                        "text": block.text,
-                        "bbox": block.bbox,
-                    })
-    return ChunkLayout(
-        blocks=matched_blocks,
-        page_number=matched_blocks[0].get("page_number") if matched_blocks else None,
-        page_width=layout.pages[0].width if layout.pages else None,
-        page_height=layout.pages[0].height if layout.pages else None,
-        source_rep=layout.source_rep,
-        layout_version=layout.version,
-    )
-```
+> 映射逻辑：遍历 layout_json 中与 chunk 区间 `[start_pos, end_pos)` 重叠的 blocks，收集 type / level / text / bbox 等字段，组装为 ChunkLayout（含 page_number / page_width / page_height / source_rep / layout_version）。
 
 **排版对齐一致性保证**：
 
@@ -1413,7 +1210,7 @@ canonical_md#q3-pricing  ←→  page_image?page=7&bbox=72,120,540,144
 **核心决策**：
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
 2. **准零持久化元数据** — 运行时从 OSS Tag + 路径实时组装（零持久化运行）；但关键不可推导信息（`rag_status` / `labels` / `version`）以 sidecar 文件持久化（`.entity_manifest.json` + `.version_log.jsonl`），作为灾难恢复的 Ground Truth（详见 §5.12）。
-3. **两套 OSS Object Tagging** — Entity Tag（7个，打在 original 上）+ Representation Tag（7个，打在每个 rep 文件上），作为运行时加速缓存（Tag 可从 Ground Truth 重建）。
+3. **两套 OSS Object Tagging** — Entity Tag（7个，打在 original 上）+ Representation Tag（9个，打在每个 rep 文件上），作为运行时加速缓存（Tag 可从 Ground Truth 重建）。
 4. **VFS 实时扫描 prefix** 重建目录树 + 从**目录层级 + Pipeline 注册表**推导血缘 DAG，所有元数据从 OSS 实时获取。
 5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。每行 = 一个可检索单元（chunk），PK = `(entity_id, rep_type, chunk_index)`。
 
@@ -1569,14 +1366,14 @@ oss://bucket/vector-lake/ws_001/kb_001/abc123/extract/page_image/page_001.png
 
 **为什么 Representation 用 OSS Tag 而非 sidecar 文件**：
 
-| 维度 | OSS Tag (7个/rep文件) | Sidecar .meta.json |
+| 维度 | OSS Tag (9个/rep文件) | Sidecar .meta.json |
 | --- | --- | --- |
 | **文件数量** | 0 额外文件 | +N 个/Entity（80% 膨胀） |
 | **写入成本** | PutObjectTagging（不重写对象） | PutObject 小文件 |
 | **孤儿检测** | Tag 始终与对象绑定，删除对象 Tag 自动消失 | 需额外检测逻辑 |
 | **工具可见性** | OSS 控制台直接看 Tag | 需自定义工具 |
-| **Schema 灵活性** | 固定 7 字段，128B/value | 任意 JSON |
-| **Evolution** | 预留 3 个 Tag 空位 | JSON 加字段无限制 |
+| **Schema 灵活性** | 固定 9 字段，128B/value | 任意 JSON |
+| **Evolution** | 预留 1 个 Tag 空位 | JSON 加字段无限制 |
 
 > **Sidecar 演进路径**：若未来需要超过 10 个 Tag 或复杂嵌套 JSON，可在 representation 文件同目录放 `{rep_basename}.meta.json`，并用 Tag `status=meta_extended` 标记"查看 sidecar 获取完整元数据"。此设计参考 FAR (File-Augmented Retrieval) 和 Unity Engine 的 .meta sidecar 模式。
 
@@ -1644,120 +1441,39 @@ ossutil put-object-tagging --bucket ... --key .../ocr.md --tagging '{"Tags":[{"K
 
 每行 = 一个可检索单元。一个 `canonical_md` representation 切成 50 行，每行有自己的 text + vector。`chunk_index` 区分同一 representation 的不同切分段。
 
-##### PyArrow Schema 定义
+##### representations.lance 字段定义
 
-```python
-import pyarrow as pa
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `entity_id` | utf8 | ✓ | 所属 Entity |
+| `rep_type` | utf8 | ✓ | 认知视角类型（canonical_md / ocr_text / …） |
+| `chunk_index` | int32 | ✓ | 同一 rep 的切分序号 |
+| `entity_version` | int32 | ✓ | 冗余加速（权威值在 OSS Tag） |
+| `pipeline_id` | utf8 | ✓ | 产出流水线 |
+| `transform` | utf8 | ✓ | parse / ocr / vlm / llm_compile |
+| `modality` | utf8 | ✓ | text / image / audio / table |
+| `model_version` | utf8 | | 产出该 rep 的模型版本 |
+| `text` | utf8 | ✓ | 原文（建 FTS 索引） |
+| `embedding_text` | utf8 | | 向量化文本（可能与 text 不同） |
+| `start_pos` | int32 | ✓ | 在 rep 中的字符偏移 |
+| `end_pos` | int32 | ✓ | 在 rep 中的字符结束偏移 |
+| `token_count` | int32 | ✓ | token 数 |
+| `chunk_chars` | int32 | ✓ | 字符数 |
+| `page_number` | int32 | | 页码 |
+| `section_header` | utf8 | | 章节标题 |
+| `section_level` | int32 | | 章节层级 |
+| `anchor` | utf8 | | 锚点（HTML/PDF） |
+| `doc_title` | utf8 | | 文档标题 |
+| `image_uri` | utf8 | | 图片 OSS URI（modality=image） |
+| `audio_uri` | utf8 | | 音频 OSS URI（modality=audio） |
+| `table_data` | utf8 | | 表格 JSON（modality=table） |
+| `vector` | fixed_size_list\<float, 1024\> | ✓ | Jina V5 向量 |
+| `status` | utf8 | ✓ | active / stale / hidden / deleted |
+| `content_hash` | utf8 | | chunk 内容的 SHA-256 |
+| `created_at` | timestamp(us, UTC) | ✓ | 创建时间 |
+| `updated_at` | timestamp(us, UTC) | ✓ | 更新时间 |
 
-REPRESENTATIONS_SCHEMA = pa.schema([
-    # ── 主键 ──────────────────────────────────────────────
-    pa.field("entity_id", pa.utf8(), nullable=False),           # 所属 Entity
-    pa.field("rep_type", pa.utf8(), nullable=False),            # 认知视角类型
-    pa.field("chunk_index", pa.int32(), nullable=False),        # 同一 rep 的切分序号
-
-    # ── Entity 关联 ───────────────────────────────────────
-    pa.field("entity_version", pa.int32(), nullable=False),     # 冗余加速（权威值在 OSS Tag）
-
-    # ── Representation 元数据 ─────────────────────────────
-    pa.field("rep_type", pa.utf8(), nullable=False),            # canonical_md / ocr_text / ...
-    pa.field("pipeline_id", pa.utf8(), nullable=False),         # 产出流水线
-    pa.field("transform", pa.utf8(), nullable=False),           # parse / ocr / vlm / llm_compile
-    pa.field("modality", pa.utf8(), nullable=False),            # text / image / audio / table
-    pa.field("model_version", pa.utf8(), nullable=True),        # 产出该 rep 的模型版本
-
-    # ── 文本内容 ──────────────────────────────────────────
-    pa.field("text", pa.utf8(), nullable=False),                # 原文（建 FTS 索引）
-    pa.field("embedding_text", pa.utf8(), nullable=True),       # 向量化文本（可能与 text 不同）
-
-    # ── 定位信息 ──────────────────────────────────────────
-    pa.field("start_pos", pa.int32(), nullable=False),          # 在 rep 中的字符偏移
-    pa.field("end_pos", pa.int32(), nullable=False),            # 在 rep 中的字符结束偏移
-    pa.field("token_count", pa.int32(), nullable=False),        # token 数
-    pa.field("chunk_chars", pa.int32(), nullable=False),        # 字符数
-
-    # ── 文档结构（nullable，仅结构化文档有值）──────────────
-    pa.field("page_number", pa.int32(), nullable=True),         # 页码
-    pa.field("section_header", pa.utf8(), nullable=True),       # 章节标题
-    pa.field("section_level", pa.int32(), nullable=True),       # 章节层级
-    pa.field("anchor", pa.utf8(), nullable=True),               # 锚点（HTML/PDF）
-    pa.field("doc_title", pa.utf8(), nullable=True),            # 文档标题
-
-    # ── 多模态扩展（nullable，非文本模态有值）──────────────
-    pa.field("image_uri", pa.utf8(), nullable=True),            # 图片 OSS URI（modality=image）
-    pa.field("audio_uri", pa.utf8(), nullable=True),            # 音频 OSS URI（modality=audio）
-    pa.field("table_data", pa.utf8(), nullable=True),           # 表格 JSON（modality=table）
-
-    # ── 向量 ──────────────────────────────────────────────
-    pa.field("vector", pa.fixed_size_list(pa.float32(), 1024),  # Jina V5 维度
-             nullable=False),
-
-    # ── 状态 + 校验 ──────────────────────────────────────
-    pa.field("status", pa.utf8(), nullable=False),              # active / stale / hidden / deleted
-    pa.field("content_hash", pa.utf8(), nullable=True),         # chunk 内容的 SHA-256
-
-    # ── 时间戳 ────────────────────────────────────────────
-    pa.field("created_at", pa.timestamp("us", tz="UTC"), nullable=False),
-    pa.field("updated_at", pa.timestamp("us", tz="UTC"), nullable=False),
-])
-
-# 主键约束（Lance 不强制，应用层保证）
-# PRIMARY KEY = (entity_id, rep_type, chunk_index)
-```
-
-##### Pydantic Model 定义
-
-```python
-from lancedb.pydantic import LanceModel, Vector
-from datetime import datetime
-
-class RepresentationChunk(LanceModel):
-    # 主键
-    entity_id: str
-    rep_type: str
-    chunk_index: int
-
-    # Entity 关联
-    entity_version: int
-
-    # Representation 元数据
-    pipeline_id: str
-    transform: str
-    modality: str
-    model_version: str | None = None
-
-    # 文本内容
-    text: str
-    embedding_text: str | None = None
-
-    # 定位信息
-    start_pos: int
-    end_pos: int
-    token_count: int
-    chunk_chars: int
-
-    # 文档结构
-    page_number: int | None = None
-    section_header: str | None = None
-    section_level: int | None = None
-    anchor: str | None = None
-    doc_title: str | None = None
-
-    # 多模态扩展
-    image_uri: str | None = None
-    audio_uri: str | None = None
-    table_data: str | None = None
-
-    # 向量
-    vector: Vector(1024)  # Jina V5 维度
-
-    # 状态 + 校验
-    status: str = "active"
-    content_hash: str | None = None
-
-    # 时间戳
-    created_at: datetime
-    updated_at: datetime
-```
+> 主键约束（Lance 不强制，应用层保证）：PRIMARY KEY = (entity_id, rep_type, chunk_index)
 
 ##### 字段分组与用途
 
@@ -1802,35 +1518,7 @@ class RepresentationChunk(LanceModel):
 
 ##### 索引设计
 
-```python
-def create_all_indexes(table: lancedb.table.Table):
-    """为 representations.lance 创建所有索引。"""
-
-    # ── 1. 向量索引 ──────────────────────────────────────
-    # IVF_HNSW_SQ：IVF 分区 + HNSW 图 + 标量量化
-    # 适合：中等规模（1K-1M 行），低延迟，高召回
-    table.create_index(
-        column="vector",
-        index_type="IVF_HNSW_SQ",
-        metric="cosine",             # Jina V5 推荐 cosine
-        num_partitions=256,          # IVF 分区数（行数 / 1000 为参考）
-        replace=True,
-    )
-
-    # ── 2. 全文检索索引 ──────────────────────────────────
-    # BM25 + 分词，支持中英文
-    table.create_fts_index(
-        column="text",
-        replace=True,
-    )
-
-    # ── 3. 标量索引（过滤加速）───────────────────────────
-    for col in ["status", "rep_type", "modality", "entity_version"]:
-        table.create_scalar_index(
-            column=col,
-            replace=True,
-        )
-```
+> 三类索引：(1) 向量索引 `IVF_HNSW_SQ`（cosine 度量，Jina V5 推荐）；(2) 全文检索索引 BM25（`text` 列，支持中英文）；(3) 标量索引（`status` / `rep_type` / `modality` / `entity_version` 列，过滤加速）。
 
 **索引选择策略**：
 
@@ -1845,57 +1533,15 @@ def create_all_indexes(table: lancedb.table.Table):
 
 ##### 查询模式
 
-```python
-# ── 模式 1：语义检索（向量搜索）─────────────────────────
-results = table.search(query_vector) \
-    .where("status = 'active'") \
-    .where("modality = 'text'") \
-    .limit(20) \
-    .to_pandas()
-
-# ── 模式 2：全文检索（BM25）────────────────────────────
-results = table.search("定价策略", query_type="fts") \
-    .where("status = 'active'") \
-    .limit(20) \
-    .to_pandas()
-
-# ── 模式 3：混合检索（语义 + BM25 + RRF）───────────────
-from lancedb.rerankers import RRFReranker
-
-vector_results = table.search(query_vector).limit(50).to_list()
-fts_results = table.search(query_text, query_type="fts").limit(50).to_list()
-
-reranker = RRFReranker()
-results = reranker.rerank(vector_results, fts_results)
-
-# ── 模式 4：按 representation 过滤 ─────────────────────
-results = table.search(query_vector) \
-    .where("rep_type = 'ocr_text'") \
-    .where("status = 'active'") \
-    .limit(10) \
-    .to_pandas()
-
-# ── 模式 5：按变换方法过滤（只查直接提取的，不含 OCR/VLM）──
-results = table.search(query_vector) \
-    .where("transform = 'parse'") \
-    .where("status = 'active'") \
-    .limit(10) \
-    .to_pandas()
-
-# ── 模式 6：按页码定位 ─────────────────────────────────
-results = table.search(query_vector) \
-    .where("page_number = 3") \
-    .where("status = 'active'") \
-    .limit(5) \
-    .to_pandas()
-
-# ── 模式 7：多模态检索（文本 + 图片同一空间）────────────
-results = table.search(query_vector) \
-    .where("status = 'active'") \
-    .where("modality IN ('text', 'image')") \
-    .limit(20) \
-    .to_pandas()
-```
+| 模式 | 说明 | 典型过滤条件 |
+| --- | --- | --- |
+| 语义检索 | 向量搜索 | `status='active'`, `modality='text'` |
+| 全文检索 | BM25 关键词匹配 | `status='active'` |
+| 混合检索 | 语义 + BM25 + RRF 重排 | `status='active'` |
+| 按 Rep 过滤 | 限定 `rep_type` | `rep_type='ocr_text'` |
+| 按变换方法过滤 | 限定 `transform` | `transform='parse'` |
+| 按页码定位 | 限定 `page_number` | `page_number=3` |
+| 多模态检索 | 跨模态同一向量空间 | `modality IN ('text','image')` |
 
 ##### 数据生命周期
 
@@ -1947,53 +1593,6 @@ results = table.search(query_vector) \
 3. fan-out → 并行查询 N 个 Entity 的 Lance 表
 4. merge → 按 distance/score 排序，取 top_k
 5. 补充 Entity 元数据 → 从 OSS Tag 读取 name / labels 等
-```
-
-```python
-async def cross_entity_search(
-    query_vector: list[float],
-    workspace_id: str,
-    collection_id: str,
-    entity_types: list[str] | None = None,
-    labels: list[str] | None = None,
-    rep_types: list[str] | None = None,
-    top_k: int = 20,
-) -> list[dict]:
-    """跨 Entity 混合检索。"""
-
-    # 1. VFS 扫描 → 获取 enabled Entity 列表
-    entities = await vfs.list_entities(
-        workspace_id, collection_id,
-        filters={"rag_status": "enabled", "sync_state": "ready",
-                 "entity_type": entity_types, "labels": labels}
-    )
-
-    # 2. fan-out → 并行查询
-    import asyncio
-    tasks = []
-    for entity in entities:
-        lance_path = f"oss://.../{entity.entity_id}/representations.lance/"
-        table = lancedb.open_table(lance_path)
-        task = table.search(query_vector) \
-            .where(f"status = 'active'") \
-            .where(f"rep_type IN {rep_types}" if rep_types else "true") \
-            .limit(top_k) \
-            .to_list_async()
-        tasks.append(task)
-
-    all_results = await asyncio.gather(*tasks)
-
-    # 3. merge → 按 _distance 排序
-    merged = []
-    for entity, results in zip(entities, all_results):
-        for r in results:
-            r["entity_id"] = entity.entity_id
-            r["entity_name"] = entity.name
-            r["entity_labels"] = entity.labels
-            merged.append(r)
-
-    merged.sort(key=lambda x: x["_distance"])
-    return merged[:top_k]
 ```
 
 ##### Schema 演进策略
@@ -2068,85 +1667,9 @@ source/original (L0, raw)
 | "raw 变了，影响谁？" | `extract/` + `recognize/` + `compile/` 全部 | 精确到具体 rep_type |
 | "新增 recognize/xxx.md" | 上游一定是 `extract/` 下 | 查 Pipeline 注册表确定具体哪个 |
 
-**推导的 Python 实现**：
+**推导实现要点**：
 
-```python
-# 目录层级 → 血缘深度映射
-STAGE_DEPTH = {
-    "source": 0,    # 根节点
-    "extract": 1,   # 直接提取
-    "recognize": 2, # 识别/转写
-    "compile": 3,   # 知识编译
-}
-
-# Pipeline 注册表（代码内注册，v0.1 静态）
-PIPELINE_REGISTRY = {
-    "pipeline_a": {
-        "name": "直接提取",
-        "input_rep": "raw",
-        "output_reps": ["canonical_md", "plain_text"],
-        "output_stage": "extract",
-    },
-    "pipeline_b": {
-        "name": "视觉识别",
-        "input_rep": "raw",
-        "output_reps": ["page_image", "ocr_text", "vlm_md"],
-        "output_stage": "recognize",
-    },
-    "pipeline_d": {
-        "name": "知识编译",
-        "input_rep": "canonical_md",
-        "output_reps": ["mind_map", "summary", "graph_json", "wiki_md"],
-        "output_stage": "compile",
-    },
-    "pipeline_e": {
-        "name": "音频转写",
-        "input_rep": "audio_segment",
-        "output_reps": ["transcript", "transcript_segment"],
-        "output_stage": "recognize",
-    },
-}
-
-def build_lineage_dag(entity_id: str) -> dict:
-    """从目录层级 + Pipeline 注册表推导 Entity 的血缘 DAG。"""
-
-    # 1. 按层级扫描 Entity 目录
-    existing_reps = {}  # stage → set of rep_types
-    for stage in ["source", "extract", "recognize", "compile"]:
-        prefix = f"{entity_id}/{stage}/"
-        files = vfs.list_files(prefix)
-        rep_types = {infer_rep_type(f.path, stage) for f in files}
-        if rep_types:
-            existing_reps[stage] = rep_types
-
-    # 2. 遍历 Pipeline 注册表，找出存在的 rep 之间的派生关系
-    all_existing = set()
-    for reps in existing_reps.values():
-        all_existing.update(reps)
-
-    edges = []
-    for pid, pipeline in PIPELINE_REGISTRY.items():
-        input_rep = pipeline["input_rep"]
-        for output_rep in pipeline["output_reps"]:
-            if input_rep in all_existing and output_rep in all_existing:
-                edges.append((input_rep, output_rep, pid))
-
-    return {
-        "nodes": list(all_existing),
-        "edges": edges,
-        "stages": existing_reps,
-    }
-
-def infer_rep_type(oss_path: str, stage: str) -> str:
-    """从路径 + 目录层级推导 rep_type。"""
-    basename = os.path.basename(oss_path)
-    # 1. 优先匹配 §4.2 路径约定表
-    for rep_type, path_pattern in REP_TYPE_PATH_PATTERNS.items():
-        if re.match(path_pattern, basename):
-            return rep_type
-    # 2. fallback 到 OSS Tag rep_type
-    return get_object_tagging(oss_path).rep_type
-```
+> 目录层级 → 血缘深度映射：source=L0, extract=L1, recognize=L2, compile=L3。按层级扫描 Entity 目录获取 existing_reps，再遍历 Pipeline 注册表匹配 input_rep → output_reps 边，构建血缘 DAG。rep_type 推导优先匹配路径约定表，fallback 到 OSS Tag。
 
 **为什么从目录层级推导而非 OSS Tag**：
 
@@ -2340,18 +1863,7 @@ OSS 事件: staging/representations_v3.parquet Created
 
 **增量同步的幂等性**：
 
-```python
-# Lance manifest metadata 记录已同步的 Parquet 文件
-synced_files = lance.get_manifest_metadata("synced_parquet_files")
-# e.g. ["representations_v1.parquet", "representations_v2.parquet"]
-
-# 新 Parquet 文件列表
-new_files = [f for f in staging_files if f not in synced_files]
-
-# 只同步新文件，重复触发不会重复写入
-if not new_files:
-    return  # 幂等：无新变更，跳过
-```
+> Lance manifest metadata 记录已同步的 Parquet 文件列表，只同步新文件，重复触发不会重复写入。
 
 **增量同步的延迟保证**：
 
@@ -2435,63 +1947,11 @@ POST /entities/{id}/rebuild
 
 **Rebuild 的回滚机制**：
 
-```python
-def rebuild_with_rollback(entity_id: str):
-    """全量重建，支持回滚。"""
-
-    # 1. 记录快照
-    snapshot_version = get_lance_version(entity_id)
-
-    try:
-        # 2-7. 执行 rebuild 流程
-        new_version = do_rebuild(entity_id)
-
-        # 8. 验证
-        if not verify_rebuild(entity_id, new_version):
-            raise RebuildVerificationError("Row count mismatch")
-
-        # 9. 成功，更新 Tag
-        put_object_tagging(entity_id, {
-            "sync_state": "ready",
-            "sync_version": new_version,
-        })
-
-    except Exception as e:
-        # 回滚：切回旧 version
-        log.error(f"Rebuild failed: {e}, rolling back to v{snapshot_version}")
-        lance.rollback(entity_id, snapshot_version)
-        put_object_tagging(entity_id, {
-            "sync_state": "failed",
-            "sync_error": f"rebuild_failed: {str(e)[:100]}",
-        })
-```
+> Rebuild 前记录当前 Lance version 快照；重建成功则更新 OSS Tag sync_state=ready；失败则回滚到快照 version 并标记 sync_state=failed。
 
 **Rebuild vs Incremental Sync 选择策略**：
 
-```python
-def choose_sync_mode(entity_id: str) -> str:
-    """自动选择同步模式。"""
-
-    lance_stats = lance.get_stats(entity_id)
-
-    # 1. 碎片率检查
-    if lance_stats.num_fragments > 0:
-        avg_rows_per_fragment = lance_stats.num_rows / lance_stats.num_fragments
-        if avg_rows_per_fragment < 500:
-            return "rebuild"  # 碎片率过高
-
-    # 2. 累计增量次数检查
-    incremental_count = lance_stats.get_metadata("incremental_count", 0)
-    if incremental_count > 20:
-        return "rebuild"  # 增量次数过多，需要全量整理
-
-    # 3. 索引健康度检查
-    if not lance_stats.index_healthy:
-        return "rebuild"  # 索引退化
-
-    # 4. 默认增量
-    return "incremental"
-```
+> 自动选择逻辑：碎片率过高（avg < 500 行/fragment）→ rebuild；累计增量 > 20 次 → rebuild；索引退化 → rebuild；否则 → incremental。
 
 ##### 同步状态机（扩展版）
 
@@ -2614,207 +2074,35 @@ sync_state = idle | syncing | rebuilding | ready | failed | stale
 
 **Stage 1：Detect（变更检测）**
 
-```python
-def detect_changes(entity_id: str) -> ChangeSet:
-    """检测 Entity 目录的变更，决定是否需要同步。"""
-
-    oss_files = list_oss_files(entity_id)          # 实时扫
-    lance_meta = lance.get_manifest_metadata(entity_id)
-    tag = get_object_tagging(entity_id)            # 读 Entity OSS Tag
-
-    # 1. 找出未同步的 staging Parquet
-    synced_files = lance_meta.get("synced_parquet_files", [])
-    new_parquet = [f for f in oss_files.staging_parquet if f not in synced_files]
-
-    # 2. 找出被删除的 staging Parquet（已同步但 OSS 上不存在）
-    deleted_parquet = [f for f in synced_files if f not in oss_files.staging_parquet]
-
-    # 3. 找出 content_hash 变化的 raw（导致级联失效）
-    if oss_files.raw_hash != tag.content_hash:
-        return ChangeSet(action="full_rebuild", reason="content_hash_changed")
-
-    # 4. 找出需要更新状态的 representation（OSS Tag status 变化）
-    rep_status_changes = detect_rep_status_changes(entity_id)
-
-    return ChangeSet(
-        upsert=new_parquet,
-        delete=deleted_parquet,
-        status_updates=rep_status_changes,
-        action="incremental" if new_parquet or deleted_parquet or rep_status_changes else "noop"
-    )
-```
+> 扫描 staging/ 目录，对比 Lance manifest metadata 中已同步文件列表，计算变更集（新增 / 删除 / 替换 Parquet）。同时检测 raw content_hash 变化（触发 full_rebuild）和 Rep OSS Tag status 变化。
 
 **Stage 2：Lock（防止并发同步）**
 
-```python
-def acquire_sync_lock(entity_id: str, mode: str = "syncing") -> bool:
-    """原子获取同步锁，防止同一 Entity 并发同步。"""
-
-    tag = get_object_tagging(entity_id)
-    if tag.sync_state in ("syncing", "rebuilding"):
-        if is_sync_timeout(tag.sync_started_at, timeout=300):
-            log.warning("Sync timeout, force unlock")
-        else:
-            return False  # 拒绝
-
-    # CAS 更新 sync_state（通过 CopyObject + x-oss-copy-source-if-match）
-    cas_put_object_tagging(entity_id, {
-        "sync_state": mode,  # "syncing" 或 "rebuilding"
-    })
-    return True
-```
+> 原子获取同步锁：检查 OSS Tag sync_state，若为 syncing/rebuilding 则拒绝；通过 CopyObject + x-oss-copy-source-if-match 实现 CAS 更新 sync_state。超时 300s 强制解锁。
 
 **Stage 3：Transform（Parquet → Lance）**
 
-```python
-def transform_to_lance(entity_id: str, parquet_files: list[str]):
-    """把 staging Parquet 增量转为 Lance 格式。"""
-
-    # 1. 读取新增 Parquet
-    dfs = [read_parquet(f) for f in parquet_files]
-
-    # 2. Schema 对齐 + 类型转换（list<float> → fixed_size_list<float>）
-    combined = align_schema(concat(dfs))
-
-    # 3. 去重（按 representation_id + chunk_index）
-    combined = dedupe(combined, keys=["entity_id", "rep_type", "chunk_index"])
-
-    # 4. 追加写入 Lance
-    lance_path = f"oss://.../{entity_id}/representations.lance/"
-    lance.append(lance_path, combined, mode="append")
-```
+> 读取新增 staging Parquet，Schema 对齐 + 类型转换（list\<float\> → fixed_size_list\<float\>），按 (entity_id, rep_type, chunk_index) 去重，追加写入 Lance。
 
 **Stage 4：Delete（处理删除）**
 
-```python
-def delete_from_lance(entity_id: str, deleted_parquet: list[str]):
-    """删除 Lance 中属于已删除 Parquet 的行。
-
-    实现思路：
-    Lance schema 中不存 source_parquet 字段（避免冗余），
-    而是用 Lance manifest metadata 记录"每个 Parquet 文件 → 行 ID 范围"的映射。
-    删除某个 Parquet 时，从 manifest metadata 查行范围，再做 deletion。
-    """
-
-    lance_path = f"oss://.../{entity_id}/representations.lance/"
-
-    # 1. 从 manifest metadata 读取 Parquet → 行范围映射
-    manifest_meta = lance.get_manifest_metadata(lance_path)
-    parquet_to_rows = manifest_meta.get("parquet_to_row_ranges", {})
-    # e.g. {
-    #   "representations_v1.parquet": {"fragment_id": 1, "row_offset": 0, "row_count": 250},
-    #   "representations_v2.parquet": {"fragment_id": 2, "row_offset": 0, "row_count": 50},
-    # }
-
-    # 2. 对每个被删除的 Parquet，按行范围做 Lance deletion
-    for parquet_file in deleted_parquet:
-        if parquet_file in parquet_to_rows:
-            range_info = parquet_to_rows[parquet_file]
-            # Lance 支持按 fragment_id + offset 范围删除
-            lance.delete_rows(
-                lance_path,
-                fragment_id=range_info["fragment_id"],
-                row_offset=range_info["row_offset"],
-                row_count=range_info["row_count"],
-            )
-
-    # 3. 更新 manifest metadata（移除已删除 Parquet 的记录）
-    for parquet_file in deleted_parquet:
-        parquet_to_rows.pop(parquet_file, None)
-    lance.update_manifest_metadata(lance_path, {
-        "parquet_to_row_ranges": parquet_to_rows,
-    })
-```
-
-> **为什么不用 `source_parquet` 字段做查询**：
-> 1. Lance schema 不存 source_parquet 字段，避免冗余。
-> 2. 用 manifest metadata 记录行范围，删除时按范围操作更高效。
-> 3. Manifest metadata 在 Stage 3 写入时由 L1 → L2 同步流程更新。
+> Lance schema 不存 source_parquet 字段，用 manifest metadata 记录"Parquet → 行 ID 范围"映射。删除时按范围做 Lance deletion，并更新 manifest metadata。
 
 **Stage 5：Index（建/更新索引）**
 
-```python
-def update_indexes(entity_id: str):
-    """Lance 写入后建/更新索引。"""
-
-    lance_path = f"oss://.../{entity_id}/representations.lance/"
-    existing = lance.list_indices(lance_path)
-
-    # vector 索引（与 §4.6 索引设计保持一致：IVF_HNSW_SQ）
-    if "vector" not in existing:
-        lance.create_index(lance_path, column="vector",
-                          index_type="IVF_HNSW_SQ",
-                          num_partitions=256,
-                          metric="cosine")
-    else:
-        lance.optimize_index(lance_path, column="vector")  # 增量优化
-
-    # FTS 索引
-    if "text_fts" not in existing:
-        lance.create_fts_index(lance_path, column="text")
-
-    # Scalar 索引
-    for col in ["status", "rep_type", "modality"]:
-        if col not in existing:
-            lance.create_scalar_index(lance_path, column=col)
-```
+> Lance 写入后建/更新三类索引：向量索引 IVF_HNSW_SQ（cosine）、FTS 索引（text 列）、标量索引（status / rep_type / modality）。已有索引则增量优化。
 
 **Stage 6：Compact（碎片整理，自动触发）**
 
-```python
-def maybe_compact(entity_id: str):
-    """碎片率过高时自动触发 compact 或 rebuild。"""
-
-    lance_path = f"oss://.../{entity_id}/representations.lance/"
-    stats = lance.get_stats(lance_path)
-
-    fragment_count = stats.num_fragments
-    row_count = stats.num_rows
-
-    # 阈值：平均每个 fragment 少于 500 行就整理
-    if row_count / fragment_count < 500:
-        log.info(f"Compacting {entity_id}: {fragment_count} fragments, {row_count} rows")
-        lance.compact(lance_path)  # 合并 fragment，物理重写
-```
+> 碎片率过高时（平均每个 fragment < 500 行）自动触发 compact，合并 fragment 并物理重写。
 
 **Stage 7：Atomic Switch（原子切换）**
 
-```python
-def atomic_publish(entity_id: str, synced_parquet_files: list[str]):
-    """Lance 原生 MVCC，原子切换版本。"""
-
-    lance_path = f"oss://.../{entity_id}/representations.lance/"
-
-    # 1. commit 新 version
-    new_lance_version = lance.commit(lance_path)
-
-    # 2. 更新 Lance manifest metadata（记录已同步的 Parquet 文件）
-    lance.update_manifest_metadata(lance_path, {
-        "synced_parquet_files": synced_parquet_files,
-        "last_sync_at": now().isoformat(),
-    })
-
-    # 3. 更新 OSS Tag（指向新 version）
-    put_object_tagging(entity_id, {
-        "sync_state": "ready",
-        "sync_version": new_lance_version,
-    })
-
-    # 4. 旧 Lance version 保留 5 个（回滚窗口）
-    schedule_cleanup(lance_path, keep_versions=5)
-```
+> Lance 原生 MVCC 原子切换：commit 新 version → 更新 manifest metadata（记录已同步 Parquet + last_sync_at）→ 更新 OSS Tag sync_state=ready → 旧 version 保留 5 个（回滚窗口）。
 
 **Stage 8：Cleanup（清理 staging）**
 
-```python
-def cleanup_staging(entity_id: str, synced_files: list[str]):
-    """已同步的 staging Parquet 清理。"""
-
-    for f in synced_files:
-        # 保留最近 1 个版本（debug 用），删除更早版本
-        if not is_latest_version(f):
-            delete_object(f.oss_path)
-```
+> 已同步的 staging Parquet 保留最近 1 个版本（debug 用），删除更早版本。
 
 ##### 失败处理
 
@@ -2828,26 +2116,11 @@ def cleanup_staging(entity_id: str, synced_files: list[str]):
 
 **幂等性保证**：
 
-```python
-# 同一变更多次同步，结果一致
-sync(entity_id, change_set)  # 第 1 次
-sync(entity_id, change_set)  # 第 2 次，幂等
-
-# 实现：
-# 1. Lance manifest metadata 记录已同步的 Parquet 文件列表
-# 2. 重复 append 会触发 dedupe（entity_id + rep_type + chunk_index 主键）
-# 3. 重复 delete 是幂等的（Lance deletion vector 重复标记无副作用）
-```
+> 同一变更多次同步结果一致。实现：(1) Lance manifest metadata 记录已同步 Parquet 文件列表；(2) 重复 append 触发 dedupe（主键去重）；(3) 重复 delete 幂等（Lance deletion vector 重复标记无副作用）。
 
 **断点续传**：
 
-```python
-def resume_sync(entity_id: str):
-    tag = get_object_tagging(entity_id)
-    if tag.sync_state == "failed":
-        failed_stage = tag.sync_error  # e.g. "stage_4_index"
-        sync_from_stage(entity_id, failed_stage)
-```
+> sync 失败后，从 OSS Tag sync_error 记录的失败 stage 恢复继续。
 
 ##### 监控指标
 
@@ -3174,7 +2447,7 @@ Reconciler 周期（每 15 min）
 - Index 重建失败不影响 Rep（两阶段独立）
 - 两个 Phase 可以并行运行在不同 Entity 上（Entity A 的 Rep 校验 和 Entity B 的 Index 校验不冲突）
 
-#### 5.9.3 Phase 3：Projector 一致性校验
+#### 5.9.4 Phase 3：Projector 一致性校验
 
 ```text
 Reconciler 周期（每 15 min）— Phase 3（在 Phase 1+2 完成后）
@@ -3521,195 +2794,17 @@ v0.1 策略：全量扫描（简单可靠），但增加 reconcile_entities_scan
   Tag 写入失败不影响 .meta.json（下次 Reconciler 从 .meta.json 重建 Tag）
 ```
 
-#### 5.12.9 成熟项目参照：事务日志 + 原子指针交换（v0.2）
+#### 5.12.9 成熟项目参照与演进路线
 
-> **设计目标**：解决 v0.1 元数据架构在"原子性、变更历史、大规模扫描"上的不足。参照 **Delta Lake**、**Apache Iceberg**、**lakeFS**、**Lance** 4 个成熟数据湖项目的设计。
+> v0.1 采用 sidecar 持久化 + Reconciler 兜底方案；以下为 v0.2/v0.3 演进参照。
 
-**核心改造**：引入 **`_current` 指针 + `_log/` 事务日志 + `_manifest/` 快速索引** 三个组件。
-
-```text
-{entity_id}/
-  ├─ _current                                ← L1: 当前状态指针（原子交换）
-  │                                            内容：{ "log_offset": "/_log/000000000101.json",
-  │                                                   "manifest_version": 101,
-  │                                                   "schema_version": 2 }
-  │
-  ├─ _log/                                   ← L2: 事务日志（参考 Delta _delta_log）
-  │   ├─ 000000000000.json                   ← append-only 提交日志
-  │   ├─ 000000000001.json
-  │   ├─ ...
-  │   └─ 000000000100.checkpoint.jsonl       ← 周期 Checkpoint（参考 Delta）
-  │
-  ├─ _manifest/                              ← L3: 快速查找索引（参考 Iceberg Manifest）
-  │   ├─ entity.json                         ← Entity 元数据（rag_status, labels, version, schema_version）
-  │   ├─ reps.jsonl                          ← 所有 Rep 列表 + 列级统计（替代"每次 LIST prefix"）
-  │   ├─ indexes.jsonl                       ← 所有 Index 列表
-  │   └─ edges.jsonl                         ← 所有 Edge 列表
-  │
-  ├─ source/                                 ← 实际数据
-  └─ ...
-```
-
-**事务日志格式**（每行一个 JSON action，参考 Delta Lake）：
-
-```json
-{"txn_id": 101, "ts": "2026-06-06T10:00:00Z", "action": "add",      "rep": {"path": "extract/canonical.md", "rep_type": "canonical_md", "content_hash": "sha256:abc", "size": 12345}}
-{"txn_id": 102, "ts": "2026-06-06T10:01:00Z", "action": "remove",   "rep": "recognize/ocr_text.md"}
-{"txn_id": 103, "ts": "2026-06-06T10:02:00Z", "action": "stale",    "rep_type": "ocr_text", "reason": "raw_update", "upstream_hash": "sha256:def"}
-{"txn_id": 104, "ts": "2026-06-06T10:03:00Z", "action": "index_built", "index_type": "semantic", "build_from_hash": "sha256:combined"}
-{"txn_id": 105, "ts": "2026-06-06T10:04:00Z", "action": "checkpoint", "version": 100, "manifest": "/_log/000000000100.checkpoint.jsonl"}
-```
-
-**写入协议**（基于 Iceberg 原子指针交换）：
-
-```text
-RepStep 写入流程（新协议）：
-  1. 写 Rep 文件 → /extract/canonical.md
-  2. 写事务日志 → /_log/000000000101.json（append，Conditional PUT if-match）
-  3. 更新 _manifest → /_manifest/reps.jsonl 追加一行
-  4. 原子交换 _current → PutObject with if-match on _current.etag
-     ├─ 成功：新版本生效
-     └─ 失败：旧版本继续生效，下次重试（写入幂等）
-
-读取流程（新协议）：
-  1. 读 /_current → 拿到当前 manifest version
-  2. 读 /_manifest/reps.jsonl（O(1) 拿到所有 Rep 列表）
-  3. 读具体 Rep 文件
-```
-
-**Checkpoint 协议**（参考 Delta Lake）：
-
-```text
-每 100 次 commit 触发一次 Checkpoint：
-  1. 重放最近 100 次 commit
-  2. 合并为单一 checkpoint.jsonl（包含所有 active Rep + Index + Edge）
-  3. 写 /_log/000000000100.checkpoint.jsonl
-  4. 原子交换 _current → 指向 checkpoint
-  5. 历史 commit 保留（用于 time travel / 灾难恢复）
-```
-
-**关键优势**：
-- **完整变更历史**：事务日志记录所有 Entity/Rep/Index 状态变更
-- **原子性**：`_current` 指针的 compare-and-swap 保证 readers 永远看到 consistent snapshot
-- **O(1) 状态查询**：读 `_manifest/reps.jsonl` 替代"全量 LIST prefix"
-- **Time Travel**：通过指定 `_log/N.json` 回放到 Entity 的某个历史状态
-- **灾难恢复**：从最近 checkpoint + 后续 commit 重放 = 完整重建
-
-#### 5.12.10 成熟项目参照：Merkle 树血缘（v0.3）
-
-> **设计目标**：把血缘关系从"每次重新计算"改为"显式持久化 + 内容寻址"。参考 **lakeFS Graveler** 的 2 层 Merkle 树。
-
-```text
-Entity Lineage Merkle Tree
-  └─ Root (sha256 of all children)
-       ├─ rep:raw              → sha256(content_hash)
-       ├─ rep:canonical_md     → sha256(content_hash)
-       │    └─ upstream: raw   → sha256(content_hash)
-       └─ rep:ocr_text         → sha256(content_hash)
-            └─ upstream: page_image → sha256(content_hash)
-```
-
-**存储**：`{entity_id}/_lineage/ranges.jsonl`（Merkle 树序列化）
-
-**优势**：
-- 血缘关系**显式持久化**为内容寻址
-- Diff 算法 O(diff_size) 而非 O(total_size)
-- 跨 Entity 血缘追踪更高效
-- 支持"零拷贝" Entity 快照（复用未修改的 Rep）
-
-**借鉴项目**：
-- **lakeFS Graveler**：2 层 Merkle 树（Meta-Range → Ranges），Commit 之间复用未修改的 Ranges
-- **Git**：blob 树结构，commit 之间复用未修改的 blob
-
-#### 5.12.11 成熟项目参照：三层元数据架构（v0.2）
-
-> **设计目标**：避免"100K+ Entity 规模下全量扫描 prefix 慢"。参考 **Apache Iceberg** 的 Catalog → metadata.json → Manifest List → Manifest → Data File 三层架构。
-
-```text
-L0: Catalog (workspace 级)
-    └─ {collection_id}.json → 指向 _current 指针
-
-L1: _current (Entity 级)
-    └─ { "log_offset": "...", "manifest_version": 101 }
-
-L2: _log/ (Entity 级，append-only)
-    └─ 000000000000.json ... 000000000100.checkpoint.jsonl
-
-L3: _manifest/ (Entity 级，快速索引)
-    └─ entity.json + reps.jsonl + indexes.jsonl + edges.jsonl
-```
-
-**每层作用**：
-- **L0 Catalog**：跨 Entity 索引，workspace 级 metadata
-- **L1 _current**：Entity 当前快照指针（原子交换）
-- **L2 _log**：变更历史（time travel / 灾难恢复）
-- **L3 _manifest**：当前活跃状态快速查询（替代 prefix 扫描）
-
-**与 Iceberg 的对应**：
-| Iceberg | Vector-Lake |
-|---|---|
-| Catalog pointer | L0 `{collection_id}.json` |
-| metadata.json | L1 `_current` + L2 `_log` |
-| Manifest List | L3 `_manifest/reps.jsonl` |
-| Manifest File | L3 `_manifest/reps.jsonl` 单行 |
-| Data File | `extract/canonical.md` 等实际数据 |
-
-#### 5.12.12 成熟项目参照：MVCC + 不可变 Manifest（v0.2）
-
-> **设计目标**：让 Entity-level Manifest 显式化，作为 Entity 的"Truth of State"。参考 **Lance Manifest + Delta + Iceberg** 共同模式。
-
-**核心原则**：
-- 每次写入产生**新**的 Manifest 项，旧 Manifest 项保留
-- 原子协议：先写 Manifest → 再 atomic swap pointer
-- 读者看到 consistent snapshot（基于 manifest version）
-- Time Travel：通过指定旧 manifest version 读取历史
-
-**与 PRD 现有 §5.10 Index Status 的关系**：
-- §5.10 的 `index_status` / `index_built_from_hash` 存在 Lance dataset custom metadata
-- v0.2 改进：Entity 级 Manifest（`_manifest/indexes.jsonl`）作为 Truth of State
-- Lance dataset custom metadata 仅作为快速缓存
-- Manifest 写入协议：先写 Lance → 再写 `_manifest`（如果失败可重建）
-
-#### 5.12.13 成熟项目参照：Schema Evolution 规则（v0.3）
-
-> **设计目标**：明确 Entity/Rep schema 的演进规则。参考 **Delta + Iceberg + Lance** 三家共同设计。
-
-**Entity Schema 演进规则**：
-
-```text
-v0.1 初始 Entity Schema
-  ├─ entity_type: document | table | image | audio | video
-  ├─ name: string
-  ├─ content_hash: string
-  └─ version: int
-
-v0.2 Schema Evolution（加 entity_type: webpage）
-  → 旧 Entity 不受影响（向后兼容）
-  → 新 Entity 可用新 entity_type
-  → _manifest/entity.json 记录 schema_version
-  → 旧读卡器忽略未知 entity_type（视为不可处理）
-```
-
-**Rep Schema 演进规则**：
-
-```text
-v0.1 Rep Tag: 7 个字段（rep_type, pipeline_id, transform, modality, status, model_version, entity_version）
-
-v0.2 Rep Schema Evolution（加 sync_state 字段）
-  → 旧 Rep Tag 自动补全默认 sync_state=ready（Conditional Update）
-  → _manifest/reps.jsonl 记录 schema_version
-  → 旧读卡器忽略未知字段
-```
-
-**Lance Schema 演进规则**（§15 R4 已存在）：
-- 所有表带 schema_version
-- 变更走 migration
-- 兼容性规则：向后兼容（读旧 schema 读新数据）、向前兼容（读新 schema 读旧数据）
-
-**Schema Checkpoint**（参考 Iceberg）：
-- 定期冻结 schema snapshot
-- 加速查询（不必每次解析 schema）
-- 与 Log Checkpoint 一起触发
+| 演进方向 | 参照项目 | 核心思路 | 目标版本 |
+| --- | --- | --- | --- |
+| 事务日志 + 原子指针交换 | Delta Lake / Iceberg | 每次写入生成 commit 文件（JSON），原子交换 manifest 指针；读路径只解析最新指针 | v0.2 |
+| Merkle 树血缘 | lakeFS Graveler | MetaRange → Range → Record 三层 Merkle，任意层级内容变更向上传播根哈希 | v0.3 |
+| 三层元数据架构 | Iceberg Manifest List | Manifest List → Manifest → Data File 三层，支持分区裁剪 + 文件级统计 | v0.2 |
+| MVCC + 不可变 Manifest | Lance spec | 每个 version 是不可变 Manifest（JSON），指向一组不可变 Data Fragment；快照隔离 | v0.2 |
+| Schema Evolution | Iceberg / Avro | 字段 ID 永久绑定 + 映射层（field_id → column_name），支持加列/删列/改名/改类型 | v0.3 |
 
 #### 5.12.14 实施路径与 v0.1/v0.2 边界
 
@@ -3926,66 +3021,11 @@ def cascade_invalidate(entity_id: str, changed_rep_type: str):
 
 #### 5.14.3 变动追踪（Tracking）
 
-**两层日志体系**：
-
-```text
-L1: .version_log.jsonl（Entity 级，v0.1 已有）
-  - 仅记录 Entity 级别版本变化
-  - 持久化在 Entity 目录
-  - 用途：Entity 时间线 / 回溯
-
-L2: _log/事务日志（v0.2 引入，§5.12.9）
-  - 记录所有 Rep/Index/Edge/Projector 状态变更
-  - 持久化在 _log/ 目录（v0.2 启用）
-  - 用途：全量审计 / Time Travel
-```
-
-**v0.1 简化追踪方案**：
-
-| 操作 | 追踪方式 | 字段 |
-| --- | --- | --- |
-| Entity 创建 | `.entity_manifest.json` 初始化 | `created_at`, `version=1` |
-| Entity 变更 | `.version_log.jsonl` 追加 | `txn_id`, `ts`, `action`, `version` |
-| Rep 创建/更新 | Rep Tag + `.version_log.jsonl` | `rep_type`, `content_hash`, `pipeline_id` |
-| Rep 状态变化 | Rep Tag + `.version_log.jsonl` | `old_status` → `new_status` |
-| Index 重建 | Lance dataset metadata + `.version_log.jsonl` | `index_type`, `build_from_hash` |
-| Projector 同步 | Projector 目录 `.meta.json` | `last_sync`, `last_rep_hash` |
+> v0.2 待展开。核心思路：基于 L1 version_log 和 L2 _log 实现变动事件的有序记录与查询。
 
 #### 5.14.4 变动通知（Notification）
 
-**4 个通知目标**：
-
-```text
-变动发生
-  │
-  ├── → Reconciler（周期任务，下一次扫描时检测）
-  │     └─ 用于最终一致性兜底
-  │
-  ├── → Worker（通过 Redis Streams 消息，立即）
-  │     └─ 用于实时处理 Pipeline 重建
-  │
-  ├── → Projector（按配置，可选）
-  │     └─ 用于外部消费者同步更新
-  │
-  └── → Edge Resolver（仅 Rep 内容变动）
-        └─ 用于评估跨 Entity 引用
-```
-
-**消息格式**（Redis Streams）：
-
-```json
-{
-  "event_type": "change_detected",
-  "change_class": "C1/C2/C3/C4/C5/C6/C7",
-  "entity_id": "abc123",
-  "scope": "raw/rep/index/entity/projector",
-  "target": "raw|rep:canonical_md|index:semantic",
-  "old_hash": "sha256:aaa",
-  "new_hash": "sha256:bbb",
-  "ts": "2026-06-06T10:00:00Z",
-  "trace_id": "tr_xxx"
-}
-```
+> v0.2 待展开。核心思路：变动事件通过 Redis Streams 推送给 Reconciler/Worker/Projector 等订阅方。
 
 #### 5.14.5 变动回滚（Rollback）
 
@@ -4006,90 +3046,19 @@ L2: _log/事务日志（v0.2 引入，§5.12.9）
 
 #### 5.14.6 变动冲突（Conflict）
 
-**冲突场景**：
-
-| 场景 | 检测 | 解决 |
-| --- | --- | --- |
-| **同一 Entity 并发 Raw 写入** | RepPipeline-level 锁（§6.9.2） | Last-writer-wins，Reconciler 兜底 |
-| **同一 RepPipeline 并发重建** | RepPipeline-level 锁 | 后到者等待或跳过（Reconciler 兜底） |
-| **跨 Entity 并发 Edge 引用** | Edge 乐观锁（`expected_version`） | 失败者重试 |
-| **Raw 写入 + Rep 重建同时** | 锁 + 版本检查 | 锁住后再校验，必要时回滚 |
-| **Projector 重建 + Rep 重建同时** | Projector-level 锁 | 锁住后再校验 |
-
-**冲突解决原则**：
-1. **锁优先**：同一 scope 内用分布式锁串行化
-2. **版本兜底**：跨 scope 通过 content_hash + version 校验
-3. **Reconciler 终极裁决**：所有冲突以最终 Reconciler 扫描结果为准
+> v0.2 待展开。核心思路：多写冲突场景（同 Entity 并发、跨 Entity 级联）的检测与解决策略。
 
 #### 5.14.7 变动回放（Replay / Time Travel）
 
-**v0.1 能力（基础）**：
-
-```python
-# 查询 Entity 在指定时间的状态快照
-GET /entities/{id}?at=2026-06-01T10:00:00Z
-  → 返回该时间点的 entity 快照 + 当时 active 的 Rep 列表
-```
-
-**v0.2 能力（事务日志驱动）**：
-
-```python
-# Time Travel：查询历史快照
-GET /entities/{id}/snapshot?at=2026-06-01T10:00:00Z
-  → 从 _log/ 事务日志反演 + 当时的 Rep 文件 + 当时的 Index 版本
-
-# Diff：对比两个时间点
-GET /entities/{id}/diff?from=2026-06-01T00:00:00Z&to=2026-06-06T00:00:00Z
-  → 返回 Rep/Index/Edge/Projector 的所有变更
-```
-
-**v0.3 能力（Time Travel API 完整）**：见 §5.12.10。
+> v0.2 待展开。核心思路：基于 version_log 的 Time Travel 查询，支持回溯到任意历史版本。
 
 #### 5.14.8 批量变动（Batch Operations）
 
-**3 种批量场景**：
-
-| 场景 | 优化策略 | API |
-| --- | --- | --- |
-| **批量导入**（如 1000 个文件） | 分片并发（每批 50） + RepPipeline 复用 + Index 批量更新 | `POST /entities/batch` |
-| **批量重打标签** | 直接更新 Entity Tag 批量版本（不触发 Rep 重建） | `POST /entities/batch_update_tags` |
-| **批量删除** | 软删除批量标记 + 异步物理清理（§5.10.3） | `POST /entities/batch_delete` |
-
-**批量 API 响应格式**：
-
-```json
-{
-  "batch_id": "batch_001",
-  "total": 1000,
-  "succeeded": 950,
-  "failed": 50,
-  "details": [
-    {"entity_id": "abc001", "status": "success"},
-    {"entity_id": "abc002", "status": "failed", "error": "PIPELINE_STEP_FAILED"}
-  ],
-  "duration_seconds": 120,
-  "retry_failed": true  // 自动重试失败项
-}
-```
+> v0.2 待展开。核心思路：批量 Entity 的变动检测、分类与处理优化。
 
 #### 5.14.9 跨 Entity 变动（Cross-Entity Change）
 
-**触发场景**：
-- Entity A 的 Rep 引用了 Entity B（Edge / wikilink / 引用关系）
-- Entity B 变化 → Entity A 中引用该内容的 Rep 是否需要重建？
-
-**决策矩阵**：
-
-| Edge 类型 | Entity B 变化时 | Entity A 的处理 |
-| --- | --- | --- |
-| **强引用**（数据引用，如数据血缘） | 立即标 Entity A 中依赖 Rep 为 stale | 触发 Rep 重建 |
-| **弱引用**（展示引用，如 wikilink） | 不重建 Rep；只更新 wikilink 渲染 | 触发 Projector 同步 |
-| **嵌入引用**（内容被复制到 A） | 不重建（数据已固化在 A） | 无操作 |
-
-**实现机制**：
-- Edge 包含 `link_type: strong/weak/embedded`
-- Entity B 重建后 Reconciler 扫描所有引用 B 的 Edge
-- 按 `link_type` 决定是否级联到 A
+> v0.2 待展开。核心思路：Edge 级联变动（如 graph_json 中 cites 关系变更）的传播机制。
 
 #### 5.14.10 投影端变动（Projector Sync）
 
@@ -4125,29 +3094,7 @@ Projector Listener（订阅 Redis Streams change_detected 事件）
 
 #### 5.14.11 变动 SLA 与可观测性
 
-**SLA 指标**：
-
-| 指标 | v0.1 目标 | v0.2 目标 | 监控 |
-| --- | --- | --- | --- |
-| 变动检测延迟 P99 | < 1s（API）/ < 15min（Reconciler 兜底） | < 1s（OSS 事件）/ < 1min（Reconciler） | Prometheus `change_detection_lag_seconds` |
-| Rep 重建延迟 P99 | < 5min | < 2min | Prometheus `rebuild_duration_seconds{rep_type}` |
-| Index 重建延迟 P99 | < 30min（10K Entity） | < 10min | Prometheus `index_rebuild_duration_seconds` |
-| 跨 Entity 影响评估 | < 10s（10K Edge） | < 1s | Prometheus `cross_entity_eval_duration_seconds` |
-| 批量导入吞吐 | 100 Entity/min | 500 Entity/min | Prometheus `batch_throughput` |
-
-**Observability Endpoint**：
-
-```python
-GET /changes/stats
-  → {
-      "detected_last_hour": 1234,
-      "rebuilding": 5,
-      "stale_reps": 23,
-      "stale_indexes": 2,
-      "pending_projector_sync": 18,
-      "lag_p99_seconds": 12.3
-    }
-```
+> v0.2 待展开。核心思路：变动检测延迟、传播延迟、重建完成时间等 SLA 指标与告警。
 
 ### 5.15 Watch Mode（自动构建模式）
 
@@ -4924,209 +3871,15 @@ watch_mode:
 
 ##### 5.15.11.5 多 Watch Strategy 冲突
 
-**典型场景**：用户误配置两个 Watch Strategy 监听**相同或重叠的 prefix**。
-
-**示例冲突**：
-
-```yaml
-watch_strategies:
-  - strategy_id: prod-incoming            # 监听 incoming/
-    prefix: incoming/
-    ingest_strategy: standard_doc
-
-  - strategy_id: prod-incoming-shadow     # 也监听 incoming/（用户误配）
-    prefix: incoming/
-    ingest_strategy: wps_doc               # 不同 Ingest Strategy
-```
-
-**问题**：同一个文件 `incoming/x.pdf` 会被两个 Watch Strategy **同时处理**，可能产生两个不同 entity_id 的 Entity（因为 Ingest Strategy 命名规则不同），造成数据混乱。
-
-**检测与处理**：
-
-| 启动时 | 运行中 |
-| --- | --- |
-| 启动校验时检测重叠 prefix，**报错**并阻止启动（除非显式 `allow_conflict: true`） | 运行中接受 PATCH 创建新策略，仍做重叠检测 |
-| 报错信息：`[VL-WATCH-CONFLICT] prefix 'incoming/' is also watched by 'prod-incoming'` | API 返回 409 Conflict |
-
-**显式允许冲突模式**（高级用户，多路处理同文件）：
-
-```yaml
-watch_strategies:
-  - strategy_id: prod-incoming-text
-    prefix: incoming/
-    ingest_strategy: standard_doc          # 文本提取
-    conflict_policy: allow                 # ← 显式声明允许同文件多路处理
-
-  - strategy_id: prod-incoming-vision
-    prefix: incoming/
-    ingest_strategy: wps_doc                # 视觉识别（仅 WPS）
-    file_filter:
-      extensions: [".wps", ".et"]          # ← 通过文件后缀过滤避免真冲突
-    conflict_policy: allow
-```
-
-**冲突解决原则**：
-
-1. **默认拒绝**：启动时检测到重叠 → 拒绝启动
-2. **显式 opt-in**：必须 `allow_conflict: true`
-3. **避免真冲突**：即使 opt-in，也建议用 `file_filter.extensions` 区分文件范围
-4. **审计记录**：所有 `allow_conflict: true` 的策略写到审计日志，定期 review
-
-**子目录（父子 prefix）重叠**：
-
-> `prefix: incoming/` 和 `prefix: incoming/docs/` 是**父子关系**，不是同级重叠，但会导致 `incoming/docs/x.pdf` 被**两个 Watch Strategy 同时处理**。
-
-```yaml
-watch_strategies:
-  - strategy_id: all-incoming               # 监听 incoming/（父）
-    prefix: incoming/
-    ingest_strategy: standard_doc
-
-  - strategy_id: docs-only                  # 监听 incoming/docs/（子）
-    prefix: incoming/docs/
-    ingest_strategy: wps_doc
-```
-
-**检测规则**：
-
-| 关系 | 检测 | 处理 |
-| --- | --- | --- |
-| **同级重叠**（`incoming/` vs `incoming/`） | 启动时报错 | 需 `allow_conflict: true` |
-| **父子 prefix**（`incoming/` vs `incoming/docs/`） | 启动时**警告**（不阻止） | 子 prefix 的 Watch Strategy 自动排除父 prefix 已处理的文件（通过 `processed_by` 去重） |
-
-**父子 prefix 去重机制**：
-
-```python
-def should_process(watch_strategy, oss_path):
-    """判断文件是否应由当前 Watch Strategy 处理"""
-    # 1. 检查是否有更精确（更长 prefix）的 Watch Strategy 匹配
-    matching_strategies = find_matching_strategies(oss_path)
-    if len(matching_strategies) > 1:
-        # 选择 prefix 最长（最精确）的 Watch Strategy
-        best = max(matching_strategies, key=lambda s: len(s.prefix))
-        if best.strategy_id != watch_strategy.strategy_id:
-            return False  # 让更精确的策略处理
-    return True
-```
-
-- **原则**：最长 prefix 优先（Longest Prefix Match），子目录的 Watch Strategy 优先处理
-- **父策略**：自动跳过已被子策略处理的文件（通过 Redis `processed_by:{entity_id}` 标记去重）
-- **`allow_conflict: true`**：如果显式声明，则父子策略都处理同一文件（多路处理）
-
-**生成 vs 更新检测**（同名文件首次 vs 修改）：
-
-> 同一文件 `incoming/pricing.pdf` 第一次出现 vs 修改后再次出现，系统应区分处理。
-
-| 场景 | 检测 | 行为 |
-| --- | --- | --- |
-| **首次上传** | OSS Created 事件 + 本地无该 entity_id | 走 `on_conflict=update` 流程但实际是 create |
-| **修改上传** | OSS Updated 事件（ETag 变化）+ 本地有该 entity_id | 走 C1 Raw 变动级联（§5.14.2） |
-
-**ETag 差异检测**：
-
-```python
-def detect_create_or_update(oss_path, entity_id):
-    new_etag = oss.head_object(oss_path)['ETag']
-    manifest = load_entity_manifest(entity_id)
-    if not manifest:
-        return 'create'
-    old_etag = manifest.get('source_etag')
-    if new_etag == old_etag:
-        return 'skip'                      # ETag 相同，内容未变，跳过
-    else:
-        return 'update'                    # ETag 不同，走 C1 级联
-```
-
-- **create**：触发新建 Entity + 完整 RepPipeline
-- **update**：触发 C1 Raw 变动级联（§5.14.2）+ Rep 重建 + Index 重建
-- **skip**：OSS 事件重复投递但内容未变（如 Listen 多次触发），静默忽略
+> v0.2 待展开。核心思路：多 Watch 监听同一前缀时，启动阶段拒绝重叠前缀（allow_conflict opt-in），运行时通过 Longest Prefix Match 去重 + processed_by Redis 标记 + ETag diff 检测避免重复处理。
 
 ##### 5.15.11.6 Per-Collection 配额
 
-**为什么需要**：防止某 workspace/collection 的 Watch 占用过多资源（磁盘、并发、API 配额），影响其他租户。
+> v0.2 待展开（v0.1 仅支持全局默认配额）。核心思路：per-collection 覆盖 Entity 数 / Chunk 数 / 存储量 / QPS 四类配额，超限返回 429 + token bucket 限流。
 
-**配置**：
+##### 5.15.11.7 Delete-Only Watch
 
-> **v0.1**：仅支持 `default` 全局配额（硬编码在 config.yaml 中），不支持 `overrides` per-collection 覆盖。
-> **v0.2**：完整支持 `default` + `overrides` per-collection 覆盖 + API 动态调整。
-
-```yaml
-# v0.1：仅全局默认配额
-quotas:
-  default:                                  # 默认配额（v0.1 唯一配置）
-    max_entities: 100000
-    max_storage_gb: 1000
-    max_concurrent_ingest: 20
-    max_oss_api_qps: 100
-
-# v0.2：增加 per-collection 覆盖
-quotas:
-  default:                                  # 默认配额
-    max_entities: 100000
-    max_storage_gb: 1000
-    max_concurrent_ingest: 20
-    max_oss_api_qps: 100
-    
-  overrides:                                # per-collection 覆盖
-    - collection: media-base
-      workspace: my-workspace
-      max_entities: 50000                   # 多媒体 Entity 通常更大
-      max_storage_gb: 5000                  # 允许更大
-      max_concurrent_ingest: 10
-```
-
-**超限处理**：
-
-| 配额 | 超限行为 |
-| --- | --- |
-| `max_entities` | 新建 Entity 被拒（HTTP 429），旧 Entity 不受影响 |
-| `max_storage_gb` | 触发 §5.12.x 存储回收流程（删最旧软删除 Entity → 物理删除），仍超则告警 |
-| `max_concurrent_ingest` | 限流（令牌桶），新事件入等待队列 |
-| `max_oss_api_qps` | 全局限流，避免触达 OSS 桶限流 |
-
-**监控**：
-
-| 指标 | 含义 |
-| --- | --- |
-| `watch_quota_usage{workspace,collection,quota_type}` | 当前使用量（gauge） |
-| `watch_quota_exceeded_total{workspace,collection,quota_type}` | 超限次数（counter） |
-
-##### 5.15.11.7 仅删除监听（Delete-Only Watch）
-
-**场景**：某些 collection 已经**只通过 API 接入**（不走 Watch 自动创建），但仍希望监听**文件删除**以自动软删除 Entity（防止 OSS 删了文件但 Lake 还残留死链）。
-
-**配置**：
-
-```yaml
-watch_strategies:
-  - strategy_id: cleanup-only
-    type: oss
-    workspace: my-workspace
-    collection: api-managed
-    prefix: managed-incoming/
-    event_filter:                           # ← 关键：只监听删除事件
-      types: [deleted]
-    ingest_strategy: standard_doc           # 用于解析 entity_id 路径
-    on_deleted_action: soft_delete_entity  # 软删除对应 entity_id
-    auto_create_entity: false               # ← 不自动创建（仅清理用）
-```
-
-**适用**：
-
-- API 接入的 Entity 仍依赖 OSS 文件存在性，OSS 删了则 Lake 也要清
-- 合规归档场景：文件被外部流程删除时 Lake 自动同步
-- 数据生命周期管理：OSS 触发 lifecycle 删旧文件，Lake 同步
-
-**与全功能 Watch 的区别**：
-
-| 维度 | 全功能 Watch | Delete-Only Watch |
-| --- | --- | --- |
-| 自动创建 Entity | ✅ | ❌ |
-| 触发 RepPipeline | ✅ | ❌（Entity 已存在） |
-| 触发 C1 变动级联 | ✅ | ❌ |
-| 监听 deleted 事件 | ✅ | ✅ |
-| 软删除 Entity | ✅ | ✅ |
-| OSS 文件不存在时清理 | ❌（依赖 Reconciler） | ✅（实时） |
+> v0.2 待展开。核心思路：event_filter.types=[deleted] + auto_create_entity=false，仅监听删除事件用于清理外部索引。
 
 ##### 5.15.11.8 文件删除/中途失败的边界处理
 
@@ -5950,6 +4703,8 @@ v0.2: Redis Streams → Kafka（仅在以下条件满足时迁移）
 ---
 
 ## 7. 多模态 Embedding 策略
+
+> v0.1 待补充，详见 §25.5 评审清单。
 
 ### 7.1 Embedding V5 Task 映射表
 
@@ -6919,6 +5674,8 @@ async def vfs_get_status(workspace_id: str) -> dict:
 
 ## 10. 设计原则（不可妥协）
 
+> v0.1 待补充，详见 §25.5 评审清单。
+
 1. **原始文件不可变**：`raw object = source of truth`。
 2. **Representation 可重建**：所有 representation 都是派生物，丢失不致命。
 3. **Entity 是稳定知识对象**：1 OSS Object = 1 Entity；文件版本变化时 entity.version 递增。
@@ -7529,6 +6286,8 @@ semantic · lexical · hybrid · visual
 
 ## 16. 关键场景（v0.1 验收用例）
 
+> v0.1 待补充，详见 §25.5 评审清单。
+
 | 场景 | 触发 | 期望 |
 | --- | --- | --- |
 | **S1. PDF 全文检索** | 录入 pricing.pdf | hybrid (semantic + lexical) 命中；带页码 + section snippet |
@@ -7559,6 +6318,8 @@ semantic · lexical · hybrid · visual
 ---
 
 ## 17. 里程碑
+
+> v0.1 待补充，详见 §25.5 评审清单。
 
 | 里程碑 | 周期 | 交付 |
 | --- | --- | --- |
@@ -8717,6 +7478,59 @@ vector-lake health
 - [ ] content_hash 变更检测是否比 etag 更可靠？
 - [ ] v0.1 范围是否足够小、足够完整？
 - [ ] 与现有 OSS / V5 / Chunking 的对接路径是否清晰？
+
+
+### 25.6 变更历史
+
+> 以下为早期修订记录（#1-#24），完整设计决策演进详见本节。
+
+(1) 1 OSS Object = 1 Entity
+
+(2) Representation 是"认知视角"而非中间产物
+
+(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线
+
+(4) Chunk 是索引方法，不是存储概念
+
+(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`
+
+(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取
+
+(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）
+
+(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取
+
+(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作
+
+(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链
+
+(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇
+
+(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行
+
+(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）
+
+(14) **RepStep Plugin 体系（§6.7）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码
+
+(15) **IndexStep Plugin 体系（§6.8）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦
+
+(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力
+
+(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index
+
+(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.9 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2
+
+(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险
+
+(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25
+
+(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §19 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）
+
+(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.10 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§19 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§19.6 关键决策新增"任务队列"和"VFS→LLM"两条记录
+
+(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）
+
+(24) **完整 PRD 补充（§1.5/§1.6/§20-§24）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）
 
 ---
 
