@@ -3132,6 +3132,32 @@ lance_dataset.update_metadata({
 
 > **v0.1 简化**：Edge v0.1 仅支持"由 RepPipeline 编译产物自动产出 + 手动 API 创建"，不支持独立 Edge Pipeline。
 
+#### 5.11.1 Edge 状态
+
+| 状态 | 含义 |
+|---|---|
+| `active` | 边生效，参与检索 |
+| `stale` | 边关联的 src 或 dst Entity 处于 stale，Edge 暂不参与检索 |
+| `deleted` | 边已删除（src 或 dst Entity 删除时级联） |
+
+#### 5.11.2 Edge 生命周期事件
+
+| 触发事件 | 联动动作 |
+| --- | --- |
+| `RepPipeline.d_graph` 产出 `graph_json`（v0.2） | 解析 `graph_json` 中的边，自动写入 Edge 存储 |
+| 手动 `POST /edges`（v0.1） | 创建 Edge，`status=active` |
+| src 或 dst Entity `status=deleted` | 级联 Edge `status=deleted` |
+| src 或 dst Entity `status=stale` | 关联 Edge `status=stale`（不参与检索） |
+| `RepPipeline.d_graph` 重跑且新 `graph_json` 缺某边 | 该边 `status=deleted`（v0.2） |
+
+#### 5.11.3 v0.1 范围
+
+- ✅ 手动创建/查询/删除 Edge 的 API
+- ✅ Edge 与 Entity 状态联动（stale / deleted）
+- ❌ 自动从 `graph_json` 解析（v0.2，因 `compile_graph_json` 是 v0.2）
+- ❌ 反向回写（从 `~/wiki/` wikilink 解析回 Edge，v0.2）
+- ❌ Edge 自己的 Lint 规则（v0.2）
+
 ### 5.13 Rep 继承链与级联传播（Rep Inheritance & Cascade）
 
 > **核心问题**：Rep 之间有继承关系——一个 Rep 可能基于另一个 Rep 生成（如 `mind_map` 基于 `canonical_md`）。当上游 Rep 变化时，必须沿继承链级联传播，确保所有下游 Rep 和 Index 最终一致。
@@ -3294,32 +3320,6 @@ def cascade_invalidate(entity_id: str, changed_rep_type: str):
 | **存储** | `input_content_hash` Tag + Pipeline 注册表 | 目录层级 + Pipeline 注册表 |
 | **用途** | 变动检测 + 级联传播 + Index 增量重建 | 影响分析 + 数据溯源 + 跨 Entity 检索 |
 | **方向** | 自上而下（上游→下游） | 双向（上游/下游） |
-
-#### 5.11.1 Edge 状态
-
-| 状态 | 含义 |
-|---|---|
-| `active` | 边生效，参与检索 |
-| `stale` | 边关联的 src 或 dst Entity 处于 stale，Edge 暂不参与检索 |
-| `deleted` | 边已删除（src 或 dst Entity 删除时级联） |
-
-#### 5.11.2 Edge 生命周期事件
-
-| 触发事件 | 联动动作 |
-| --- | --- |
-| `RepPipeline.d_graph` 产出 `graph_json`（v0.2） | 解析 `graph_json` 中的边，自动写入 Edge 存储 |
-| 手动 `POST /edges`（v0.1） | 创建 Edge，`status=active` |
-| src 或 dst Entity `status=deleted` | 级联 Edge `status=deleted` |
-| src 或 dst Entity `status=stale` | 关联 Edge `status=stale`（不参与检索） |
-| `RepPipeline.d_graph` 重跑且新 `graph_json` 缺某边 | 该边 `status=deleted`（v0.2） |
-
-#### 5.11.3 v0.1 范围
-
-- ✅ 手动创建/查询/删除 Edge 的 API
-- ✅ Edge 与 Entity 状态联动（stale / deleted）
-- ❌ 自动从 `graph_json` 解析（v0.2，因 `compile_graph_json` 是 v0.2）
-- ❌ 反向回写（从 `~/wiki/` wikilink 解析回 Edge，v0.2）
-- ❌ Edge 自己的 Lint 规则（v0.2）
 
 ### 5.12 元数据可靠性与重建策略
 
@@ -5311,11 +5311,11 @@ Jina Embedding V5 Omni 原生支持以下视频格式：
 | 表格中的图片 | G + E 并行：G 产 `table.parquet`，E 产 `page_image/`（图片向量） |
 | 公式 / 嵌入对象 | 暂不支持（v0.2+ 引入 Mathpix API / 公式抽取） |
 
-### 6.6 RepStep Plugin 体系（内容变换插件）
+### 6.7 RepStep Plugin 体系（内容变换插件）
 
 > **核心定位**：RepStep 是 RepPipeline 的可插拔步骤。每个 RepStep 做一件事：把上游 Representation 文件变换为下游 Representation 文件。新增 rep_type = 新增 RepStep + 注册，不改已有代码。
 
-#### 6.6.1 RepStep Protocol
+#### 6.7.1 RepStep Protocol
 
 ```python
 from typing import Protocol, Optional
@@ -5368,7 +5368,7 @@ class RepStep(Protocol):
         }
 ```
 
-#### 6.6.2 RepStepRegistry（全局插件注册表）
+#### 6.7.2 RepStepRegistry（全局插件注册表）
 
 ```python
 class RepStepRegistry:
@@ -5398,7 +5398,7 @@ class RepStepRegistry:
                 if rep_type in s.output_reps]
 ```
 
-#### 6.6.3 内置 RepStep 清单（v0.1）
+#### 6.7.3 内置 RepStep 清单（v0.1）
 
 | step_id | name | required_input_reps | optional_input_reps | output_reps | output_stage | entity_types | modality | v0.1 |
 |---|---|---|---|---|---|---|---|---|
@@ -5416,7 +5416,7 @@ class RepStepRegistry:
 
 > `project_wiki` 是 Projector 作为 RepStep 注册的示例（§11），产出不写回 Lake 内部，而是写外部 vault。`required_input_reps` 表示必须全部存在；`optional_input_reps` 表示有则用、无则跳过该输入分支。
 
-#### 6.6.4 内置 RepPipeline 组装
+#### 6.7.4 内置 RepPipeline 组装
 
 | pipeline_id | name | steps | v0.1 |
 |---|---|---|---|
@@ -5433,7 +5433,7 @@ class RepStepRegistry:
 
 > RepPipeline 编号约定：`rep_pipeline_<family>[_<variant>]`，family = a/b/d/e/f/g/h。`h` 族为视频专用（关键帧抽取，依赖 ffmpeg）。
 
-#### 6.6.5 第三方 RepStep 注册示例
+#### 6.7.5 第三方 RepStep 注册示例
 
 ```python
 # 第三方写的 FAQ 编译 step（不需要改 Lake 代码）
@@ -5459,11 +5459,11 @@ class FaqCompileStep(RepStep):
 RepStepRegistry.register(FaqCompileStep())
 ```
 
-### 6.7 IndexStep Plugin 体系（索引构建插件）
+### 6.8 IndexStep Plugin 体系（索引构建插件）
 
 > **核心定位**：IndexStep 是 IndexPipeline 的可插拔步骤。每个 IndexStep 做一件事：消费 Representation 文件，构建搜索索引。新增 index_type = 新增 IndexStep + 注册，不改已有代码。IndexStep 与 RepStep 完全解耦——IndexStep 不知道 RepStep 的存在，只消费 Representation 文件。
 
-#### 6.7.1 IndexStep Protocol
+#### 6.8.1 IndexStep Protocol
 
 ```python
 @dataclass
@@ -5508,7 +5508,7 @@ class IndexStep(Protocol):
         }
 ```
 
-#### 6.7.2 IndexStepRegistry（全局插件注册表）
+#### 6.8.2 IndexStepRegistry（全局插件注册表）
 
 ```python
 class IndexStepRegistry:
@@ -5527,7 +5527,7 @@ class IndexStepRegistry:
                 if all(r in available_reps for r in s.required_reps)]
 ```
 
-#### 6.7.3 内置 IndexStep 清单（v0.1）
+#### 6.8.3 内置 IndexStep 清单（v0.1）
 
 | step_id | name | index_type | required_reps | optional_reps | supported_modalities | v0.1 |
 |---|---|---|---|---|---|
@@ -5541,7 +5541,7 @@ class IndexStepRegistry:
 | `chunk_and_embed_table` | 表格切片+嵌入 | table | `table_md`, `table_json` | `layout_json` | table | v0.2 |
 | `register_duckdb_view` | DuckDB 结构化注册 | structural | `table_parquet` | — | table | ✅ |
 
-#### 6.7.4 内置 IndexPipeline 组装（v0.1）
+#### 6.8.4 内置 IndexPipeline 组装（v0.1）
 
 | pipeline_id | name | steps |
 |---|---|---|
@@ -5555,7 +5555,7 @@ class IndexStepRegistry:
 
 > **`index_pipeline_video` vs `index_pipeline_audio`**：video 实体走 video（含音轨 + 关键帧），audio 实体走 audio（仅音轨）。`index_pipeline_structural` 是表格类 Entity 的结构化检索通道，不与 `index_pipeline_table` 互斥，两者可同时存在（结构化 + 文本联合检索）。
 
-#### 6.7.5 IndexPipeline 触发时机
+#### 6.8.5 IndexPipeline 触发时机
 
 ```text
 RepPipeline 全部完成
@@ -5575,11 +5575,11 @@ IndexStepRegistry.steps_for_reps(available_reps)
 
 **关键不变量**：IndexPipeline **不触发** RepPipeline。索引构建失败不影响 Representation 文件的存在。
 
-### 6.8 RepStep / IndexStep 并发模型
+### 6.9 RepStep / IndexStep 并发模型
 
 > **核心规则**：**Entity 内 RepPipeline 间并行、RepPipeline 内 step 串行、IndexPipeline 串行，Entity 间完全并行**。
 
-#### 6.8.1 并发粒度
+#### 6.9.1 并发粒度
 
 | 层级 | 并发策略 | 原因 | 锁粒度 |
 |---|---|---|---|
@@ -5593,7 +5593,7 @@ IndexStepRegistry.steps_for_reps(available_reps)
 > **锁粒度优化**（E2 修复）：从"Entity 级锁"改为"RepPipeline 级锁"。同一 Entity 的 `parse` 和 `render_page` 可以并行执行（写不同 OSS 路径），只有同一 RepPipeline 内的 step 才需要串行。
 | **RepPipeline 与 IndexPipeline** | 不能并行 | IndexPipeline 必须等 RepPipeline 完成后（`rep_all_ready` 事件） |
 
-#### 6.8.2 锁模型
+#### 6.9.2 锁模型
 
 ```text
 Entity 维度的锁：
@@ -5607,7 +5607,7 @@ Entity 维度的锁：
     └─ 注册/注销时短时持有；查询无锁（读时复制）
 ```
 
-#### 6.8.3 失败处理
+#### 6.9.3 失败处理
 
 | 场景 | 处理 |
 |---|---|
@@ -5617,7 +5617,7 @@ Entity 维度的锁：
 | ProjectorStep 失败 | 标 Projector 失败；不影响 Rep 和 Index；告警 |
 | RepPipeline 死锁 / 超时 | Orchestrator 设全局超时（默认 10 min/step）；超时标 failed |
 
-#### 6.8.4 配额
+#### 6.9.4 配额
 
 | 资源 | 默认配额 | 触发降级 |
 |---|---|---|
@@ -5627,7 +5627,7 @@ Entity 维度的锁：
 | 单 RepStep LLM 调用并发 | 5（per worker） | 队列等待 |
 | 单 RepStep 显存占用 | 8 GB | 失败 + 降级到 CPU |
 
-### 6.9 任务队列：Redis Streams（v0.1 选定）
+### 6.10 任务队列：Redis Streams（v0.1 选定）
 
 > **设计决策**：v0.1 使用 **Redis Streams** 作为任务队列，**不使用 Celery / Kafka**。
 >
@@ -5637,7 +5637,7 @@ Entity 维度的锁：
 > - Kafka 对 v0.1 规模过重（Entity 级消息量低，不需要分区 / 副本 / 持久化）
 > - Redis 已是 Vector-Lake 的依赖（VFS 缓存 + 锁），不引入新组件
 
-#### 6.9.1 Stream 拓扑
+#### 6.10.1 Stream 拓扑
 
 ```text
 ┌─────────────┐     XADD          ┌──────────────────────┐
@@ -5666,7 +5666,7 @@ Entity 维度的锁：
                                   └──────────────────────┘
 ```
 
-#### 6.9.2 消息格式
+#### 6.10.2 消息格式
 
 ```json
 // XADD rep_pipeline * entity_id e-123 step_id render_page workspace ws1 ...
@@ -5687,7 +5687,7 @@ Entity 维度的锁：
 }
 ```
 
-#### 6.9.3 消费协议
+#### 6.10.3 消费协议
 
 ```python
 # Worker 伪代码
@@ -5727,7 +5727,7 @@ async def rep_worker():
                             redis.xack("rep_pipeline", "rep_workers", msg_id)
 ```
 
-#### 6.9.4 可靠性保证
+#### 6.10.4 可靠性保证
 
 | 场景 | Redis Streams 机制 | 效果 |
 |---|---|---|
@@ -5738,7 +5738,7 @@ async def rep_worker():
 | 消息丢失 | Redis AOF / RDB 持久化 | 重启后恢复 |
 | 死信 | 超过 max_retries → `stream:dead_letter` | 人工处理 |
 
-#### 6.9.5 与 Celery 的对比
+#### 6.10.5 与 Celery 的对比
 
 | 维度 | Celery + Redis | Redis Streams 直连 |
 |---|---|---|
@@ -5750,7 +5750,7 @@ async def rep_worker():
 | **延迟** | 高（broker → worker → result） | 低（直连 Redis） |
 | **运维** | 复杂（worker 进程管理 + concurrency pool） | 简单（asyncio + Consumer Group） |
 
-#### 6.9.6 背压策略
+#### 6.10.6 背压策略
 
 ```text
 Redis Streams 背压机制：
@@ -5766,7 +5766,7 @@ Redis Streams 背压机制：
      └─ 超时后其他 worker 可安全抢占（检查 worker_id 是否存活）
 ```
 
-#### 6.9.7 v0.2 演进路径
+#### 6.10.7 v0.2 演进路径
 
 ```text
 v0.1: Redis Streams（单 Redis 实例 / Sentinel）
@@ -6169,7 +6169,7 @@ GET /preview/{entity_id}?rep_type={rep_type}&page={page_number}
 }
 ```
 
-### 8.7 DuckDB 统一访问 — 表格型 Entity 的 SQL 查询
+### 8.6 DuckDB 统一访问 — 表格型 Entity 的 SQL 查询
 
 **适用场景**：`entity_type=table` 的 Entity（CSV / Excel / 数据库表），需要 SQL 灵活查询。
 
@@ -7450,13 +7450,13 @@ semantic · lexical · hybrid · visual
 
 ---
 
-## 20. 开源技术选型与复用清单
+## 19. 开源技术选型与复用清单
 
 > **目的**：Vector-Lake 系统构建优先复用成熟开源项目，只对特有能力（Entity 抽象、RepPipeline/IndexPipeline 双管线、Projector、Two-phase 一致性）做自研。本节定义 7 大类别的开源技术栈与复用路线图。
 >
 > **完整清单与对比**：见 [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)（含 50+ 开源项目对比、7 大类别全景图、v0.1/v0.2/v0.3 复用路线图）。
 
-### 20.1 7 大类别速查
+### 19.1 7 大类别速查
 
 | 类别 | 核心需求 | v0.1 选定 | v0.2 候选 |
 |---|---|---|---|
@@ -7468,7 +7468,7 @@ semantic · lexical · hybrid · visual
 | **6. 可观测性** | 监控 / 告警 / 日志 / Trace | **Prometheus + Grafana + OTel** | — |
 | **7. Lake Format** | 表格式 / 版本控制 | Lance 协议 ✅ | 借鉴 Iceberg / Delta 设计 |
 
-### 20.2 v0.1 推荐技术栈（最小可用集）
+### 19.2 v0.1 推荐技术栈（最小可用集）
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
@@ -7486,7 +7486,7 @@ semantic · lexical · hybrid · visual
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 20.3 v0.2 引入候选
+### 19.3 v0.2 引入候选
 
 | 项目 | 引入理由 | 复用范围 |
 |---|---|---|
@@ -7497,7 +7497,7 @@ semantic · lexical · hybrid · visual
 | **JuiceFS** | POSIX 视角访问 OSS | VFS 文件级操作优化 |
 | **lakeFS** | Git-like 数据湖版本控制 | Entity 零拷贝快照 / 分支（v0.3） |
 
-### 20.4 OSS 事件通知集成模式
+### 19.4 OSS 事件通知集成模式
 
 ```text
 方式 A：OSS Event Notification → Webhook → Vector-Lake VFS
@@ -7512,7 +7512,7 @@ semantic · lexical · hybrid · visual
   └─ Phase 0/1/2/3 15 min 周期（§5.9.3）
 ```
 
-### 20.5 关键开源项目 GitHub 链接（v0.1/v0.2 直接相关）
+### 19.5 关键开源项目 GitHub 链接（v0.1/v0.2 直接相关）
 
 | 项目 | 链接 | 用途 |
 |---|---|---|
@@ -7531,7 +7531,7 @@ semantic · lexical · hybrid · visual
 | **Whisper** | https://github.com/openai/whisper | RepStep `asr` |
 | **PaddleOCR** | https://github.com/PaddlePaddle/PaddleOCR | RepStep `recognize_text` |
 
-### 20.6 关键决策记录
+### 19.6 关键决策记录
 
 | 决策 | 选择 | 否决项 | 理由 |
 |---|---|---|---|
@@ -7546,9 +7546,9 @@ semantic · lexical · hybrid · visual
 
 ---
 
-## 21. 部署模型与运维（Deployment & Operations）
+## 20. 部署模型与运维
 
-### 21.1 部署拓扑
+### 20.1 部署拓扑
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -7584,7 +7584,7 @@ semantic · lexical · hybrid · visual
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 21.2 组件说明
+### 20.2 组件说明
 
 | 组件 | 职责 | 扩缩容 | 推荐资源 |
 | --- | --- | --- | --- |
@@ -7595,7 +7595,7 @@ semantic · lexical · hybrid · visual
 | **Redis** | 任务队列 + 分布式锁 + VFS 缓存 | 单实例（v0.1），哨兵（v0.2） | 2 CPU, 4 GB RAM |
 | **OSS / MinIO** | Entity / Rep / LanceDB 数据存储 | 外部依赖 | 按数据量 |
 
-### 21.3 Docker Compose 部署（推荐 v0.1）
+### 20.3 Docker Compose 部署（推荐 v0.1）
 
 ```yaml
 # docker-compose.yml
@@ -7675,7 +7675,7 @@ volumes:
   minio_data:
 ```
 
-### 21.4 配置文件
+### 20.4 配置文件
 
 ```yaml
 # config.yaml
@@ -7740,7 +7740,7 @@ vector_lake:
     projector_steps: []       # 额外 ProjectorStep 包路径
 ```
 
-### 21.5 健康检查
+### 20.5 健康检查
 
 | 端点 | 用途 | 返回 |
 | --- | --- | --- |
@@ -7749,7 +7749,7 @@ vector_lake:
 | `GET /health/live` | Kubernetes liveness probe | `{"status": "alive"}` |
 | `GET /metrics` | Prometheus metrics | 标准 OpenMetrics 格式 |
 
-### 21.6 启动顺序
+### 20.6 启动顺序
 
 ```text
 1. Redis / MinIO 启动（docker-compose 自动处理）
@@ -7791,7 +7791,7 @@ Watch Listener 启动流程：
 [6] 开始接收事件 → 进入 §5.15.2 自动构建流程
 ```
 
-### 21.7 优雅关闭
+### 20.7 优雅关闭
 
 ```text
 1. SIGTERM → API Server 停止接受新请求
@@ -7826,7 +7826,7 @@ Watch Listener 关闭流程：
 [5] 关闭 Redis Streams Producer 连接
 ```
 
-### 21.8 运维命令
+### 20.8 运维命令
 
 ```bash
 # 启动所有服务
@@ -7871,9 +7871,9 @@ vector-lake cleanup --force
 
 ---
 
-## 22. SDK 与客户端策略（SDK & Client Strategy）
+## 21. SDK 与客户端策略
 
-### 22.1 Python SDK（v0.1 主推）
+### 21.1 Python SDK（v0.1 主推）
 
 ```python
 # 安装
@@ -7995,7 +7995,7 @@ impact = client.lineage.impact(
 )
 ```
 
-### 22.2 CLI 工具
+### 21.2 CLI 工具
 
 ```bash
 # 安装
@@ -8025,7 +8025,7 @@ vl health
 vl reconcile --once
 ```
 
-### 22.3 MCP 客户端集成（LLM 使用）
+### 21.3 MCP 客户端集成（LLM 使用）
 
 ```json
 // claude_desktop_config.json 或 cursor mcp.json
@@ -8054,7 +8054,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 | `vl_get_lineage` | 获取血缘 |
 | `vl_list_workspaces` | 列出可用工作空间 |
 
-### 22.4 SDK 设计原则
+### 21.4 SDK 设计原则
 
 1. **同步 API 优先** — 检索类操作同步返回，Pipeline 触发异步但可 await
 2. **类型安全** — 所有方法有完整的类型注解（Pydantic models）
@@ -8063,7 +8063,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 5. **分页** — 列表类 API 统一使用 `limit` + `cursor` 分页
 6. **日志透传** — SDK 端日志级别可配置，方便调试
 
-### 22.5 多语言 SDK 路线图
+### 21.5 多语言 SDK 路线图
 
 | 语言 | v0.1 | v0.2 | 备注 |
 | --- | --- | --- | --- |
@@ -8074,9 +8074,9 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 
 ---
 
-## 23. 错误模型与故障排查（Error Model & Troubleshooting）
+## 22. 错误模型与故障排查
 
-### 23.1 错误码体系
+### 22.1 错误码体系
 
 所有 API 错误统一使用以下格式：
 
@@ -8096,7 +8096,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 }
 ```
 
-### 23.2 错误分类
+### 22.2 错误分类
 
 | 类别 | HTTP 状态码 | 前缀 | 示例 | 重试策略 |
 | --- | --- | --- | --- | --- |
@@ -8108,7 +8108,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 | **Pipeline 错误** | 422 | `PIPELINE_*` | `PIPELINE_STEP_FAILED`, `PIPELINE_TIMEOUT` | 部分可重试 |
 | **索引错误** | 422 | `INDEX_*` | `INDEX_BUILD_FAILED`, `INDEX_STALE` | 可重试（重建） |
 
-### 23.3 完整错误码列表
+### 22.3 完整错误码列表
 
 | 错误码 | HTTP | 含义 | 处理建议 |
 | --- | --- | --- | --- |
@@ -8130,7 +8130,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 | `RATE_LIMITED` | 429 | 请求频率超限 | 等待后重试（含 Retry-After） |
 | `INTERNAL_ERROR` | 500 | 内部错误 | 查看 request_id 对应日志 |
 
-### 23.4 故障排查指南
+### 22.4 故障排查指南
 
 #### 场景 1：Entity 创建后检索不到
 
@@ -8187,7 +8187,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 5. 检查配置：reconciler.interval 是否正确
 ```
 
-### 23.5 日志规范
+### 22.5 日志规范
 
 | 日志级别 | 使用场景 | 示例 |
 | --- | --- | --- |
@@ -8201,9 +8201,9 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 
 ---
 
-## 24. 测试与质量策略（Testing & Quality Strategy）
+## 23. 测试与质量策略
 
-### 24.1 测试金字塔
+### 23.1 测试金字塔
 
 ```text
                   ┌──────┐
@@ -8218,7 +8218,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
                   └──────┘
 ```
 
-### 24.2 测试分类
+### 23.2 测试分类
 
 | 类型 | 覆盖目标 | 工具 | 运行频率 |
 | --- | --- | --- | --- |
@@ -8229,7 +8229,7 @@ LLM 通过 MCP 自动获得以下工具（§9.5.3）：
 | **兼容性测试** | OSS / S3 / MinIO 后端切换 | pytest + parametrize | 每次 PR |
 | **混沌测试** | Redis 宕机 / OSS 延迟 / Worker 崩溃恢复 | chaos-mesh（v0.2） | v0.2+ |
 
-### 24.3 单元测试示例
+### 23.3 单元测试示例
 
 ```python
 # tests/unit/test_rep_step_extract.py
@@ -8276,7 +8276,7 @@ def test_lineage_from_directory():
     ]
 ```
 
-### 24.4 集成测试示例
+### 23.4 集成测试示例
 
 ```python
 # tests/integration/test_api_search.py
@@ -8306,7 +8306,7 @@ async def test_xadd_xread():
     assert len(messages) == 1
 ```
 
-### 24.5 E2E 测试场景
+### 23.5 E2E 测试场景
 
 | 场景 | 描述 | 预期结果 |
 | --- | --- | --- |
@@ -8318,7 +8318,7 @@ async def test_xadd_xread():
 | **S6: Pipeline 失败恢复** | RepStep 调用失败 → 重试 → 最终成功 | 指数退避重试；不超过 3 次 |
 | **S7: Wiki Projector** | Entity → RepPipeline → WikiProjector → ~/wiki/*.md | Wiki 文件正确生成；wikilink 有效 |
 
-### 24.6 CI/CD 流程
+### 23.6 CI/CD 流程
 
 ```yaml
 # .github/workflows/ci.yml
@@ -8357,7 +8357,7 @@ jobs:
       - run: pytest tests/integration/ -v -m "not slow"
 ```
 
-### 24.7 质量门禁
+### 23.7 质量门禁
 
 | 指标 | v0.1 目标 | v0.2 目标 |
 | --- | --- | --- |
@@ -8370,9 +8370,9 @@ jobs:
 
 ---
 
-## 25. 版本策略与兼容性承诺（Version Policy & Compatibility）
+## 24. 版本策略与兼容性承诺
 
-### 25.1 版本号规范
+### 24.1 版本号规范
 
 遵循 [Semantic Versioning 2.0](https://semver.org/)：
 
@@ -8384,7 +8384,7 @@ MINOR — 向后兼容的新功能
 PATCH — 向后兼容的 Bug 修复
 ```
 
-### 25.2 版本生命周期
+### 24.2 版本生命周期
 
 | 版本 | 状态 | 支持周期 | 说明 |
 | --- | --- | --- | --- |
@@ -8393,7 +8393,7 @@ PATCH — 向后兼容的 Bug 修复
 | **v0.3.x** | RC | 每季发布 minor | Merkle 树 / lakeFS 集成 / 多租户 |
 | **v1.0.0** | GA | 长期支持（LTS） | API 稳定；向后兼容保证 |
 
-### 25.3 向后兼容性承诺
+### 24.3 向后兼容性承诺
 
 **从 v1.0.0 开始**：
 
@@ -8407,7 +8407,7 @@ PATCH — 向后兼容的 Bug 修复
 
 **v0.x 期间**：不提供向后兼容性保证。API / 数据格式 / 配置可能在任何版本变更。
 
-### 25.4 破坏性变更流程（v1.0+）
+### 24.4 破坏性变更流程（v1.0+）
 
 ```text
 1. 在 MINOR 版本中标记 @deprecated
@@ -8419,7 +8419,7 @@ PATCH — 向后兼容的 Bug 修复
    → 迁移指南（MIGRATION.md）
 ```
 
-### 25.5 数据格式演进
+### 24.5 数据格式演进
 
 | 数据层 | 演进策略 | 迁移方式 |
 | --- | --- | --- |
@@ -8429,7 +8429,7 @@ PATCH — 向后兼容的 Bug 修复
 | **Pipeline 注册表** | 新增 RepStep/IndexStep 注册；不改已有接口 | 无需迁移 |
 | **Redis Streams 消息格式** | 新增字段可选；不删已有字段 | 消费者兼容新旧格式 |
 
-### 25.6 CHANGELOG 规范
+### 24.6 CHANGELOG 规范
 
 遵循 [Keep a Changelog](https://keepachangelog.com/) 格式：
 
@@ -8453,7 +8453,7 @@ PATCH — 向后兼容的 Bug 修复
 - 初始版本：Entity CRUD + RepPipeline + IndexPipeline + Reconciler
 ```
 
-### 25.7 升级指南
+### 24.7 升级指南
 
 ```bash
 # 升级到新版本
@@ -8472,9 +8472,9 @@ vector-lake health
 
 ---
 
-## 19. 附录
+## 25. 附录
 
-### 19.1 与现有组件的对接
+### 25.1 与现有组件的对接
 
 | 现有组件 | 对接方式 |
 | --- | --- |
@@ -8483,7 +8483,7 @@ vector-lake health
 | **Chunking UseCase** | Pipeline A/B 的 chunk 阶段调用 `ChunkingWithSlidingWindowUseCase`；字段映射见下表 |
 | **LanceDB** | representations.lance（vector + FTS + scalar filter）；hybrid search 原生支持 |
 
-### 19.2 Chunking UseCase 字段映射
+### 25.2 Chunking UseCase 字段映射
 
 | Chunk 字段 | Lance representations.lance 字段 | 用途 |
 | --- | --- | --- |
@@ -8499,7 +8499,7 @@ vector-lake health
 | `metadata.title` | `doc_title` | FTS + 展示 |
 | `metadata.page_number` | `page_number` | 过滤 + 展示 |
 
-### 19.3 名词表
+### 25.3 名词表
 
 - **Entity**：知识对象，1 个 OSS Object = 1 个 Entity。
 - **Representation**：Entity 的一种"认知视角"，血缘关系从目录层级推导。
@@ -8519,7 +8519,7 @@ vector-lake health
 - **RepPipeline**：内容变换流水线，由有序 RepStep 组装，产出 Representation 文件。有血缘、有版本。
 - **IndexPipeline**：索引构建流水线，由有序 IndexStep 组装，消费 Representation 文件产出搜索索引。无血缘、可重建。
 
-### 19.5 开源项目 Review：血缘方案对比
+### 25.4 开源项目 Review：血缘方案对比
 
 本方案（OSS Tag per representation 文件）参考了以下开源项目/标准的设计，并做出适配取舍：
 
