@@ -4673,11 +4673,13 @@ index_strategies:
   - id: default_text
     pipeline: index_pipeline_text
     chunking:
-      method: markdown_heading          # markdown_heading | fixed_size | semantic | sentence
+      method: markdown_heading          # markdown_heading | library | fixed_size | semantic | sentence
       config:
-        min_chunk_size: 200             # 最小 chunk 字符数
-        max_chunk_size: 1500            # 最大 chunk 字符数
-        overlap_size: 200               # 滑窗重叠字符数
+        chunk_tokens: 256               # 单 chunk 最大 token 数
+        window_size: 9                  # 滑动窗口大小（奇数，自动调整）
+        max_window_length: 12000        # 窗口最大字符数
+        target_max_length: 10000        # 窗口目标最大字符数
+        max_table_length: 3000          # 表格保护最大长度（超长表格强制截断）
         heading_levels: [1, 2, 3]       # 按哪些标题级别切分
         respect_code_blocks: true       # 代码块不切断
         respect_table_blocks: true      # 表格不切断
@@ -4699,26 +4701,103 @@ index_strategies:
 
 | 方法 | 说明 | 适用场景 | v0.1 |
 | --- | --- | --- | --- |
-| `markdown_heading` | 按 Markdown 标题（H1-H6）切分，标题作为 chunk 上下文 | 结构化文档、API 文档、技术文档 | ✅ |
+| `markdown_heading` | 按标题切分 + token 阈值 + 滑动窗口（`ChunkingWithSlidingWindowUseCase`） | 结构化文档、API 文档、技术文档 | ✅ 默认 |
+| `library` | 完整标题层级保留 + 表格/代码块边界保护 + 滑动窗口 | 知识库/长文档（保留完整 heading_path） | ✅ |
 | `fixed_size` | 固定字符数 + 滑窗重叠 | 无标题结构的纯文本 | ✅ |
 | `semantic` | 基于 embedding 相似度在语义断点切分 | 长文无明确结构 | v0.2 |
 | `sentence` | 按句子边界切分 | 短文本、对话记录 | v0.2 |
 
-**`markdown_heading` 切分规则**（v0.1 默认）：
+**`markdown_heading` 切分规则**（v0.1 默认，对应 `ChunkingWithSlidingWindowUseCase`）：
 
 ```text
 输入：canonical_md
 
-1. 解析 Markdown AST → 提取 heading + content 节点
-2. 按 heading_levels 指定的级别切分（默认 H1/H2/H3）
-3. 每个 chunk = [heading_path] + [content]
-   - heading_path：从根到当前标题的完整路径（如 "第3章 > 3.2 架构设计 > 3.2.1 存储层"）
-   - content：该标题下的正文内容
-4. 如果 content < min_chunk_size → 与下一个同级标题合并
-5. 如果 content > max_chunk_size → 按 overlap_size 滑窗二次切分
-6. 代码块（```...```）和表格（|...|）不切断，整体归入 chunk
-7. 每个 chunk 附加 layout 映射（start_pos / end_pos → layout_json blocks）
+步骤 1：按标题分割（MarkdownSplitter.split_by_headers）
+  ├─ 匹配 H1-H6 标题行
+  ├─ 每个标题开始一个新 chunk（标题行归入该 chunk）
+  └─ 产出 header_chunks：[{text, header, level, start_pos}]
+
+步骤 2：检测表格边界（TableDetector.find_tables）
+  ├─ 识别 Markdown 表格（|...| 行）
+  └─ 产出 tables：[{start, end, content}]
+
+步骤 3：按 token 阈值切分（_split_by_tokens）
+  ├─ 对每个 header_chunk：
+  │   ├─ token_count ≤ chunk_tokens（默认 256）→ 直接保留
+  │   ├─ token_count > chunk_tokens → 按段落分割
+  │   │   ├─ 段落间合并（不超 chunk_tokens）
+  │   │   ├─ 单段落超限 → 按句子切分（。！？.!?）
+  │   │   └─ 单句子超限 → 按字符强制截断
+  │   └─ 产出 token_chunks：[Chunk(text, start_pos, token_count, metadata)]
+  └─ 每个 chunk 的 metadata 包含 {header, level, chunk_type}
+
+步骤 4：应用滑动窗口（_apply_sliding_window）
+  ├─ 对每个 chunk i，取窗口 [i - half_window, i + half_window]
+  │   （window_size=9 时，half_window=4，窗口覆盖 9 个 chunk）
+  ├─ 拼接窗口内所有 chunk 的 embedding_text → 作为当前 chunk 的 embedding_text
+  ├─ 如果窗口总长度 > max_window_length（默认 12000）→ 中心优先截断
+  │   ├─ 保留中心 chunk 全文
+  │   ├─ 从中心向两侧扩展，优先加入较短的邻居
+  │   └─ 超限的邻居被跳过
+  └─ 产出 windowed_chunks：每个 chunk 保留原始 text，embedding_text 为窗口拼接文本
 ```
+
+**`library` 切分规则**（知识库场景，保留完整标题层级）：
+
+```text
+输入：canonical_md（user_role=library 时自动切换）
+
+步骤 1：提取文档标题（_extract_library_title）
+  ├─ 优先从 H1 标题提取
+  └─ 回退到文件名（去除 .md 后缀、URL 解码）
+
+步骤 2：按标题切分并保留完整层级（MarkdownSplitter.split_library_sections）
+  ├─ 维护 current_headers 字典：{Header 1: "xxx", Header 2: "yyy", ...}
+  ├─ 遇到新标题时，清除同级及更低级的旧标题
+  └─ 产出 sections：[{metadata: {Header 1: ..., Header 2: ...}, content, start_pos}]
+
+步骤 3：过滤目录块和分隔线
+  ├─ _is_library_table_of_contents：检测目录/索引块（链接密度 > 50%）
+  └─ _is_library_separator_block：过滤纯分隔线（---/***/___）
+
+步骤 4：构建 embedding 文本
+  ├─ heading_levels = "标题1-标题2-标题3"（完整层级路径）
+  ├─ embedding_text = "Heading Levels：{heading_levels}。Content：{content}"
+  └─ token_count ≤ library_chunk_limit（默认 512）→ 直接保留
+
+步骤 5：超长内容安全切分（_split_library_content）
+  ├─ 检测表格边界 + 代码块边界 → 保护区域
+  ├─ 在保护区域外寻找自然断点（双换行 > 句号 > 换行）
+  ├─ 表格超 max_table_length（默认 3000）→ 强制截断
+  └─ 合并切分后的碎片（分隔线、代码围栏）
+
+步骤 6：应用滑动窗口（同 markdown_heading）
+```
+
+**Chunk 数据模型**：
+
+```json
+{
+  "text": "中心块原始文本",
+  "embedding_text": "窗口拼接文本（用于向量化）",
+  "start_pos": 1234,
+  "token_count": 256,
+  "chunk_chars": 1024,
+  "metadata": {
+    "header": "3.2 架构设计",
+    "level": 2,
+    "chunk_type": "header_chunk | library_markdown | forced_split | ...",
+    "heading_levels": "第3章-3.2 架构设计-3.2.1 存储层",
+    "anchors": "section-3-2-1",
+    "title": "系统设计文档",
+    "window_size": 9,
+    "window_index": 5,
+    "chunk_index": 5
+  }
+}
+```
+
+> **关键设计**：`text` 存储中心块原文（用于检索结果展示），`embedding_text` 存储窗口拼接文本（用于向量化）。两者分离，确保检索命中时展示精确内容，而向量化时利用上下文窗口提升语义理解。
 
 **Embedding 模型选择**：
 
@@ -4764,6 +4843,7 @@ Ingest Strategy（接入策略）     IndexStrategy（索引策略）
 | ID | chunking | embedding | dimension | 适用 |
 | --- | --- | --- | --- | --- |
 | `default_text` | markdown_heading | jina-embeddings-v3 | 1024 | 文档/URL（默认） |
+| `library_text` | library | jina-embeddings-v3 | 1024 | 知识库/长文档 |
 | `local_text` | markdown_heading | bge-m3 | 1024 | 本地部署场景 |
 | `fixed_size_text` | fixed_size | jina-embeddings-v3 | 1024 | 无标题结构的纯文本 |
 
