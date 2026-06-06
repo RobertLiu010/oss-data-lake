@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§21-§25）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 7个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录；(23) **产品级 Review 修复（17 项）**：C4 Entity Tag 从 10→7（移除 workspace_id/collection_id/entity_id，预留 3 个给 v0.2）；C2 Entity=触发器（generate_*/build_* 只投递消息到 Redis Streams，Worker 执行）；F1 OSS PutObject 不支持 if-match（v0.1 last-writer-wins + Reconciler 修复，v0.2 CopyObject+if-match）；C1 元数据写入状态机（CLEAN/FILE_WRITTEN/MANIFEST_WRITTEN/TAG_MISSING 四态 + Reconciler 自动修复）；F2 Phase 0 改为 ETag 校验（HeadObject 零下载，代价 O(file_size)→O(1)）；C3 消息格式增加 input_reps（Orchestrator 填充具体路径）；C5 MCP+REST 共享 Service 层；E3 软删除不删 Lance（deleted 保留 30 天，destroy 才物理删）；E2 锁粒度从 Entity 级改为 RepPipeline 级；E6 Redis Streams 背压策略（MAXLEN+告警+429+锁超时策略）；E5 MCP 权限模型（admin/user/readonly + required_role）；E4 Index 重建优先级（high/medium/low 分批重建）；E1 多文件 Rep 目录级 .meta.json；F3 OSS LIST 1000 限制 + VFS Redis 缓存；F5 Lance metadata 限制（v0.1 最多 5 个 Index）；(24) **完整 PRD 补充（§1.5/§1.6/§21-§25）**：新增用户角色（5 类 Personas）与竞争定位（与 Elasticsearch/Pinecone/LlamaIndex/lakeFS/OpenMetadata 6 维对比）；新增部署模型（Docker Compose 一键部署 + 拓扑图 + 8 条运维命令）；新增 SDK 策略（Python SDK + CLI + MCP 集成 + 多语言路线图）；新增错误模型（17 个错误码 + 4 个故障排查场景）；新增测试策略（测试金字塔 + 7 个 E2E 场景 + CI/CD 流程 + 6 项质量门禁）；新增版本策略（SemVer + 生命周期 + 5 层向后兼容承诺 + 数据格式演进 + CHANGELOG 规范）；(25) **支持输入格式清单（§6.5）**：新增完整格式支持清单，覆盖 5 大 entity_type 共 50+ 种文件格式——文档格式 14 种（md/doc/docx/pdf/ppt/pptx + WPS 系列 .wps/.wpt/.dps/.dpt + txt/rtf/odt/html）；表格格式 9 种（csv/xls/xlsx + WPS 系列 .et/.ett + tsv/parquet/json）；图片格式 9 种（Jina V5 Omni 全量：jpg/png/gif/webp/bmp/tiff/avif/heic/svg）；音频格式 6 种（Jina V5 Omni 全量：wav/mp3/flac/ogg/m4a/opus）；视频格式 7 种（Jina V5 Omni 全量：mp4/avi/mov/mkv/webm/flv/wmv）；新增格式→entity_type→Pipeline 路由总表（§6.5.6）、格式不支持时的处理策略（§6.5.7）、v0.2 格式扩展计划（§6.5.8）；§2.1 entity_type 取值新增 table；§6.4.1 判定表更新引用 §6.5；RepStep transcribe 扩展支持 video entity_type。
 
 ---
 
@@ -447,10 +447,10 @@ Reconciler 周期任务（每 15 min）
 **entity_type 取值（v0.1）**：
 
 ```text
-document · image · audio · video
+document · table · image · audio · video
 ```
 
-> `document` 包含 pdf/docx/pptx/html/md 等；`image` 包含 png/jpg/svg 等；`audio` 包含 wav/mp3 等；`video` 包含 mp4 等。具体 subtype 由 detect 阶段的 mime_type 决定。
+> `document` 包含 pdf/doc/docx/ppt/pptx/md/wps/wpt/dps/dpt/txt 等；`table` 包含 csv/xls/xlsx/et/ett/tsv/parquet/json 等；`image` 包含 jpg/png/gif/webp/bmp/tiff/avif/heic/svg 等（Jina V5 Omni 全量支持）；`audio` 包含 wav/mp3/flac/ogg/m4a/opus 等（Jina V5 Omni 全量支持）；`video` 包含 mp4/avi/mov/mkv/webm/flv/wmv 等（Jina V5 Omni 全量支持）。完整格式清单见 §6.5。
 
 **entity_id 生成规则**：
 
@@ -3342,14 +3342,14 @@ v0.2 Rep Schema Evolution（加 sync_state 字段）
 
 | 判定优先级 | 探测方式 | 适用文件 |
 | --- | --- | --- |
-| 1 | MIME 类型白名单 | .csv / .tsv / .xlsx / .parquet / .json (array) / .sql → `table` |
+| 1 | MIME 类型白名单 | .csv / .tsv / .xlsx / .xls / .et / .ett / .parquet / .json (array) / .sql → `table` |
 | 2 | 内容探测（magic bytes） | .sqlite / .duckdb → `table` |
 | 3 | 文件大小 + 内容采样 | < 1MB + 强结构化 → `table` |
 | 4 | 文件大小 + 文本提取 | > 1MB + 多段文本 → `document` |
-| 5 | 文件名 + 扩展名 | .pdf / .docx / .pptx → `document` |
-| 6 | 媒体类型 | .png / .jpg / .mp3 / .wav / .mp4 → image/audio/video |
+| 5 | 文件名 + 扩展名 | .pdf / .docx / .doc / .pptx / .ppt / .md / .wps / .dps → `document` |
+| 6 | 媒体类型 | .jpg / .png / .mp3 / .wav / .mp4 等 → image/audio/video（完整清单见 §6.5） |
 
-> v0.1 仅实现 1、2、5、6 三类（4 类启发式判定留 v0.2）。`entity_type` 写入 OSS Tag `entity_type`，用户可通过 `Entity.update_tags()` 手动修正。
+> v0.1 仅实现 1、2、5、6 四类（3、4 类启发式判定留 v0.2）。`entity_type` 写入 OSS Tag `entity_type`，用户可通过 `Entity.update_tags()` 手动修正。完整支持格式清单见 §6.5。
 
 #### 6.4.2 混合型 Entity（同一文件含多种内容）
 
@@ -3420,7 +3420,140 @@ def generate_all_representations(entity: Entity):
 2. **失败隔离**：B 失败不影响 A/D 的产出可用
 3. **重试策略**：A 重试时不应触发 D 重试（除非 A 的产出变化）
 
-### 6.5 Pipeline 之间的级联与避免重复
+### 6.5 支持输入格式清单（Supported Input Formats）
+
+Vector-Lake v0.1 支持以下输入格式，按 `entity_type` 分组。格式选择决定 Entity 的 `entity_type` 判定（§6.4.1）和默认 Pipeline 路由（§6.3）。
+
+#### 6.5.1 文档格式（entity_type=document）
+
+| 格式 | 扩展名 | MIME 类型 | 解析方式 | v0.1 |
+| --- | --- | --- | --- | --- |
+| **Markdown** | `.md` | `text/markdown` | 原生解析（marko/mistune） | ✅ |
+| **PDF** | `.pdf` | `application/pdf` | PyMuPDF / pdfplumber | ✅ |
+| **Word** | `.doc` | `application/msword` | python-docx（需先 LibreOffice 转 docx） | ✅ |
+| **Word** | `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | python-docx | ✅ |
+| **PowerPoint** | `.ppt` | `application/vnd.ms-powerpoint` | python-pptx（需先 LibreOffice 转 pptx） | ✅ |
+| **PowerPoint** | `.pptx` | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | python-pptx | ✅ |
+| **WPS 文字** | `.wps` | `application/wps-office.wps` | LibreOffice 转 docx → python-docx | ✅ |
+| **WPS 文字模板** | `.wpt` | `application/wps-office.wpt` | LibreOffice 转 docx → python-docx | ✅ |
+| **WPS 演示** | `.dps` | `application/wps-office.dps` | LibreOffice 转 pptx → python-pptx | ✅ |
+| **WPS 演示模板** | `.dpt` | `application/wps-office.dpt` | LibreOffice 转 pptx → python-pptx | ✅ |
+| **RTF** | `.rtf` | `application/rtf` | LibreOffice 转 md | v0.2 |
+| **ODT** | `.odt` | `application/vnd.oasis.opendocument.text` | python-docx / LibreOffice | v0.2 |
+| **HTML** | `.html`, `.htm` | `text/html` | BeautifulSoup | v0.2 |
+| **纯文本** | `.txt` | `text/plain` | 原生读取 | ✅ |
+
+> **WPS 格式说明**：WPS 原生格式（.wps/.wpt/.dps/.dpt/.et/.ett）通过 LibreOffice 转换为对应 Microsoft 格式后解析。v0.1 依赖系统安装 LibreOffice（Docker 镜像内置），v0.2 评估 WPS SDK 直读。
+
+#### 6.5.2 表格格式（entity_type=table）
+
+| 格式 | 扩展名 | MIME 类型 | 解析方式 | v0.1 |
+| --- | --- | --- | --- | --- |
+| **CSV** | `.csv` | `text/csv` | DuckDB / pandas | ✅ |
+| **Excel** | `.xls` | `application/vnd.ms-excel` | openpyxl（需先 LibreOffice 转 xlsx） | ✅ |
+| **Excel** | `.xlsx` | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | openpyxl | ✅ |
+| **WPS 表格** | `.et` | `application/wps-office.et` | LibreOffice 转 xlsx → openpyxl | ✅ |
+| **WPS 表格模板** | `.ett` | `application/wps-office.ett` | LibreOffice 转 xlsx → openpyxl | ✅ |
+| **TSV** | `.tsv` | `text/tab-separated-values` | DuckDB / pandas | ✅ |
+| **Parquet** | `.parquet` | `application/parquet` | DuckDB / PyArrow | ✅ |
+| **ODS** | `.ods` | `application/vnd.oasis.opendocument.spreadsheet` | LibreOffice 转 xlsx | v0.2 |
+| **JSON** | `.json` (array) | `application/json` | DuckDB JSON 扩展 | ✅ |
+
+> **Excel 多 Sheet**：`.xls/.xlsx/.et/.ett` 多 Sheet 文件，每个 Sheet 生成独立 `table_parquet` Representation，通过 `.meta.json` 记录 Sheet 映射。
+
+#### 6.5.3 图片格式（entity_type=image）
+
+Jina Embedding V5 Omni 原生支持以下图片格式，Vector-Lake 直接对接：
+
+| 格式 | 扩展名 | MIME 类型 | 说明 | v0.1 |
+| --- | --- | --- | --- | --- |
+| **JPEG** | `.jpg`, `.jpeg` | `image/jpeg` | 最常见图片格式 | ✅ |
+| **PNG** | `.png` | `image/png` | 无损压缩 | ✅ |
+| **GIF** | `.gif` | `image/gif` | 动图（取首帧） | ✅ |
+| **WebP** | `.webp` | `image/webp` | 现代压缩格式 | ✅ |
+| **BMP** | `.bmp` | `image/bmp` | 无压缩位图 | ✅ |
+| **TIFF** | `.tif`, `.tiff` | `image/tiff` | 扫描文档常见 | ✅ |
+| **AVIF** | `.avif` | `image/avif` | 新一代压缩格式 | ✅ |
+| **HEIC** | `.heic` | `image/heic` | Apple 设备格式 | ✅ |
+| **SVG** | `.svg` | `image/svg+xml` | 矢量图（rasterize 后 embed） | ✅ |
+
+> **SVG 特殊处理**：SVG 是矢量格式，Jina V5 不直接支持。Vector-Lake 先通过 cairosvg 将 SVG rasterize 为 PNG，再送入 Jina V5 编码。
+
+#### 6.5.4 音频格式（entity_type=audio）
+
+Jina Embedding V5 Omni 原生支持以下音频格式：
+
+| 格式 | 扩展名 | MIME 类型 | 说明 | v0.1 |
+| --- | --- | --- | --- | --- |
+| **WAV** | `.wav` | `audio/wav` | 无损音频 | ✅ |
+| **MP3** | `.mp3` | `audio/mpeg` | 最常见音频格式 | ✅ |
+| **FLAC** | `.flac` | `audio/flac` | 无损压缩 | ✅ |
+| **OGG** | `.ogg` | `audio/ogg` | 开源音频格式 | ✅ |
+| **M4A** | `.m4a` | `audio/mp4` | AAC 音频 | ✅ |
+| **Opus** | `.opus` | `audio/opus` | 低延迟编码 | ✅ |
+
+> 音频文件走 RepPipeline F（`transcribe`），产出 `transcript` + `audio_segment`，再走 IndexPipeline 语义索引。
+
+#### 6.5.5 视频格式（entity_type=video）
+
+Jina Embedding V5 Omni 原生支持以下视频格式：
+
+| 格式 | 扩展名 | MIME 类型 | 说明 | v0.1 |
+| --- | --- | --- | --- | --- |
+| **MP4** | `.mp4` | `video/mp4` | 最常见视频格式 | ✅ |
+| **AVI** | `.avi` | `video/x-msvideo` | 传统视频格式 | ✅ |
+| **MOV** | `.mov` | `video/quicktime` | Apple 视频格式 | ✅ |
+| **MKV** | `.mkv` | `video/x-matroska` | 开源容器格式 | ✅ |
+| **WebM** | `.webm` | `video/webm` | Web 视频格式 | ✅ |
+| **FLV** | `.flv` | `video/x-flv` | Flash 视频 | ✅ |
+| **WMV** | `.wmv` | `video/x-ms-wmv` | Windows 视频 | ✅ |
+
+> 视频文件走 RepPipeline F（提取音轨 `transcribe`）+ RepPipeline E（关键帧 `render_page` → `page_image`），双路并行处理。
+
+#### 6.5.6 格式→entity_type→Pipeline 路由总表
+
+```text
+输入扩展名                    → entity_type → 默认 Pipeline
+─────────────────────────────────────────────────────────────
+.md .pdf .doc .docx          → document    → A (parse)
+.ppt .pptx                   → document    → A (parse) + E (render_page)
+.wps .wpt .dps .dpt          → document    → A (parse) + E (render_page)
+.txt .rtf .odt .html         → document    → A (parse)
+.csv .tsv .xls .xlsx         → table       → G (table_parse)
+.et .ett .parquet .json      → table       → G (table_parse)
+.jpg .jpeg .png .gif .webp   → image       → E (render_page)
+.bmp .tif .tiff .avif .heic  → image       → E (render_page)
+.svg                         → image       → E (rasterize→render_page)
+.wav .mp3 .flac .ogg         → audio       → F (transcribe)
+.m4a .opus                   → audio       → F (transcribe)
+.mp4 .avi .mov .mkv          → video       → F+E (transcribe+render_page)
+.webm .flv .wmv              → video       → F+E (transcribe+render_page)
+```
+
+#### 6.5.7 格式不支持时的处理
+
+| 场景 | 处理方式 |
+| --- | --- |
+| 扩展名不在清单中 | 返回 `INVALID_ENTITY_ID` 错误，提示支持的格式列表 |
+| 扩展名匹配但内容损坏 | RepStep `parse` 失败 → `PIPELINE_STEP_FAILED`，Worker 日志记录具体错误 |
+| WPS 格式但 LibreOffice 不可用 | 降级为 `UNSUPPORTED_FORMAT` 错误，提示安装 LibreOffice |
+| 新格式需求 | 注册自定义 RepStep（§6.6.5），在 Plugin 配置中声明 `supported_extensions` |
+
+#### 6.5.8 v0.2 格式扩展计划
+
+| 格式 | 扩展名 | entity_type | 说明 |
+| --- | --- | --- | --- |
+| **EPUB** | `.epub` | document | 电子书格式 |
+| **ODT** | `.odt` | document | OpenDocument 文本 |
+| **ODP** | `.odp` | document | OpenDocument 演示 |
+| **ODS** | `.ods` | table | OpenDocument 表格 |
+| **DOCX with macros** | `.docm` | document | 含宏的 Word 文档 |
+| **XLSX with macros** | `.xlsm` | table | 含宏的 Excel |
+| **网页快照** | `.mhtml` | document | MIME HTML 归档 |
+| **数据库** | `.sqlite`, `.duckdb` | table | 本地数据库文件 |
+| **网页** | URL | webpage | v0.2 新增 entity_type |
+
+### 6.6 Pipeline 之间的级联与避免重复
 
 | 场景 | 处理 |
 | --- | --- |
@@ -3524,7 +3657,7 @@ class RepStepRegistry:
 | `render_page` | 页面渲染 | `raw` | — | `page_image` | extract | document, image | image | ✅ |
 | `ocr` | OCR 识别 | `page_image` | — | `ocr_text` | recognize | document | text | ✅ |
 | `vlm` | VLM 视觉 | `page_image` | — | `vlm_md` | recognize | document | text | v0.2 |
-| `transcribe` | 音频转写 | `raw` | — | `transcript`, `audio_segment` | recognize | audio | audio | ✅ |
+| `transcribe` | 音视频转写 | `raw` | — | `transcript`, `audio_segment` | recognize | audio, video | audio | ✅ |
 | `table_parse` | 表格解析 | `raw` | — | `table_parquet`, `table_md`, `table_json` | compile | table | table | ✅ |
 | `compile_mind_map` | 脑图编译 | `canonical_md` | — | `mind_map` | compile | document | text | v0.2 |
 | `compile_graph_json` | 关系图编译 | `canonical_md` | — | `graph_json` | compile | document | text | v0.2 |
