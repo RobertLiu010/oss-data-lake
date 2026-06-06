@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险。
 
 ---
 
@@ -935,8 +935,8 @@ chunk_id = f"{entity_id}/{rep_type}/#{chunk_index}"
 
 **核心决策**：
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
-2. **零持久化元数据** — 不需要 `catalog.lance`、不需要 `lineage.json`、不需要 `entity.json`。
-3. **两套 OSS Object Tagging** — Entity Tag（10个，打在 original 上）+ Representation Tag（7个，打在每个 rep 文件上），作为唯一的业务元数据存储层。
+2. **准零持久化元数据** — 运行时从 OSS Tag + 路径实时组装（零持久化运行）；但关键不可推导信息（`rag_status` / `labels` / `version`）以 sidecar 文件持久化（`.entity_manifest.json` + `.version_log.jsonl`），作为灾难恢复的 Ground Truth（详见 §5.12）。
+3. **两套 OSS Object Tagging** — Entity Tag（10个，打在 original 上）+ Representation Tag（7个，打在每个 rep 文件上），作为运行时加速缓存（Tag 可从 Ground Truth 重建）。
 4. **VFS 实时扫描 prefix** 重建目录树 + 从**目录层级 + Pipeline 注册表**推导血缘 DAG，所有元数据从 OSS 实时获取。
 5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。每行 = 一个可检索单元（chunk），PK = `(entity_id, rep_type, chunk_index)`。
 
@@ -945,7 +945,9 @@ vector-lake/{workspace_id}/{collection_id}/
 │
 ├── {entity_id}/                                 ← Entity 目录（自包含）
 │   ├── source/                                  ← L0: 原始文件
-│   │   └── original                             ← raw 文件（带 Entity OSS Tag，10个）
+│   │   ├── original                             ← raw 文件（带 Entity OSS Tag，10个）
+│   │   ├── .entity_manifest.json                ← 不可推导信息持久化（§5.12）
+│   │   └── .version_log.jsonl                   ← 版本历史 append-only（§5.12）
 │   ├── extract/                                 ← L1: 直接提取
 │   │   ├── canonical.md                         ← rep 文件（带 Rep OSS Tag，7个）
 │   │   └── page_image/
@@ -980,8 +982,8 @@ vector-lake/{workspace_id}/{collection_id}/
 - Entity 目录 = 该 Entity 的完整知识单元，包含所有 representation 文件 + Lance 索引。
 - 迁移/复制/删除 = 操作整个 Entity 目录。
 - 不同 Entity 之间完全隔离，无并发写入冲突。
-- **零持久化元数据**：catalog / lineage / entity 元数据全部从 OSS 实时获取（VFS 扫描 + OSS Tag API）。
-- **每个 representation 文件自带 OSS Tag**：业务元数据直接附着在文件上，删除文件时 Tag 自动消失，不存在"孤儿元数据"问题。血缘从目录层级推导，不存于 Tag。
+- **准零持久化元数据**：运行时从 OSS Tag + 路径实时组装（零持久化运行）；不可推导信息（rag_status/labels/version）以 sidecar 持久化（§5.12）。
+- **每个 representation 文件自带 OSS Tag**：业务元数据直接附着在文件上，删除文件时 Tag 自动消失，不存在"孤儿元数据"问题。血缘从目录层级推导，不存于 Tag。Tag 可从 Ground Truth 重建。
 
 #### 1 张 Lance 表 + OSS Object Tagging
 
@@ -993,8 +995,8 @@ vector-lake/{workspace_id}/{collection_id}/
 **为什么只用 1 张 Lance 表**：
 - `catalog.lance` 不需要 — VFS 扫描 prefix 即可获取所有 Entity 目录。
 - `lineage.json` 不需要 — 血缘从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度）。
-- `entity.json` 不需要 — Entity 元数据从 OSS Tag 实时读取。
-- 所有元数据都可以从 OSS 实时重建，零持久化 → 没有同步问题。
+- `entity.json` 不需要 — Entity 元数据从 OSS Tag 实时读取（不可推导信息从 `.entity_manifest.json` 读取）。
+- 所有元数据都可以从 Ground Truth（文件 + 路径 + sidecar）重建，准零持久化 → 运行时无同步问题，灾难时可恢复。
 
 #### OSS Object Tagging（两套 Tag Schema：Entity + Representation）
 
@@ -2584,6 +2586,12 @@ Reconciler 周期任务（每 15 min）— Index 阶段
 ```text
 Reconciler 周期（每 15 min）
   │
+  ├─ Phase 0: Tag 可靠性校验（每天一次，详见 §5.12.3）
+  │   ├─ 随机采样 1% 的 Rep 文件
+  │   ├─ 计算 body_hash vs Tag content_hash
+  │   ├─ 不匹配 → 以 body_hash 为准，重写 Tag + 告警
+  │   └─ Tag 缺失 → 从 Ground Truth 重建（§5.12.4）
+  │
   ├─ Phase 1: Rep ↔ Raw 校验
   │   ├─ 扫描所有 Rep
   │   ├─ 检测不一致
@@ -2602,6 +2610,7 @@ Reconciler 周期（每 15 min）
 ```
 
 **关键不变量**：
+- Phase 0 在 Phase 1 之前执行（确保 Tag 可靠后再做一致性校验）
 - Phase 2 必须在 Phase 1 完成后执行（避免基于 stale Rep 建索引）
 - Index 重建失败不影响 Rep（两阶段独立）
 - 两个 Phase 可以并行运行在不同 Entity 上（Entity A 的 Rep 校验 和 Entity B 的 Index 校验不冲突）
@@ -4732,6 +4741,19 @@ semantic · lexical · hybrid · visual
 }
 ```
 
+### 14.7 管理员 API（元数据可靠性，v0.1）
+
+| API | 说明 | v0.1 |
+| --- | --- | --- |
+| `POST /v1/admin/rebuild_tags?scope=entity&entity_id=...` | 重建单个 Entity 的所有 OSS Tag（从 Ground Truth） | ✅ |
+| `POST /v1/admin/rebuild_tags?scope=workspace&workspace_id=...` | 重建整个 workspace 的 OSS Tag（灾难恢复） | ✅ |
+| `POST /v1/admin/verify?entity_id=...&mode=sampling` | 采样校验 body_hash vs Tag content_hash（1% 采样） | ✅ |
+| `POST /v1/admin/verify?entity_id=...&mode=full` | 全量校验 body_hash（代价高，灾难恢复专用） | ✅ |
+| `POST /v1/entities/{entity_id}/rebuild_lance` | 全量重建 Lance 数据集 | ✅ |
+| `GET /v1/admin/reconcile/status` | 查看 Reconciler 状态（上次扫描时间、漂移数量） | ✅ |
+
+> 所有 admin API 需要 mTLS + 管理员角色授权。
+
 ---
 
 ## 15. 非功能需求（NFR）
@@ -4754,11 +4776,15 @@ semantic · lexical · hybrid · visual
 | **并发 Entity** | 同时 ingest 数 | ≥ 10 Entity 无冲突 |
 | **可恢复** | raw → searchable 时间 | ≤ 5 min（PDF 100 页级别） |
 | **一致性** | reconcile 周期 | ≤ 15 min |
+| | Phase 0 延迟 | ≤ 30 min 全量采样校验（每天一次） |
 | | Phase 1 延迟 | ≤ 1 min 检测 Rep↔Raw 不一致 |
 | | Phase 2 延迟 | ≤ 1 min 检测 Index↔Rep 不一致（Phase 1 完成后） |
 | | Phase 3 延迟 | ≤ 1 min 检测 Projector 漂移（Phase 1+2 完成后） |
+| **元数据可恢复** | Tag 重建（单 Entity） | ≤ 30 s（从 Ground Truth 重建所有 Tag） |
+| | Tag 重建（全 workspace，1K Entity） | ≤ 30 min |
+| | Lance 重建（单 Entity，10K chunks） | ≤ 5 min |
 | **可用性** | retrieval gateway 月度可用性 | ≥ 99.5% |
-| **可观测** | 必埋点 | RepStep/IndexStep/ProjectorStep 各阶段耗时与失败率；Registry 注册事件；两阶段一致性指标；检索 QPS / 延迟 / top1 命中率 |
+| **可观测** | 必埋点 | RepStep/IndexStep/ProjectorStep 各阶段耗时与失败率；Registry 注册事件；两阶段一致性指标；检索 QPS / 延迟 / top1 命中率；VFS 漂移指标（vfs_drift_count / vfs_reconcile_duration / vfs_event_lag）；Tag 重建事件；body_hash 校验结果 |
 | **可扩展** | 横向扩展 | RepStep/IndexStep/ProjectorStep Executor Pool 各自独立扩缩容 |
 | **安全** | workspace 隔离 | 所有查询强制带 `workspace_id`；跨 ws 默认拒绝；Plugin 注册需 mTLS + 授权（v0.2） |
 | **存储** | 1K 文档估算 | ~7 GB（向量 ~2 GB + FTS ~200 MB + OSS ~5 GB） |
@@ -4790,6 +4816,10 @@ semantic · lexical · hybrid · visual
 | **S18. Projector 失败隔离** | Wiki Projector 投影失败（v0.2） | RepPipeline 标 `partial_success`；其他 step（如 compile_summary）继续执行；Rep 文件可用；Projector 单独告警 |
 | **S19. Plugin 热加载** | 动态注册新 RepStep（v0.2） | `POST /v1/rep_steps` 成功后立即可用；不影响正在执行的 RepPipeline |
 | **S20. Edge 状态联动** | src Entity 标 deleted | 关联 Edge 标 deleted；不可见 |
+| **S21. Tag 全量丢失恢复** | 运维误清所有 OSS Tag | `POST /v1/admin/rebuild_tags` 从 Ground Truth（文件 + 路径 + .entity_manifest.json）重建所有 Tag；系统恢复可用 |
+| **S22. Tag 与文件不一致** | RepStep 写文件后进程被杀（Tag 未打） | Reconciler Phase 0 检测到"文件存在但 Tag 缺失" → 标 stale → 触发重建 |
+| **S23. Lance 损坏自愈** | Lance 数据文件损坏 | 查询抛 CorruptedError → 自动标 index_status=failed → 触发 rebuild_lance() → 检索恢复 |
+| **S24. body_hash 校验** | Tag content_hash 与文件实际内容不匹配 | Phase 0 检测到 body_hash ≠ Tag content_hash → 以 body_hash 为准重写 Tag + 告警 |
 
 ---
 
@@ -4831,6 +4861,10 @@ semantic · lexical · hybrid · visual
 | R14 | 用户手改 `.md` 与 Lake 投影冲突 | Push 模式默认 `wiki.protect_user_edits=true` 不覆盖；编辑以 `user_edited_md` Representation 形式回流到 Lake |
 | R15 | Wiki vault 写入非原子（断电导致半截文件） | `os.replace` POSIX 原子 rename；OSS 端用 `PutObject → CopyObject + if-match` 替换 |
 | R16 | `rebuild()` 全量重投影与增量结果不一致 | 投影函数必须是事件的纯函数；以 `content_hash` 为基准做等价性比对 |
+| R17 | OSS Tag 全部丢失（跨区域复制未携带 Tag / 运维误操作） | `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化不可推导信息；`POST /v1/admin/rebuild_tags` 从 Ground Truth 重建（§5.12） |
+| R18 | Tag 写入非原子（写文件后进程被杀，Tag 未打） | 两阶段写入协议 + Reconciler Phase 0 检测"文件存在但 Tag 缺失"（§5.12.2 / §5.12.3） |
+| R19 | OSS 对象静默损坏（bit rot） | Phase 0 body_hash 校验（每天采样 1%）+ `POST /v1/admin/verify?mode=full` 全量校验（§5.12.3） |
+| R20 | `.entity_manifest.json` sidecar 与 Tag 不一致 | sidecar 优先原则 + Conditional Write 保证原子性（§5.12.3） |
 | Q1 | entity 是否需要"跨 collection 合并"？ | v0.1 不做；v0.2 讨论 `same_as` edge |
 | Q2 | wiki_md / mind_map 的 LLM 编译成本 | v0.2 实现；异步、按需、按版本 |
 | Q3 | graph index 用什么存储 | v0.1 用 graph_json representation + 内存遍历；v0.2 评估 Neo4j |
