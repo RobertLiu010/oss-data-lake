@@ -4,7 +4,7 @@
 > **状态**：待评审
 > **目标读者**：产品 / 架构 / 工程 / 算法
 > **核心定位**：把 OSS 数据湖升级为可被智能引擎直接调用的"知识搜索引擎层"。
-> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）。
+> **修订说明**：基于 v0.1 review + 架构讨论 + 开源项目对标，核心变更：(1) 1 OSS Object = 1 Entity；(2) Representation 是"认知视角"而非中间产物；(3) Pipeline 是一等公民，同一 Entity 可走多条并行流水线；(4) Chunk 是索引方法，不是存储概念；(5) 1 张 Lance 表 = representations.lance（内嵌 vector），PK = `(entity_id, rep_type, chunk_index)`；(6) 零持久化元数据，全部从两套 OSS Tag（Entity Tag 10个 + Representation Tag 7个）+ VFS 扫描实时获取；(7) 血缘不存于任何字段或 Tag，从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度：source/ → extract/ → recognize/ → compile/，_index/ 为系统目录）；(8) 表格型 Entity（entity_type=table）通过 DuckDB + compile/table.parquet 提供 SQL 统一查询，DuckDB 进程内嵌入、OSS 原生读取；(9) 三类一等检索能力（semantic / structural / textual）通过 §9 智能引擎统一路由与证据融合，DuckDB 作为 structural 的对等能力，与 Lance 协同工作；(10) Pipeline 间强依赖（拓扑排序）+ 混合型 Entity 启发式发现 + entity_type 6 级判定链；(11) **新增 Projector 层（§11）**：把 Lake 内部数据单向投影到多种外部消费者（RAG API / Wiki / Dashboard / Web），Lake 主体地位不动摇；(12) **新增 Wiki Projector 详设（§12）**：把 Karpathy LLM Wiki 视为 Lake 内部 Projector 的一种目标格式，Lake 主动把 Entity/Representation/Edge/Event 投影为 `~/wiki/` 目录的 .md + wikilink + index.md + log.md，wiki 独立可运行；(13) **RepPipeline 与 IndexPipeline 解耦（§2.2 / §3.1 / §4.5）**：Representation 生成（内容变换）和 Index 生成（搜索结构构建）是两件本质不同的事，拆为两套独立流水线，各自有独立的 Plugin 体系（RepStep / IndexStep）；(14) **RepStep Plugin 体系（§6.6）**：可插拔的内容变换步骤，新增 rep_type = 新增 RepStep + 注册，不改已有代码；(15) **IndexStep Plugin 体系（§6.7）**：可插拔的索引构建步骤，新增 index_type = 新增 IndexStep + 注册，与 RepStep 完全解耦；(16) **Projector 作为 RepStep 注册（§11）**：Projector 不再是独立事件驱动，而是 RepStep 的一种特殊形态，复用 RepPipeline 的编排能力；(17) **两阶段一致性模型（§2.5 / §5.7 / §5.9）**：一致性校验拆为 Rep↔Raw（内容一致性）和 Index↔Rep（索引一致性）两条独立链，Reconciler 也拆为两阶段执行，先修 Rep 再修 Index；(18) **专家 review 修复（v0.2 完善）**：P1 修复 §13 v0.1 范围对齐 Wiki Projector 是 v0.2；P2 拆 `input_reps` 为 `required_input_reps` + `optional_input_reps` 解决循环依赖；P3 §4.5 JSON schema 加 step_id 注释；S1-S11 + O1-O2 全面修复（§2.6/§3.2/§4.6 重写、§5.9.3 Projector 一致性、§5.10 Index Status、§5.11 Edge 生命周期、§5.9.4 rep_all_ready 精确定义、§6.8 并发模型、§14.5 Plugin 注册 API、§16 S15-S20 验收用例）；§2.4 术语统一 vlm_extracted_md → vlm_md；§11.3 表格对齐 WikiProjectorStep 状态为 v0.2；(19) **元数据可靠性与重建策略（§5.12）**：从可靠平台视角审视"零持久化"架构的元数据不可恢复风险，调整为"准零持久化"原则——运行时零持久化，但不可推导信息（rag_status/labels/version）以 `.entity_manifest.json` + `.version_log.jsonl` sidecar 持久化；新增 Reconciler Phase 0 body_hash 校验、Tag 写入原子性协议、Lance 损坏自愈、VFS 漂移监控、灾难恢复流程、管理员 API（§14.7）；§4.6 核心决策更新为"准零持久化"；§5.9 Reconciler 增加 Phase 0；§15 NFR 增加元数据可恢复指标；§16 增加 S21-S24 验收场景；§18 增加 R17-R20 风险；(20) **成熟项目参照优化（§5.12.9 - §5.12.14）**：参照 Delta Lake、Apache Iceberg、lakeFS、Lance 4 个成熟数据湖项目的元数据架构，识别当前 PRD 6 大设计缺口（事务日志、原子指针、三层元数据、Merkle 血缘、MVCC Manifest、Schema Evolution）；§4.6.x 新增 v0.2 三层元数据架构预览（事务日志 + 原子指针 + 快速索引）；§5.12.9 新增事务日志 + 原子指针交换（参考 Delta _delta_log + Iceberg compare-and-swap）；§5.12.10 新增 Merkle 树血缘（参考 lakeFS Graveler）；§5.12.11 新增三层元数据架构（参考 Iceberg Manifest List）；§5.12.12 新增 MVCC + 不可变 Manifest（参考 Lance spec）；§5.12.13 新增 Schema Evolution 规则；§5.12.14 明确 v0.1/v0.2 实施路径与设计哲学；§5.10.2 标注 v0.2 Manifest 显式化升级；§15 NFR 新增 v0.2 元数据架构指标（原子交换延迟 / 事务日志吞吐 / Time Travel / Checkpoint）；§18 风险新增 R21-R25；(21) **开源技术选型与复用（§20 + [OPEN_SOURCE_STACK.md](file:///workspace/OPEN_SOURCE_STACK.md)）**：从 OSS 数据管理 / 同步 / 向量检索 / Pipeline 编排 / 元数据治理 / 可观测性 / Lake Format 7 大类别盘点 50+ 开源项目；v0.1 选定最小可用集（OSS / MinIO + LanceDB + 自研调度 + OTel + Prometheus + Grafana + Sentry）；v0.2 引入候选（Dagster / Temporal / OpenMetadata / Kafka / JuiceFS / lakeFS）；新增 §20 包含 7 大类别速查、v0.1 最小可用集、v0.2 候选、OSS 事件通知集成模式、关键开源项目 GitHub 链接表、7 项关键决策记录（为何选 LanceDB / 为何自研调度 / 为何借鉴而非直接用 Iceberg）；(22) **Redis Streams 任务队列 + VFS MCP Server**：§6.9 新增 Redis Streams 任务队列设计（Stream 拓扑 / 消息格式 / 消费协议 / 可靠性保证 / 与 Celery 对比 / v0.2 演进路径），确认 v0.1 不使用 Celery（Celery 不可靠的根因是抽象层太多，直接用 Redis Streams 原语更可靠）；§9.5 新增 VFS MCP Server 设计（8 个 MCP Tools / stdio+SSE 双模式部署 / 与智能引擎映射 / v0.1 全量实现），向 LLM 暴露 Lake 的浏览/查询/检索能力；§20 v0.1 技术栈更新（Queue: Redis Streams / VFS→LLM: MCP Server）；§20.6 关键决策新增"任务队列"和"VFS→LLM"两条记录。
 
 ---
 
@@ -3615,6 +3615,138 @@ Entity 维度的锁：
 | 单 RepStep LLM 调用并发 | 5（per worker） | 队列等待 |
 | 单 RepStep 显存占用 | 8 GB | 失败 + 降级到 CPU |
 
+### 6.9 任务队列：Redis Streams（v0.1 选定）
+
+> **设计决策**：v0.1 使用 **Redis Streams** 作为任务队列，**不使用 Celery / Kafka**。
+>
+> **理由**：
+> - Celery 不可靠的根因是抽象层太多（broker → worker → result backend → serialization），不是 Redis 的问题
+> - 直接用 Redis Streams 原语 = 去掉 Celery 这层抽象 = 更可靠
+> - Kafka 对 v0.1 规模过重（Entity 级消息量低，不需要分区 / 副本 / 持久化）
+> - Redis 已是 Vector-Lake 的依赖（VFS 缓存 + 锁），不引入新组件
+
+#### 6.9.1 Stream 拓扑
+
+```text
+┌─────────────┐     XADD          ┌──────────────────────┐
+│ OSS Event   │ ──────────────►   │ stream:rep_pipeline  │
+│ Webhook     │                   │ (Consumer Group:      │
+│ Reconciler  │                   │  rep_workers)         │
+└─────────────┘                   └──────────┬───────────┘
+                                             │ XREADGROUP
+                                             ▼
+                                  ┌──────────────────────┐
+                                  │ RepStep Worker ×N     │
+                                  │ (Entity 内串行)        │
+                                  └──────────┬───────────┘
+                                             │ XADD (rep_all_ready)
+                                             ▼
+                                  ┌──────────────────────┐
+                                  │ stream:index_pipeline │
+                                  │ (Consumer Group:      │
+                                  │  index_workers)       │
+                                  └──────────┬───────────┘
+                                             │ XREADGROUP
+                                             ▼
+                                  ┌──────────────────────┐
+                                  │ IndexStep Worker ×M   │
+                                  │ (Entity 内串行)        │
+                                  └──────────────────────┘
+```
+
+#### 6.9.2 消息格式
+
+```json
+// XADD rep_pipeline * entity_id e-123 step_id render_page workspace ws1 ...
+{
+  "entity_id": "e-123",
+  "step_id": "render_page",
+  "workspace_id": "ws1",
+  "collection_id": "col1",
+  "trigger": "oss_event",          // oss_event | reconciler | manual
+  "trace_id": "abc-def-123",       // OpenTelemetry trace ID
+  "retry_count": 0,
+  "max_retries": 3,
+  "created_at": "2026-06-06T10:00:00Z"
+}
+```
+
+#### 6.9.3 消费协议
+
+```python
+# Worker 伪代码
+async def rep_worker():
+    while True:
+        # 1. 读取消息（阻塞等待，超时 5s）
+        entries = redis.xreadgroup(
+            "rep_workers", f"worker-{WORKER_ID}",
+            {"rep_pipeline": ">"},  # ">" = 只读未消费的
+            count=10, block=5000
+        )
+        for stream, messages in entries:
+            for msg_id, fields in messages:
+                entity_id = fields["entity_id"]
+                step_id = fields["step_id"]
+
+                # 2. Entity 内串行：用 Redis 分布式锁
+                async with redis_lock(f"rep:{entity_id}", timeout=300):
+                    try:
+                        # 3. 执行 RepStep
+                        step = RepStepRegistry.get(step_id)
+                        result = await step.execute(ctx)
+                        # 4. 成功 → XACK
+                        redis.xack("rep_pipeline", "rep_workers", msg_id)
+                        # 5. 如果是最后一个 RepStep → 投递到 index_pipeline
+                        if all_reps_ready(entity_id):
+                            redis.xadd("index_pipeline", {
+                                "entity_id": entity_id, ...
+                            })
+                    except Exception as e:
+                        # 6. 失败 → 不 ACK，等 XAUTOCLAIM 自动重试
+                        logger.error(f"RepStep failed: {e}")
+                        # 可选：立即 XACK + 投递到 dead_letter stream
+                        if fields["retry_count"] >= fields["max_retries"]:
+                            redis.xadd("stream:dead_letter", {**fields, "error": str(e)})
+                            redis.xack("rep_pipeline", "rep_workers", msg_id)
+```
+
+#### 6.9.4 可靠性保证
+
+| 场景 | Redis Streams 机制 | 效果 |
+|---|---|---|
+| Worker 正常处理 | `XACK` 确认 | 消息不再投递 |
+| Worker OOM / 被杀 | 未 ACK 的消息 | `XAUTOCLAIM` 自动 reclaim（超时 5 min） |
+| 消息积压 | `XINFO STREAM` + `XPENDING` | 监控 + 告警 |
+| 重复消费 | `XACK` 幂等 + RepStep 幂等（基于 content_hash） | 安全 |
+| 消息丢失 | Redis AOF / RDB 持久化 | 重启后恢复 |
+| 死信 | 超过 max_retries → `stream:dead_letter` | 人工处理 |
+
+#### 6.9.5 与 Celery 的对比
+
+| 维度 | Celery + Redis | Redis Streams 直连 |
+|---|---|---|
+| **可靠性** | 低（worker OOM 丢任务、chord 不可靠） | 高（XAUTOCLAIM 自动重试） |
+| **抽象层** | broker + worker + result backend + serialization | XADD / XREADGROUP / XACK |
+| **可观测** | 需 Flower / Celery events | `XINFO` / `XPENDING` 原生 |
+| **依赖** | Celery + Redis + (result backend) | Redis only |
+| **序列化** | pickle / json / msgpack（兼容性问题） | 纯 dict（无序列化层） |
+| **延迟** | 高（broker → worker → result） | 低（直连 Redis） |
+| **运维** | 复杂（worker 进程管理 + concurrency pool） | 简单（asyncio + Consumer Group） |
+
+#### 6.9.6 v0.2 演进路径
+
+```text
+v0.1: Redis Streams（单 Redis 实例 / Sentinel）
+  ├─ 2 个 Stream: rep_pipeline + index_pipeline
+  ├─ 1 个 Dead Letter: stream:dead_letter
+  └─ Consumer Group: rep_workers + index_workers
+       ↓
+v0.2: Redis Streams → Kafka（仅在以下条件满足时迁移）
+  ├─ 消息量 > 10K/s
+  ├─ 需要跨服务事件广播
+  └─ 需要更长的消息保留（Redis 内存有限）
+```
+
 ---
 
 ## 7. 多模态 Embedding 策略
@@ -4444,6 +4576,135 @@ class EvidencePack(BaseModel):
 | **§8.7 DuckDB 联邦** | **`capability_structural_federated`** | **跨表 JOIN** | **TableRow（多 Entity）** |
 | **§8.7 DuckDB + Lance** | **`capability_hybrid_structural_semantic`** | **结构化 + 语义** | **TableRow + Chunk** |
 
+### 9.5 VFS MCP Server（向 LLM 暴露 Lake）
+
+> **设计目标**：让 LLM（Claude / GPT / 开源模型）通过 **MCP (Model Context Protocol)** 直接浏览和查询 Vector-Lake，无需人工写 API 调用。
+>
+> **为什么选 MCP**：
+> - MCP 是 LLM 工具调用的事实标准（Claude Desktop / Cursor / VS Code / 开源 Agent 框架都支持）
+> - MCP 自带 schema 描述（LLM 自动知道怎么调用，不需要手写 function calling schema）
+> - MCP 支持 stdio（本地）和 SSE（远程）两种传输
+> - 比 REST API + OpenAPI spec 更轻量（一个 Python 文件即可启动）
+
+#### 9.5.1 MCP Tools 定义
+
+```python
+# vector_lake_vfs_mcp/server.py
+from mcp.server import Server
+
+server = Server("vector-lake-vfs")
+
+@server.tool()
+async def vfs_list_collections(workspace_id: str) -> list[dict]:
+    """列出 workspace 下所有 collection（名称 + Entity 数量 + 存储用量）"""
+    ...
+
+@server.tool()
+async def vfs_list_entities(
+    workspace_id: str,
+    collection_id: str,
+    entity_type: str | None = None,
+    rag_status: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """列出 collection 下所有 Entity（含元数据摘要：name / type / version / rag_status）"""
+    ...
+
+@server.tool()
+async def vfs_get_entity(workspace_id: str, entity_id: str) -> dict:
+    """获取 Entity 完整元数据（所有 Rep 状态 + Index 状态 + Edge + 血缘）"""
+    ...
+
+@server.tool()
+async def vfs_list_reps(workspace_id: str, entity_id: str) -> list[dict]:
+    """列出 Entity 的所有 Representation（rep_type / status / content_hash / pipeline_id / size）"""
+    ...
+
+@server.tool()
+async def vfs_get_rep_content(
+    workspace_id: str,
+    entity_id: str,
+    rep_type: str,
+    max_length: int = 5000,
+) -> str:
+    """读取 Rep 文件内容（仅文本类 Rep：canonical_md / ocr_text / summary / table_schema）"""
+    ...
+
+@server.tool()
+async def vfs_get_lineage(
+    workspace_id: str,
+    entity_id: str,
+    direction: str = "both",  # upstream | downstream | both
+) -> dict:
+    """获取 Entity 的血缘图谱（上游 raw → 下游 Rep → Index → Projector）"""
+    ...
+
+@server.tool()
+async def vfs_search(
+    workspace_id: str,
+    query: str,
+    mode: str = "semantic",  # semantic | structural | textual
+    limit: int = 10,
+) -> list[dict]:
+    """在 Lake 中检索（语义 / 结构 / 全文），返回命中的 Entity + Chunk + 证据"""
+    ...
+
+@server.tool()
+async def vfs_get_status(workspace_id: str) -> dict:
+    """获取 Lake 运行状态（Entity 数 / Rep 数 / Index 数 / Reconciler 状态 / 漂移数 / 队列积压）"""
+    ...
+```
+
+#### 9.5.2 部署模式
+
+```text
+模式 A：本地 stdio（开发 / 单用户）
+  Claude Desktop / Cursor → stdio → vector-lake-vfs-mcp
+  配置：claude_desktop_config.json
+  {
+    "mcpServers": {
+      "vector-lake-vfs": {
+        "command": "python",
+        "args": ["-m", "vector_lake_vfs_mcp"],
+        "env": {"LAKE_OSS_ENDPOINT": "...", "LAKE_REDIS_URL": "..."}
+      }
+    }
+  }
+
+模式 B：远程 SSE（生产 / 多用户）
+  LLM Agent → HTTP SSE → vector-lake-vfs-mcp-server:8000
+  鉴权：Bearer Token / mTLS
+  限流：Redis 令牌桶（per user）
+```
+
+#### 9.5.3 MCP Tools 与 §9 智能引擎的映射
+
+| MCP Tool | 智能引擎能力 | 底层调用 |
+|---|---|---|
+| `vfs_list_collections` | — | VFS prefix scan |
+| `vfs_list_entities` | — | VFS prefix scan + Tag 读取 |
+| `vfs_get_entity` | — | VFS + `.entity_manifest.json` + Lance metadata |
+| `vfs_list_reps` | — | VFS prefix scan + Tag 读取 |
+| `vfs_get_rep_content` | — | OSS GetObject |
+| `vfs_get_lineage` | `capability_lineage` | 目录层级 + Pipeline Registry 推导 |
+| `vfs_search` | `capability_semantic` / `structural` / `textual` | §9.2 智能引擎路由 |
+| `vfs_get_status` | — | Redis XINFO + Reconciler 状态 |
+
+#### 9.5.4 v0.1 范围
+
+| Tool | v0.1 | 说明 |
+|---|---|---|
+| `vfs_list_collections` | ✅ | 必须 |
+| `vfs_list_entities` | ✅ | 必须 |
+| `vfs_get_entity` | ✅ | 必须 |
+| `vfs_list_reps` | ✅ | 必须 |
+| `vfs_get_rep_content` | ✅ | 必须（LLM 需要读内容做推理） |
+| `vfs_get_lineage` | ✅ | 必须（LLM 需要理解数据来源） |
+| `vfs_search` | ✅ | 必须（核心检索能力） |
+| `vfs_get_status` | ✅ | 运维 + LLM 自诊断 |
+
+> **实现**：v0.1 用 `mcp` Python SDK（`pip install mcp`），单文件 `server.py`，约 300 行代码。
+
 ---
 
 ## 10. 设计原则（不可妥协）
@@ -5173,7 +5434,8 @@ semantic · lexical · hybrid · visual
 │  Event:          OSS Event Notification / MinIO Webhook      │
 │  Vector:         LanceDB（embedded）                         │
 │  Pipeline:       自研 RepStep / IndexStep 调度（§6）          │
-│  Queue:          Redis Streams / Python asyncio.Queue        │
+│  Queue:          Redis Streams（§6.9，不使用 Celery）         │
+│  VFS→LLM:        MCP Server（§9.5，stdio / SSE）             │
 │  Config:         YAML + 环境变量                              │
 │  Observability:  OpenTelemetry + Prometheus + Grafana        │
 │  Errors:         Sentry                                       │
@@ -5233,7 +5495,8 @@ semantic · lexical · hybrid · visual
 | **向量检索** | LanceDB | Milvus / Qdrant | Lance 与多模态场景契合；v0.1 嵌入式 |
 | **Pipeline 编排** | 自研（v0.1） → Dagster（v0.2） | Airflow | 资产为中心更契合 |
 | **Lake Format** | Lance 协议 | Iceberg / Delta | Entity 模型与 Table 不同，借鉴而非直接用 |
-| **任务队列** | Redis Streams（v0.1） → Kafka（v0.2） | RabbitMQ | 简化部署 |
+| **任务队列** | Redis Streams（v0.1） → Kafka（v0.2） | Celery / RabbitMQ | Celery 不可靠（抽象层太多）；Redis Streams 直连更可靠 |
+| **VFS→LLM** | MCP Server（v0.1） | REST API + OpenAPI | MCP 是 LLM 工具调用标准；自带 schema 描述 |
 | **可观测性** | OTel + Prometheus + Grafana | ELK / 商业方案 | 云原生标准 |
 | **元数据治理** | 自研 VFS（v0.1） → OpenMetadata（v0.2） | DataHub / Atlas | v0.1 简单；v0.2 集成 |
 
