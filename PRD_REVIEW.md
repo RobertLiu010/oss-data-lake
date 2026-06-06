@@ -390,7 +390,387 @@ LiveVectorLake 的核心卖点就是"point-in-time retrieval"。对于合规/审
 
 ---
 
-## 七、参考资料
+## 七、可靠平台视角：元数据不可靠时的重建策略
+
+> **评审视角**：从一个生产级可靠平台的角度，审视当前 PRD 的元数据架构在"元数据丢失/损坏/不一致"时的恢复能力。核心问题：**当 OSS Tag 丢失、VFS 漂移、Lance 元数据损坏时，系统能否自愈？恢复路径是否完整？**
+
+### 7.1 当前元数据架构的依赖链
+
+当前 PRD 的元数据架构遵循"零持久化"原则，所有元数据从以下 3 个来源实时组装：
+
+```text
+来源1: OSS 路径结构（目录名 + 文件名）
+  → entity_id, workspace_id, collection_id, stage, rep_type
+
+来源2: OSS Object Tagging
+  → Entity Tag（10个，打在 source/original 上）: entity_type, name, content_hash, version, rag_status, labels, ...
+  → Rep Tag（7个，打在每个 rep 文件上）: rep_type, pipeline_id, transform, modality, status, model_version, entity_version
+
+来源3: Lance dataset custom metadata
+  → index_status, index_built_from_hash, index_built_at, index_model_version, index_pipeline_id, index_failed_reason
+```
+
+**关键假设**：这 3 个来源始终可用、始终一致。
+
+### 7.2 故障场景分析
+
+#### F1. OSS Tag 全部丢失（最严重）
+
+**触发原因**：
+- OSS 跨区域复制（Cross-Region Replication）默认**不复制 Tag**（需显式开启 `ReplicateTags`）
+- OSS 生命周期规则误配：`Expiration` 策略只清理对象，但某些云厂商的 `NoncurrentVersionExpiration` 会清理历史版本的 Tag
+- 运维误操作：`ossutil rm --tagging` 批量清除 Tag
+- OSS 控制面故障：Tag 服务短暂不可用（阿里云 OSS 2024 年发生过 Tag API 499 事件）
+- Bucket Policy 变更导致 Tag API 权限丢失
+
+**影响范围**：
+- Entity 属性全部丢失：`entity_type`、`content_hash`、`version`、`rag_status`、`labels` 无法读取
+- Rep 属性全部丢失：`status`、`pipeline_id`、`transform`、`model_version`、`entity_version` 无法读取
+- 状态联动全部失效：无法判断哪些 Rep 是 stale/failed/ready
+- Index 状态丢失：Lance metadata 仍在，但 `index_built_from_hash` 无法与 Rep Tag 的 `content_hash` 对账
+- **系统完全瘫痪**：VFS 能看到文件，但不知道任何文件的语义
+
+**当前 PRD 的恢复能力**：❌ **无**。PRD 没有描述任何 Tag 重建机制。
+
+**可恢复性分析**：
+
+| 字段 | 能否从其他来源重建 | 重建方式 | 代价 |
+|---|---|---|---|
+| `entity_type` | ✅ 可重建 | 从文件 MIME 推断（但不如原始 detect 准确） | 需重新 detect |
+| `name` | ✅ 可重建 | 从 source/original 的文件名提取 | 低 |
+| `content_hash` | ✅ 可重建 | 重新计算 raw bytes SHA-256 | 高（需读全部 raw） |
+| `version` | ⚠️ 不可靠重建 | Lance manifest 可能保留 entity_version 线索，但不可靠 | 可能丢失版本历史 |
+| `rag_status` | ❌ 不可重建 | enabled/hidden/deleted 是用户意图，无法从文件推断 | **用户意图永久丢失** |
+| `labels` | ❌ 不可重建 | 业务标签是人工标注，无法从文件推断 | **业务元数据永久丢失** |
+| `rep_type` | ✅ 可重建 | 从路径后缀 + 命名约定表推导 | 低 |
+| `pipeline_id` | ⚠️ 部分重建 | 从 rep_type 反查 RepStepRegistry 的 output_reps | 可能多对一 |
+| `transform` | ⚠️ 部分重建 | 从 pipeline_id + step_id 推导 | 同上 |
+| `modality` | ✅ 可重建 | 从 rep_type → 命名约定表推导 | 低 |
+| `status` | ⚠️ 需重新计算 | 重新执行一致性校验（文件存在=ready? 不一定） | 需全量 reconcile |
+| `model_version` | ❌ 不可重建 | 产出该 Rep 的模型版本信息无法从文件内容推断 | **需重跑 Pipeline 才能确认** |
+| `entity_version` | ⚠️ 部分重建 | 从 Lance chunk 的 entity_version 列获取 | 仅限已索引的 Rep |
+
+**结论**：OSS Tag 丢失后，**用户意图（rag_status/labels）和版本信息（version/model_version）不可恢复**，这是"零持久化"架构的根本风险。
+
+#### F2. OSS Tag 部分损坏（Tag 与实际状态不一致）
+
+**触发原因**：
+- Tag 写入非原子：`PutObjectTagging` API 调用成功但只写了部分 Tag（网络超时后重试，但 OSS 端已部分写入）
+- Pipeline 执行中断：RepStep 写了文件但未打 Tag（进程 OOM / 被杀）
+- 并发写入冲突：两个 RepStep 同时写同一 Rep 的 Tag（虽然 PRD 说 Entity 内串行，但 Tag 更新可能跨 Entity）
+
+**影响范围**：
+- Rep 文件存在但 Tag `status=stale`（文件实际是新的，Tag 是旧的）
+- Rep 文件不存在但 Tag `status=ready`（文件被删，Tag 未更新）
+- `content_hash` Tag 与文件实际内容不匹配（文件被覆盖但 Tag 未更新）
+
+**当前 PRD 的恢复能力**：⚠️ **部分**。Reconciler 每 15 分钟做一次全量扫描，但：
+- Reconciler 依赖 Tag 中的 `source_content_hash` 来判断 Rep 是否 stale——如果 Tag 本身就是错的，Reconciler 的判断也会错
+- PRD 没有描述 Reconciler 如何检测"Tag 与文件内容不一致"（§5.9.1 提到了 `body_hash` vs Tag `content_hash`，但没有详细描述检测频率和修复策略）
+
+#### F3. VFS 漂移（内存视图与 OSS 实际状态不一致）
+
+**触发原因**：
+- OSS 事件丢失：Event Listener 宕机期间的所有事件丢失
+- OSS 事件乱序：`ObjectCreated` 事件比 `ObjectModified` 先到达（OSS 事件不保证严格有序）
+- VFS 内存淘汰：长时间未访问的节点被 LRU 淘汰，后续访问读到的可能是过期数据
+
+**当前 PRD 的恢复能力**：✅ **有**。Reconciler 每 15 分钟全量扫描 + VFS 对账。但：
+- 15 分钟窗口内的漂移可能导致检索返回过期结果
+- PRD 没有描述 VFS 漂移的检测指标（如 `vfs_drift_count`）
+- 全量扫描在大规模数据下（100K+ Entity）的延迟未量化
+
+#### F4. Lance 元数据损坏
+
+**触发原因**：
+- Lance 数据文件损坏（磁盘 bit rot / OSS 静默数据损坏）
+- Lance schema 演进失败（migration 中断）
+- Lance 写入中断（进程 crash 导致 manifest 不一致）
+
+**当前 PRD 的恢复能力**：✅ **有**。`Entity.rebuild_lance()` 支持从 OSS Rep 文件 + staging Parquet 全量重建。但：
+- PRD 没有描述 `rebuild_lance()` 的触发条件（自动检测损坏？手动触发？）
+- 全量重建的代价未量化（100K chunks 的重建需要多久？）
+- Lance metadata 中的 `index_status` / `index_built_from_hash` 丢失后，Index 状态需要从 Rep Tag 重新推导
+
+#### F5. OSS 对象静默损坏
+
+**触发原因**：
+- OSS 内部数据校验失败（极低概率但非零）
+- 网络传输 bit flip
+- 客户端写入时数据已损坏（但 OSS 端 etag 校验通过——因为 etag 是上传时计算的）
+
+**当前 PRD 的恢复能力**：⚠️ **部分**。`content_hash`（SHA-256）可以检测损坏，但：
+- PRD 没有描述定期校验 `content_hash` 的机制（Reconciler 检查的是 Tag 中的 hash vs Tag 中的 hash，不是 Tag hash vs 实际文件 hash）
+- §5.9.1 提到"检查 Rep 文件的 body_hash vs Tag 中的 content_hash（防篡改/损坏）"，但没有描述 body_hash 的计算频率和代价
+
+#### F6. OSS Tag 数量限制导致的元数据截断
+
+**触发原因**：
+- 阿里云 OSS 限制每个对象最多 **10 个 Tag**，每个 Tag Key ≤ 128 字节，Value ≤ 256 字节
+- 当前 Entity Tag 已用 10 个（满额），Rep Tag 已用 7 个（预留 3 个）
+- 如果未来需要新增 Tag（如 `sync_state`、`quality_score`、`source_url`），会超出限制
+
+**当前 PRD 的恢复能力**：⚠️ **部分**。PRD 提到了 `.meta.json` sidecar 作为 v0.2+ 演进路径，但：
+- sidecar 文件本身没有原子性保证（写 sidecar 和写 Tag 不是原子操作）
+- sidecar 文件的损坏/丢失场景未描述
+- sidecar 与 Tag 的优先级未定义（Tag 优先？sidecar 优先？合并？）
+
+### 7.3 核心问题汇总
+
+| # | 问题 | 严重度 | 当前状态 |
+|---|---|---|---|
+| **M1** | OSS Tag 全部丢失后用户意图（rag_status/labels）不可恢复 | **Must Fix** | PRD 无任何恢复机制 |
+| **M2** | OSS Tag 写入非原子，可能导致 Tag 与文件状态不一致 | **Must Fix** | PRD 未描述 Tag 写入的原子性保证 |
+| **M3** | `version` 字段在 Tag 丢失后不可靠重建 | **Must Fix** | 版本历史可能永久丢失 |
+| **S1** | Reconciler 依赖 Tag 判断一致性，但 Tag 本身可能不可靠 | **Should Fix** | §5.9.1 有 body_hash 检查但不够具体 |
+| **S2** | VFS 漂移检测无指标、无告警 | **Should Fix** | 无 `vfs_drift_count` 等指标 |
+| **S3** | Lance 损坏自动检测未描述 | **Should Fix** | `rebuild_lance()` 存在但触发条件不明 |
+| **S4** | OSS 对象静默损坏的定期校验未描述 | **Should Fix** | content_hash 可检测但无定期校验机制 |
+| **S5** | `.meta.json` sidecar 与 Tag 的一致性未定义 | **Should Fix** | v0.2+ 演进路径但无一致性模型 |
+| **S6** | Reconciler 全量扫描在大规模数据下的延迟未量化 | **Should Fix** | 15 min 周期但 100K+ Entity 场景未评估 |
+| **N1** | Tag 10 个限制的扩展策略过于模糊 | **Nice to Have** | sidecar 方案仅一句话提及 |
+
+### 7.4 重建策略建议
+
+#### 7.4.1 核心原则：**文件是 Truth，Tag 是 Cache**
+
+当前 PRD 的隐含假设是"Tag 是 Truth"——所有元数据从 Tag 读取，路径只是定位。但从一个可靠平台的角度，应该反过来：
+
+> **文件内容 + 路径结构 = Ground Truth（可重建）**
+> **OSS Tag = 加速缓存（可从 Ground Truth 重建）**
+
+这意味着：
+1. 所有 Tag 中的信息，要么能从文件/路径**确定性地推导**，要么能从**确定性算法重建**
+2. 不能从文件/路径推导的信息（用户意图），必须有**独立的持久化存储**
+3. Tag 重建 = 从 Ground Truth 重新计算 + 写回 Tag
+
+#### 7.4.2 具体修复方案
+
+**M1 修复：用户意图持久化**
+
+`rag_status` 和 `labels` 是用户意图，无法从文件推断。需要独立持久化：
+
+```text
+方案A（推荐）: Entity Manifest Sidecar
+  在 source/ 目录下增加 source/.entity_manifest.json
+  内容：{ "rag_status": "enabled", "labels": ["pricing", "finance"], "version": 3, "content_hash": "sha256:xxx" }
+  写入时机：与 Tag 写入原子绑定（先写文件再写 Tag，读时以文件为准）
+  优势：与 raw 文件同目录，迁移/复制时自动跟随
+
+方案B: 外部元数据存储（PostgreSQL / Redis）
+  优势：事务性、查询能力强
+  劣势：引入新依赖，与"零持久化"原则冲突
+```
+
+**M2 修复：Tag 写入原子性**
+
+```text
+当前问题：PutObjectTagging 是单次 API 调用（原子），但"写文件 + 打 Tag"是两步操作。
+
+修复：两阶段写入协议
+  Phase 1: 写 Rep 文件（内容就绪）
+  Phase 2: 写 Tag（标记就绪）
+  读 Tag 时：如果文件存在但 Tag 缺失/不完整 → 视为"写入中断" → 标记 status=stale → 触发重建
+
+具体实现：
+  1. RepStep.execute() 产出文件后，先写文件
+  2. 文件写入成功后，调用 PutObjectTagging 打全量 Tag（原子操作）
+  3. 如果步骤 2 失败，Reconciler 检测到"文件存在但 Tag 缺失" → 标 stale → 重跑
+```
+
+**M3 修复：版本历史持久化**
+
+```text
+当前问题：version 存在 Tag 中，Tag 丢失后版本历史不可恢复。
+
+修复：版本日志文件
+  在 source/ 目录下增加 source/.version_log.jsonl
+  每行：{ "version": 3, "content_hash": "sha256:xxx", "timestamp": "...", "trigger": "raw_update" }
+  追加写入（append-only），不修改历史行
+  Tag 丢失时从 .version_log.jsonl 重建 version 字段
+```
+
+**S1 修复：Reconciler 增加 body_hash 校验**
+
+```text
+当前 §5.9.1 提到 body_hash 检查但不够具体。
+
+增强：
+  Reconciler Phase 0（在 Phase 1 之前）:
+    ├─ 扫描所有 Rep 文件
+    ├─ 计算文件内容的 SHA-256（body_hash）
+    ├─ 对比 body_hash vs Tag 中的 content_hash
+    ├─ 不匹配 → Tag 不可靠 → 以 body_hash 为准，重写 Tag
+    └─ Tag 缺失 → 从路径 + 命名约定 + body_hash 重建 Tag
+
+  频率：每天一次（非每次 Reconciler 都做，因为计算 body_hash 代价高）
+  触发条件：也可由 `POST /v1/entities/{entity_id}/verify` 手动触发
+```
+
+**S2 修复：VFS 漂移指标**
+
+```text
+新增指标：
+  vfs_drift_count          — Reconciler 每次扫描发现的漂移数量
+  vfs_drift_type           — 漂移类型（missing_file / extra_file / tag_mismatch / hash_mismatch）
+  vfs_reconcile_duration   — Reconciler 扫描耗时
+  vfs_event_lag            — Event Listener 事件积压数量
+
+告警规则：
+  vfs_drift_count > 10 in 15 min → 告警
+  vfs_reconcile_duration > 5 min → 告警（大规模数据下可能需要分片扫描）
+```
+
+**S3 修复：Lance 损坏自动检测**
+
+```text
+触发条件：
+  1. Lance 查询抛异常（CorruptedError / SchemaError）
+  2. Reconciler Phase 0 校验 Lance manifest 完整性
+  3. 手动触发 `POST /v1/entities/{entity_id}/rebuild_lance`
+
+自动恢复：
+  Lance 损坏 → 标 index_status=failed → 触发 rebuild_lance()
+  rebuild_lance() 从 OSS Rep 文件重跑 IndexPipeline → 重建 staging Parquet → 重建 Lance
+```
+
+**S4 修复：定期 content_hash 校验**
+
+```text
+新增 Reconciler Phase 0（每天一次）:
+  ├─ 随机采样 1% 的 Rep 文件
+  ├─ 计算文件内容 SHA-256
+  ├─ 对比 Tag content_hash
+  └─ 不匹配 → 告警 + 标 stale + 触发重建
+
+全量校验：
+  `POST /v1/admin/verify_all?mode=full` — 全量计算所有文件的 body_hash
+  代价高，仅用于灾难恢复场景
+```
+
+**S5 修复：sidecar 一致性模型**
+
+```text
+优先级规则：
+  1. 如果 .meta.json 存在 → 以 .meta.json 为准（它是最新写入的）
+  2. 如果 .meta.json 不存在 → 以 Tag 为准
+  3. 如果两者都存在但冲突 → 以 .meta.json 为准，Tag 视为过期缓存
+
+写入协议：
+  写入时：先写 .meta.json → 再写 Tag（Tag 是 .meta.json 的子集缓存）
+  读取时：先读 Tag（快），如果 Tag 缺失/不完整 → 读 .meta.json（慢但可靠）
+
+一致性保证：
+  .meta.json 写入用 OSS Conditional Write（if-match etag）保证原子性
+  Tag 写入失败不影响 .meta.json（下次 Reconciler 从 .meta.json 重建 Tag）
+```
+
+**S6 修复：Reconciler 分片扫描**
+
+```text
+当前：全量扫描 vector-lake/{ws}/{col}/ prefix
+
+改进：分片扫描
+  ├─ 按 entity_id 前缀分片（如 0-9, a-f, g-m, n-s, t-z）
+  ├─ 每个分片独立扫描、独立对账
+  ├─ 15 min 内轮完所有分片（每个分片约 1-2 min）
+  └─ 大规模场景（100K+ Entity）下可配置并行扫描
+
+指标：
+  reconcile_shard_count       — 分片数量
+  reconcile_shard_duration    — 单分片扫描耗时
+  reconcile_entities_scanned  — 本次扫描的 Entity 数量
+```
+
+### 7.5 元数据重建的完整流程
+
+```text
+灾难恢复：OSS Tag 全部丢失
+  │
+  ├─ Step 1: VFS 全量扫描（从 OSS 路径重建目录树）
+  │   ├─ 扫描 vector-lake/{ws}/{col}/ prefix
+  │   ├─ 从路径解析：entity_id, workspace_id, collection_id, stage, rep_type
+  │   └─ 产出：Entity 目录列表 + Rep 文件列表
+  │
+  ├─ Step 2: 重建 Entity Tag（从文件 + .entity_manifest.json）
+  │   ├─ 读取 source/.entity_manifest.json → 恢复 rag_status, labels, version
+  │   ├─ 重新计算 raw bytes SHA-256 → 恢复 content_hash
+  │   ├─ 从文件 MIME 推断 entity_type → 恢复 entity_type
+  │   ├─ 从文件名提取 name → 恢复 name
+  │   └─ 写回 Entity Tag（PutObjectTagging）
+  │
+  ├─ Step 3: 重建 Rep Tag（从路径 + 命名约定 + 文件内容）
+  │   ├─ 从路径后缀 + 命名约定表 → 恢复 rep_type
+  │   ├─ 从 RepStepRegistry 反查 → 恢复 pipeline_id, transform, modality
+  │   ├─ 计算文件内容 SHA-256 → 恢复 content_hash
+  │   ├─ 从 .entity_manifest.json → 恢复 entity_version
+  │   ├─ status 暂设 "stale"（保守策略，需重新校验）
+  │   └─ 写回 Rep Tag
+  │
+  ├─ Step 4: 重建 Index Status（从 Rep Tag + Lance metadata）
+  │   ├─ 重新计算 build_from_hash_set
+  │   ├─ 对比 Lance metadata 中的 index_built_from_hash
+  │   ├─ 不匹配 → 标 index_status=stale
+  │   └─ 写回 Lance metadata
+  │
+  ├─ Step 5: 全量 Reconcile（Phase 0 + Phase 1 + Phase 2）
+  │   ├─ Phase 0: body_hash 校验（确认 Step 2/3 重建的 Tag 正确）
+  │   ├─ Phase 1: Rep↔Raw 一致性校验（确认所有 Rep 与 Raw 一致）
+  │   └─ Phase 2: Index↔Rep 一致性校验（确认所有 Index 与 Rep 一致）
+  │
+  └─ Step 6: 触发必要重建
+      ├─ stale Rep → 重跑 RepPipeline
+      ├─ stale Index → 重跑 IndexPipeline
+      └─ 产出 `recovery_report.json`（记录重建了哪些 Tag、哪些 Pipeline 被重跑）
+```
+
+### 7.6 关键设计变更建议
+
+| # | 变更 | 原则 | 影响 |
+|---|---|---|---|
+| **D1** | 新增 `source/.entity_manifest.json` | 用户意图（rag_status/labels/version）必须有独立于 Tag 的持久化 | 打破"零持久化"原则，但换来可恢复性 |
+| **D2** | 新增 `source/.version_log.jsonl` | 版本历史 append-only 记录 | 极小文件，不影响性能 |
+| **D3** | Tag 写入协议：先文件后 Tag，Tag 视为缓存 | 文件是 Truth，Tag 是 Cache | 需修改 RepStep 写入逻辑 |
+| **D4** | Reconciler 增加 Phase 0（body_hash 校验） | 不信任 Tag，信任文件内容 | 每天一次，代价可控 |
+| **D5** | 新增 `POST /v1/admin/rebuild_tags` API | 一键重建所有 Tag | 灾难恢复专用 |
+| **D6** | 新增 `POST /v1/admin/verify` API | 手动触发 body_hash 校验 | 运维工具 |
+| **D7** | `.meta.json` sidecar 与 Tag 的一致性模型 | sidecar 优先，Tag 是缓存 | v0.2+ 实现 |
+
+### 7.7 对"零持久化"原则的重新审视
+
+当前 PRD 的"零持久化"原则（§4.6 核心决策第 2 条）是一个**理想化设计**——它消除了元数据同步问题，但引入了**元数据不可恢复**的根本风险。
+
+从可靠平台的角度，建议将原则调整为：
+
+> **准零持久化**：系统运行时从 OSS Tag + 路径实时组装元数据（零持久化运行）；但关键不可推导信息（用户意图、版本历史）以 sidecar 文件持久化，作为灾难恢复的 Ground Truth。
+
+**不可推导信息清单**（必须持久化）：
+
+| 信息 | 存储位置 | 可否从文件/路径推导 |
+|---|---|---|
+| `rag_status` | `.entity_manifest.json` | ❌ 用户意图 |
+| `labels` | `.entity_manifest.json` | ❌ 业务标注 |
+| `version` | `.version_log.jsonl` | ⚠️ 可从 Lance 推断但不可靠 |
+| `model_version` | Rep Tag（可从重跑 Pipeline 重建） | ⚠️ 代价高但可重建 |
+
+**可推导信息**（不需要持久化，可从 Ground Truth 重建）：
+
+| 信息 | 推导方式 |
+|---|---|
+| `entity_id` | 目录名 |
+| `entity_type` | 文件 MIME 推断 |
+| `name` | 文件名 |
+| `content_hash` | 重新计算 SHA-256 |
+| `rep_type` | 路径后缀 + 命名约定表 |
+| `pipeline_id` | RepStepRegistry 反查 |
+| `transform` | RepStepRegistry 反查 |
+| `modality` | 命名约定表 |
+| `status` | 重新执行一致性校验 |
+| `index_status` | 重新执行 Index↔Rep 校验 |
+
+---
+
+## 八、参考资料
 
 | 来源 | 关键洞察 |
 | --- | --- |

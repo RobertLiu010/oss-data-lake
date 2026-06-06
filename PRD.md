@@ -2743,6 +2743,174 @@ lance_dataset.update_metadata({
 - ❌ 反向回写（从 `~/wiki/` wikilink 解析回 Edge，v0.2）
 - ❌ Edge 自己的 Lint 规则（v0.2）
 
+### 5.12 元数据可靠性与重建策略
+
+> **核心原则**：**文件内容 + 路径结构 = Ground Truth（可重建），OSS Tag = 加速缓存（可从 Ground Truth 重建）**。
+>
+> 当前 PRD 的"零持久化"原则在运行时不变（从 OSS Tag + 路径实时组装元数据），但关键不可推导信息（用户意图、版本历史）必须有独立于 Tag 的持久化，作为灾难恢复的 Ground Truth。此即**准零持久化**原则。
+
+#### 5.12.1 不可推导信息持久化
+
+以下信息无法从文件/路径确定性地推导，必须独立持久化：
+
+| 信息 | 持久化方式 | 位置 | 说明 |
+|---|---|---|---|
+| `rag_status` | `.entity_manifest.json` | `source/.entity_manifest.json` | 用户意图（enabled/hidden/deleted） |
+| `labels` | `.entity_manifest.json` | `source/.entity_manifest.json` | 业务标签 |
+| `version` | `.version_log.jsonl` | `source/.version_log.jsonl` | 版本历史（append-only） |
+
+**Entity Manifest 文件**（`source/.entity_manifest.json`）：
+
+```json
+{
+  "rag_status": "enabled",
+  "labels": ["pricing", "finance"],
+  "version": 3,
+  "content_hash": "sha256:abc...",
+  "entity_type": "document",
+  "name": "pricing.pdf",
+  "updated_at": "2026-06-06T10:00:00Z"
+}
+```
+
+> 写入时机：与 Tag 写入绑定——先写 `.entity_manifest.json`（Conditional Write `if-match etag`），再写 Tag。Tag 写入失败不影响 manifest。
+
+**版本日志文件**（`source/.version_log.jsonl`）：
+
+```text
+{"version": 1, "content_hash": "sha256:aaa...", "timestamp": "2026-06-01T10:00:00Z", "trigger": "ingest"}
+{"version": 2, "content_hash": "sha256:bbb...", "timestamp": "2026-06-03T14:00:00Z", "trigger": "raw_update"}
+{"version": 3, "content_hash": "sha256:ccc...", "timestamp": "2026-06-06T10:00:00Z", "trigger": "raw_update"}
+```
+
+> 追加写入（append-only），不修改历史行。Tag 丢失时从最后一行恢复 `version` 字段。
+
+#### 5.12.2 Tag 写入原子性协议
+
+```text
+RepStep 写入协议（两阶段）：
+  Phase 1: 写 Rep 文件到 OSS（内容就绪）
+  Phase 2: 写 OSS Tag（PutObjectTagging，单次 API 原子操作）
+  Phase 2b: 写 .entity_manifest.json（如果涉及 Entity 级 Tag 变更）
+
+读取协议：
+  正常路径：读 Tag（快）
+  Tag 缺失/不完整：读 .entity_manifest.json（慢但可靠）+ 从路径推导
+
+异常检测：
+  文件存在 + Tag 缺失 → "写入中断" → 标 status=stale → 触发重建
+  文件存在 + Tag 不完整 → 以 .entity_manifest.json 为准 → 重写 Tag
+```
+
+#### 5.12.3 Reconciler Phase 0：body_hash 校验
+
+> 在现有 Phase 1（Rep↔Raw）和 Phase 2（Index↔Rep）之前，增加 Phase 0 校验 Tag 与文件内容的一致性。
+
+```text
+Reconciler Phase 0（每天一次，非每 15 min）:
+  ├─ 随机采样 1% 的 Rep 文件
+  ├─ 计算文件内容 SHA-256（body_hash）
+  ├─ 对比 body_hash vs Tag content_hash
+  ├─ 不匹配 → 以 body_hash 为准，重写 Tag + 告警
+  ├─ Tag 缺失 → 从路径 + 命名约定 + body_hash 重建 Tag
+  └─ .entity_manifest.json 缺失 → 从 Tag 重建 manifest
+
+手动触发：
+  POST /v1/admin/verify?entity_id=...&mode=sampling  — 采样校验
+  POST /v1/admin/verify?entity_id=...&mode=full       — 全量校验（代价高）
+```
+
+#### 5.12.4 元数据灾难重建流程
+
+```text
+灾难场景：OSS Tag 全部丢失
+  │
+  ├─ Step 1: VFS 全量扫描（从 OSS 路径重建目录树）
+  │   ├─ 扫描 vector-lake/{ws}/{col}/ prefix
+  │   └─ 从路径解析：entity_id, workspace_id, collection_id, stage, rep_type
+  │
+  ├─ Step 2: 重建 Entity Tag（从 .entity_manifest.json + 文件）
+  │   ├─ 读取 source/.entity_manifest.json → 恢复 rag_status, labels, version
+  │   ├─ 重新计算 raw bytes SHA-256 → 恢复 content_hash
+  │   ├─ 从文件 MIME 推断 entity_type → 恢复 entity_type
+  │   └─ 写回 Entity Tag（PutObjectTagging）
+  │
+  ├─ Step 3: 重建 Rep Tag（从路径 + 命名约定 + 文件内容）
+  │   ├─ 从路径后缀 + 命名约定表 → 恢复 rep_type
+  │   ├─ 从 RepStepRegistry 反查 → 恢复 pipeline_id, transform, modality
+  │   ├─ 计算文件内容 SHA-256 → 恢复 content_hash
+  │   ├─ status 暂设 "stale"（保守策略）
+  │   └─ 写回 Rep Tag
+  │
+  ├─ Step 4: 重建 Index Status（从 Rep Tag + Lance metadata）
+  │   ├─ 重新计算 build_from_hash_set
+  │   ├─ 对比 Lance metadata 中的 index_built_from_hash
+  │   └─ 不匹配 → 标 index_status=stale
+  │
+  ├─ Step 5: 全量 Reconcile（Phase 0 + Phase 1 + Phase 2）
+  │
+  └─ Step 6: 触发必要重建 + 产出 recovery_report.json
+
+一键触发：
+  POST /v1/admin/rebuild_tags?scope=workspace&workspace_id=...
+  POST /v1/admin/rebuild_tags?scope=entity&entity_id=...
+```
+
+#### 5.12.5 Lance 损坏自动检测与恢复
+
+```text
+触发条件：
+  1. Lance 查询抛异常（CorruptedError / SchemaError / IOError）
+  2. Reconciler Phase 0 校验 Lance manifest 完整性
+  3. 手动触发 POST /v1/entities/{entity_id}/rebuild_lance
+
+自动恢复：
+  Lance 损坏 → 标 index_status=failed → 触发 rebuild_lance()
+  rebuild_lance() 从 OSS Rep 文件重跑 IndexPipeline → 重建 Lance
+  重建失败 → 保留 index_status=failed + 告警 + 下次 Reconcile 重试
+```
+
+#### 5.12.6 VFS 漂移监控
+
+```text
+新增指标：
+  vfs_drift_count          — Reconciler 每次扫描发现的漂移数量
+  vfs_drift_type           — 漂移类型（missing_file / extra_file / tag_mismatch / hash_mismatch）
+  vfs_reconcile_duration   — Reconciler 扫描耗时
+  vfs_event_lag            — Event Listener 事件积压数量
+
+告警规则：
+  vfs_drift_count > 10 in 15 min → P2 告警
+  vfs_reconcile_duration > 5 min → P3 告警
+```
+
+#### 5.12.7 Reconciler 分片扫描
+
+```text
+当前：全量扫描 vector-lake/{ws}/{col}/ prefix
+
+改进（v0.2）：分片扫描
+  ├─ 按 entity_id 前缀分片（0-9, a-f, g-m, n-s, t-z）
+  ├─ 每个分片独立扫描、独立对账
+  ├─ 15 min 内轮完所有分片
+  └─ 大规模场景（100K+ Entity）下可配置并行扫描
+
+v0.1 策略：全量扫描（简单可靠），但增加 reconcile_entities_scanned 指标监控
+```
+
+#### 5.12.8 `.meta.json` sidecar 与 Tag 的一致性模型（v0.2）
+
+```text
+优先级规则：
+  1. .meta.json 存在 → 以 .meta.json 为准
+  2. .meta.json 不存在 → 以 Tag 为准
+  3. 两者冲突 → 以 .meta.json 为准，Tag 视为过期缓存
+
+写入协议：
+  先写 .meta.json（Conditional Write if-match etag）→ 再写 Tag
+  Tag 写入失败不影响 .meta.json（下次 Reconciler 从 .meta.json 重建 Tag）
+```
+
 ---
 
 ## 6. Pipeline 定义
