@@ -116,6 +116,31 @@ async def patch_entity(
     return entity
 
 
+@router.put("/{entity_id}/content", response_model=Entity)
+async def update_entity_content(
+    ws: str,
+    col: str,
+    entity_id: str,
+    file: UploadFile = File(...),
+    request: Request = None,
+):
+    """Re-upload entity content. Triggers cascade rebuild:
+    source_original → stale downstream reps → pipeline re-execute → index re-sync.
+    """
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+        validate_id(entity_id, "entity_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    svc = _get_entity_service(request)
+    content = await file.read()
+    entity = await svc.update_entity_content(ws, col, entity_id, content)
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return entity
+
+
 @router.delete("/{entity_id}")
 async def delete_entity(
     ws: str,

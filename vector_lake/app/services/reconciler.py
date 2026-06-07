@@ -318,7 +318,7 @@ class ReconcilerService:
         entity_id: str,
         drift: DriftRecord,
     ) -> None:
-        """Re-run pipeline for a drifted entity."""
+        """Re-run pipeline for a drifted entity and mark reps active."""
         # Read source_original and re-process
         source_content = self.storage.read_file(ws, col, entity_id, "source_original")
         if source_content is None:
@@ -326,3 +326,17 @@ class ReconcilerService:
 
         md_content = source_content.decode("utf-8", errors="replace")
         await self.pipeline.process_md_entity(ws, col, entity_id, md_content)
+
+        # Mark all stale reps as active in manifest
+        manifest = self.storage.read_entity_manifest(ws, col, entity_id)
+        if manifest and "rep_info" in manifest:
+            for rep_type, info in manifest["rep_info"].items():
+                if info.get("status") == "stale":
+                    info["status"] = "active"
+            self.storage.save_entity_manifest(ws, col, entity_id, manifest)
+
+        # Re-sync index
+        try:
+            await self.pipeline.index.sync_to_lance(ws, col, entity_id, "canonical_md")
+        except Exception as e:
+            logger.warning("Index re-sync after repair failed for %s: %s", entity_id, e)

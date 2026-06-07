@@ -4,7 +4,7 @@ Implements PRD §2.5 two-phase consistency model:
 - Phase 1 (Rep↔Raw): when a rep changes, all downstream reps that
   depend on it (via ``required_input_reps``) are marked stale.
 - Phase 2 (Index↔Rep): when a rep goes stale, its corresponding
-  index entries are also marked stale.
+  index entries are also marked stale and rebuilt.
 
 The cascade logic uses the RepStep registry to determine which steps
 consume a given rep_type (via ``required_input_reps``), and therefore
@@ -14,10 +14,14 @@ which output_reps become stale.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from app.services.registry import TemplateRegistry
 from app.services.registry import registry as default_registry
 from app.storage.protocol import StorageProtocol
+
+if TYPE_CHECKING:
+    from app.services.pipeline import PipelineService
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +152,91 @@ def get_stale_reps(
         if tags.get("status") == "stale":
             stale.append(rep_type)
     return stale
+
+
+async def cascade_rebuild(
+    workspace_id: str,
+    collection_id: str,
+    entity_id: str,
+    changed_rep_type: str,
+    storage: StorageProtocol,
+    pipeline: PipelineService,
+    template_registry: TemplateRegistry | None = None,
+) -> list[str]:
+    """Full cascade: mark stale → re-execute pipeline → re-sync index.
+
+    This implements the complete PRD §2.5 two-phase consistency:
+    1. Mark all downstream reps as stale (cascade_stale)
+    2. Re-execute the pipeline to regenerate stale reps
+    3. Re-sync index (parquet → LanceDB)
+
+    Returns a list of rep_types that were rebuilt.
+    """
+    # Phase 1: Mark downstream reps as stale
+    stale_reps = cascade_stale(
+        workspace_id, collection_id, entity_id,
+        changed_rep_type, storage, template_registry,
+    )
+
+    if not stale_reps:
+        logger.info("No downstream reps to rebuild for %s", changed_rep_type)
+        return []
+
+    logger.info(
+        "Cascade rebuild: %s changed → stale reps: %s → re-executing pipeline",
+        changed_rep_type, stale_reps,
+    )
+
+    # Phase 2: Re-execute pipeline for stale reps
+    rebuilt: list[str] = []
+    for rep_type in stale_reps:
+        try:
+            # Read source content
+            source_content = storage.read_file(
+                workspace_id, collection_id, entity_id, "source_original",
+            )
+            if source_content is None:
+                logger.warning("Cannot rebuild %s: source_original not found", rep_type)
+                continue
+
+            # Re-execute pipeline
+            md_content = source_content.decode("utf-8", errors="replace")
+            await pipeline.process_md_entity(
+                workspace_id, collection_id, entity_id, md_content,
+            )
+
+            # Mark rep as active again in manifest
+            manifest = storage.read_entity_manifest(workspace_id, collection_id, entity_id)
+            if manifest and "rep_info" in manifest:
+                if rep_type in manifest["rep_info"]:
+                    manifest["rep_info"][rep_type]["status"] = "active"
+                    storage.save_entity_manifest(
+                        workspace_id, collection_id, entity_id, manifest,
+                    )
+
+            rebuilt.append(rep_type)
+            logger.info("Rebuilt rep %s for entity %s", rep_type, entity_id)
+
+        except Exception as e:
+            logger.error(
+                "Failed to rebuild rep %s for entity %s: %s",
+                rep_type, entity_id, e,
+            )
+
+    # Phase 3: Re-sync index
+    if rebuilt:
+        try:
+            count = await pipeline.index.sync_to_lance(
+                workspace_id, collection_id, entity_id, "canonical_md",
+            )
+            logger.info(
+                "Cascade rebuild: re-synced %d rows to LanceDB for entity %s",
+                count, entity_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Cascade rebuild: index re-sync failed for entity %s: %s",
+                entity_id, e,
+            )
+
+    return rebuilt

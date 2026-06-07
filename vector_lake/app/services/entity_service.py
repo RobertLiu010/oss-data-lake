@@ -384,6 +384,76 @@ class EntityService:
         )
 
     # ------------------------------------------------------------------
+    # Update content (re-upload with cascade rebuild)
+    # ------------------------------------------------------------------
+
+    async def update_entity_content(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+        content: bytes,
+    ) -> Entity | None:
+        """Update entity content and cascade rebuild all downstream.
+
+        When the source content changes:
+        1. Overwrite source_original
+        2. Cascade: mark downstream reps stale → re-execute pipeline → re-sync index
+        3. Update manifest + version log
+        """
+        entity = await self.get_entity(workspace_id, collection_id, entity_id)
+        if entity is None:
+            return None
+
+        # 1. Overwrite source_original
+        self.storage.save_file(
+            workspace_id, collection_id, entity_id,
+            "source_original", content,
+        )
+
+        # 2. Update content hash
+        new_hash = hashlib.sha256(content).hexdigest()[:16]
+        entity.content_hash = new_hash
+        entity.version += 1
+        entity.updated_at = datetime.now()
+
+        # 3. Update source_original rep tags
+        self.storage.set_rep_tags(
+            workspace_id, collection_id, entity_id, "source_original",
+            {
+                "rep_type": "source_original",
+                "transform": "upload",
+                "pipeline_id": "",
+                "pipeline_version": "",
+                "input_content_hash": "",
+                "content_hash": new_hash,
+                "status": "active",
+                "modality": "text",
+                "model_version": "",
+            },
+        )
+
+        # 4. Cascade rebuild: stale → pipeline → index
+        from app.services.lineage import cascade_rebuild
+        rebuilt = await cascade_rebuild(
+            workspace_id, collection_id, entity_id,
+            "source_original", self.storage, self.pipeline,
+        )
+        logger.info(
+            "Updated entity %s: cascade rebuilt %s",
+            entity_id, rebuilt,
+        )
+
+        # 5. Update manifest + version log
+        self._write_entity_meta(
+            workspace_id, collection_id, entity_id, entity,
+            trigger="content_update",
+        )
+
+        self._invalidate_list_cache(workspace_id, collection_id)
+        return entity
+
+    # ------------------------------------------------------------------
     # Update status (via OSS Tag)
     # ------------------------------------------------------------------
 

@@ -735,6 +735,84 @@ class TestLineageCascade:
 
 
 # ===========================================================================
+# 13b. Cascade rebuild: stale → pipeline → index (§2.5 full)
+# ===========================================================================
+
+
+class TestCascadeRebuild:
+    """Full cascade: rep change → stale → pipeline re-execute → index re-sync."""
+
+    @pytest.mark.asyncio
+    async def test_update_entity_content_cascades(
+        self, entity_service, index_service, storage,
+    ):
+        """update_entity_content triggers: stale → pipeline → index."""
+        ws, col = "ws13c", "col13c"
+        # Create entity
+        entity = await entity_service.create_from_bytes(
+            ws, col, "doc.md", b"# Original\n\nFirst version.",
+        )
+        eid = entity.entity_id
+
+        # Verify initial state
+        pq = index_service.read_entity_parquet(ws, col, eid, "canonical_md")
+        assert pq is not None
+
+        # Update content
+        updated = await entity_service.update_entity_content(
+            ws, col, eid, b"# Updated\n\nSecond version with more content.",
+        )
+        assert updated is not None
+        assert updated.version == 2
+        assert updated.content_hash != entity.content_hash
+
+        # Verify pipeline re-executed (canonical_md updated)
+        content = storage.read_file(ws, col, eid, "canonical_md")
+        assert content is not None
+        assert b"Updated" in content
+
+        # Verify index re-synced (parquet has new data)
+        pq2 = index_service.read_entity_parquet(ws, col, eid, "canonical_md")
+        assert pq2 is not None
+
+        # Verify version log
+        log = storage.read_version_log(ws, col, eid)
+        triggers = [entry["trigger"] for entry in log]
+        assert "content_update" in triggers
+
+    @pytest.mark.asyncio
+    async def test_cascade_rebuild_function(
+        self, entity_service, index_service, storage, pipeline_service,
+    ):
+        """cascade_rebuild() marks stale, re-executes pipeline, re-syncs index."""
+        from app.services.lineage import cascade_rebuild
+        ws, col = "ws13d", "col13d"
+        entity = await entity_service.create_from_bytes(
+            ws, col, "doc.md", b"# Initial\n\nContent.",
+        )
+        eid = entity.entity_id
+
+        # Manually trigger cascade rebuild
+        rebuilt = await cascade_rebuild(
+            ws, col, eid, "source_original",
+            storage, pipeline_service,
+        )
+        assert "canonical_md" in rebuilt
+
+        # Verify no stale reps remain
+        stale = get_stale_reps(ws, col, eid, storage)
+        assert len(stale) == 0
+
+    @pytest.mark.asyncio
+    async def test_update_nonexistent_entity(self, entity_service):
+        """update_entity_content returns None for nonexistent entity."""
+        result = await entity_service.update_entity_content(
+            "ws_none", "col_none", "nonexistent", b"content",
+        )
+        assert result is None
+
+
+# ===========================================================================
 # 14. Two-phase consistency (§2.5)
 # ===========================================================================
 
@@ -816,6 +894,15 @@ class TestAPIE2E:
             files={"file": ("test.md", b"# API Test\n\nContent here.", "text/markdown")},
         )
         assert resp.status_code in (200, 201)
+        entity_id = resp.json()["entity_id"]
+
+        # Update content (cascade rebuild)
+        resp = await client.put(
+            f"/api/v1/workspaces/ws_crud/collections/col_crud/entities/{entity_id}/content",
+            files={"file": ("test.md", b"# Updated\n\nNew content.", "text/markdown")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["version"] == 2
 
     @pytest.mark.asyncio
     async def test_reconcile_endpoint(self, client):
