@@ -75,19 +75,42 @@ def _mark_rep_stale(
     rep_type: str,
     storage: StorageProtocol,
 ) -> None:
-    """Mark a single rep as stale by updating its OSS Tag status."""
-    # Read current tags
+    """Mark a single rep as stale by updating its OSS Tag status + manifest."""
+    # Read current tags (may be empty if xattr unavailable)
     tags = storage.get_rep_tags(
         workspace_id, collection_id, entity_id, rep_type,
     )
-    if not tags:
-        # Rep doesn't exist yet, nothing to mark
-        return
-    # Update status to stale
-    tags["status"] = "stale"
-    storage.set_rep_tags(
-        workspace_id, collection_id, entity_id, rep_type, tags,
+
+    # Check if rep exists (file or manifest entry)
+    file_exists = storage.file_exists(workspace_id, collection_id, entity_id, rep_type)
+    manifest = storage.read_entity_manifest(workspace_id, collection_id, entity_id)
+    rep_in_manifest = (
+        manifest is not None
+        and "rep_info" in manifest
+        and rep_type in manifest.get("rep_info", {})
     )
+
+    if not tags and not file_exists and not rep_in_manifest:
+        # Rep doesn't exist, nothing to mark
+        return
+
+    # Update tags (best-effort, may fail if xattr unavailable)
+    if tags:
+        tags["status"] = "stale"
+        storage.set_rep_tags(
+            workspace_id, collection_id, entity_id, rep_type, tags,
+        )
+
+    # Also update manifest (source of truth, survives xattr loss)
+    if manifest is not None:
+        rep_info = manifest.setdefault("rep_info", {})
+        rep_info[rep_type] = rep_info.get(rep_type, {
+            "rep_type": rep_type,
+            "status": "active",
+            "modality": "text",
+        })
+        rep_info[rep_type]["status"] = "stale"
+        storage.save_entity_manifest(workspace_id, collection_id, entity_id, manifest)
 
 
 def get_stale_reps(
@@ -96,14 +119,29 @@ def get_stale_reps(
     entity_id: str,
     storage: StorageProtocol,
 ) -> list[str]:
-    """Get all rep_types that are marked as stale for an entity."""
+    """Get all rep_types that are marked as stale for an entity.
+
+    Checks manifest first (source of truth), falls back to xattr tags.
+    """
     from app.storage.lineage import REP_TYPE_TO_PATH
 
     stale: list[str] = []
-    # Check all known rep types
+
+    # Try manifest first (source of truth)
+    manifest = storage.read_entity_manifest(workspace_id, collection_id, entity_id)
+    if manifest and "rep_info" in manifest:
+        for rep_type, info in manifest["rep_info"].items():
+            if rep_type == "source_original":
+                continue
+            if info.get("status") == "stale":
+                stale.append(rep_type)
+        if stale:
+            return stale
+
+    # Fallback: check xattr tags
     for rep_type in REP_TYPE_TO_PATH:
         if rep_type == "source_original":
-            continue  # source is never stale (it's immutable)
+            continue
         tags = storage.get_rep_tags(
             workspace_id, collection_id, entity_id, rep_type,
         )

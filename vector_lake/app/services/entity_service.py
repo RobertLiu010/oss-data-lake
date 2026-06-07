@@ -103,6 +103,21 @@ class EntityService:
         The manifest stores the COMPLETE entity state.
         """
         # 1. Manifest (source of truth) — ALL entity fields
+        # Collect rep_info from existing rep tags + file system
+        rep_info: dict[str, dict] = {}
+        from app.storage.lineage import REP_TYPE_TO_PATH
+        for rep_type, rel_path in REP_TYPE_TO_PATH.items():
+            tags = self.storage.get_rep_tags(workspace_id, collection_id, entity_id, rep_type)
+            if tags:
+                rep_info[rep_type] = tags
+            elif self.storage.file_exists(workspace_id, collection_id, entity_id, rep_type):
+                # File exists but xattr unavailable — construct minimal rep_info
+                rep_info[rep_type] = {
+                    "rep_type": rep_type,
+                    "status": "active",
+                    "modality": "text",
+                }
+
         self.storage.save_entity_manifest(
             workspace_id, collection_id, entity_id,
             {
@@ -120,6 +135,7 @@ class EntityService:
                 "model_version": "embedding-v5",
                 "created_at": str(entity.created_at),
                 "updated_at": str(entity.updated_at),
+                "rep_info": rep_info,
             },
         )
 
@@ -223,10 +239,7 @@ class EntityService:
             index_template_name=index_template_name,
         )
 
-        # Write Entity Tags + manifest AFTER pipeline (source_original must exist)
-        self._write_entity_meta(workspace_id, collection_id, entity_id, entity, trigger="ingest")
-
-        # Set Rep Tags on source_original
+        # Set Rep Tags on source_original BEFORE manifest (so manifest captures them)
         source_hash = hashlib.sha256(content).hexdigest()[:16]
         self.storage.set_rep_tags(
             workspace_id, collection_id, entity_id, "source_original",
@@ -242,6 +255,9 @@ class EntityService:
                 "model_version": "",
             },
         )
+
+        # Write Entity Tags + manifest AFTER pipeline + rep tags
+        self._write_entity_meta(workspace_id, collection_id, entity_id, entity, trigger="ingest")
 
         logger.info("Created entity %s from file %s", entity_id, filename)
         self._invalidate_list_cache(workspace_id, collection_id)
