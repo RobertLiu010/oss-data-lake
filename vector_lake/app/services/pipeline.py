@@ -489,6 +489,7 @@ class IndexPipelineService:
             chunks_with_vectors.append({
                 "chunk_index": idx,
                 "text": chunk.text,
+                "embedding_text": chunk.embedding_text or chunk.text,
                 "embedding": vector,
                 "metadata": chunk.metadata,
                 "rep_name": "canonical_md",
@@ -559,6 +560,7 @@ class IndexPipelineService:
                     {
                         "chunk_index": idx,
                         "text": c.text,
+                        "embedding_text": c.embedding_text or c.text,
                         "embedding": [],
                         "metadata": c.metadata,
                         "rep_name": rep_name,
@@ -600,6 +602,7 @@ class IndexPipelineService:
             chunks_with_vectors.append({
                 "chunk_index": idx,
                 "text": chunk.text,
+                "embedding_text": chunk.embedding_text or chunk.text,
                 "embedding": vector,
                 "metadata": chunk.metadata,
                 "rep_name": rep_name,
@@ -886,6 +889,7 @@ class PipelineService:
             chunks_with_vectors.append({
                 "chunk_index": idx,
                 "text": chunk.text,
+                "embedding_text": chunk.embedding_text or chunk.text,
                 "embedding": vector,
                 "metadata": chunk.metadata,
                 "rep_name": "canonical_md",
@@ -1097,6 +1101,7 @@ class PipelineService:
                     {
                         "chunk_index": idx,
                         "text": c.text,
+                        "embedding_text": c.embedding_text or c.text,
                         "embedding": [],
                         "metadata": c.metadata,
                         "rep_name": rep_name,
@@ -1137,6 +1142,7 @@ class PipelineService:
             chunks_with_vectors.append({
                 "chunk_index": idx,
                 "text": chunk.text,
+                "embedding_text": chunk.embedding_text or chunk.text,
                 "embedding": vector,
                 "metadata": chunk.metadata,
                 "rep_name": rep_name,

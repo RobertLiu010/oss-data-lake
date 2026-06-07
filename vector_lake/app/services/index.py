@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 INDEX_SCHEMA = pa.schema([
     pa.field("chunk_index", pa.int64()),
     pa.field("text", pa.string()),
+    pa.field("embedding_text", pa.string()),
     pa.field("embedding", pa.list_(pa.float32())),
     pa.field("metadata", pa.string()),
     pa.field("rep_name", pa.string()),
@@ -127,7 +128,7 @@ class IndexService:
         """Write chunks+embeddings to entity-level parquet file.
 
         Each item in chunks_with_vectors should have keys:
-            chunk_index, text, embedding, metadata
+            chunk_index, text, embedding_text, embedding, metadata
 
         The parquet file is stored at:
             {root}/{ws}/{col}/{entity_id}/_index/staging/{rep_name}.parquet
@@ -141,6 +142,7 @@ class IndexService:
         # Build Arrow table
         chunk_indices: list[int] = []
         texts: list[str] = []
+        embedding_texts: list[str] = []
         embeddings: list[list[float]] = []
         metadata_json: list[str] = []
         rep_names: list[str] = []
@@ -148,6 +150,7 @@ class IndexService:
         for item in chunks_with_vectors:
             chunk_indices.append(item["chunk_index"])
             texts.append(item["text"])
+            embedding_texts.append(item.get("embedding_text", item["text"]))
             embeddings.append(item["embedding"])
             metadata_json.append(json.dumps(item.get("metadata", {}), ensure_ascii=False))
             rep_names.append(rep_name)
@@ -156,6 +159,7 @@ class IndexService:
         schema = pa.schema([
             pa.field("chunk_index", pa.int64()),
             pa.field("text", pa.string()),
+            pa.field("embedding_text", pa.string()),
             pa.field("embedding", pa.list_(pa.float32())),
             pa.field("metadata", pa.string()),
             pa.field("rep_name", pa.string()),
@@ -164,6 +168,7 @@ class IndexService:
         table = pa.table({
             "chunk_index": chunk_indices,
             "text": texts,
+            "embedding_text": embedding_texts,
             "embedding": embeddings,
             "metadata": metadata_json,
             "rep_name": rep_names,
