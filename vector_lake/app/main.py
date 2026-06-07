@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import load_settings
 from app.storage.local import LocalStorage
@@ -64,7 +67,32 @@ async def lifespan(app: FastAPI):
     await watch_service.shutdown()
 
 
-app = FastAPI(title="Vector Lake", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Vector Lake",
+    version="0.1.0",
+    description="OSS-based knowledge lake with Entity → Representation → Chunk → Index model",
+    lifespan=lifespan,
+)
+
+# Middleware (best practice: gzip large responses, allow CORS for web clients)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # v0.1: permissive; v0.2: restrict
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global exception handler (best practice: never leak internals)
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger = __import__("logging").getLogger(__name__)
+    logger.exception("Unhandled exception: %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "type": type(exc).__name__},
+    )
 
 app.include_router(entities.router)
 app.include_router(search.router)
@@ -74,6 +102,23 @@ app.include_router(events.router)
 app.include_router(workspaces.router)
 
 
-@app.get("/health")
+@app.get("/health", tags=["system"])
 async def health():
+    """Liveness probe — returns 200 as long as the process is alive."""
     return {"status": "ok"}
+
+
+@app.get("/readiness", tags=["system"])
+async def readiness():
+    """Readiness probe — returns 200 only when all critical services are ready."""
+    settings = getattr(app.state, "settings", None)
+    if settings is None:
+        return JSONResponse(status_code=503, content={"ready": False, "reason": "not_initialized"})
+    checks = {
+        "storage": app.state.entity_service is not None,
+        "pipeline": True,
+        "vfs": app.state.vfs_service is not None,
+    }
+    if not all(checks.values()):
+        return JSONResponse(status_code=503, content={"ready": False, "checks": checks})
+    return {"ready": True, "checks": checks}

@@ -84,6 +84,12 @@ class IndexService:
                 table.add(new_data)
             else:
                 self.db.create_table(table_name, new_data)
+                # Best practice: create FTS index immediately for hybrid search support
+                try:
+                    table.create_fts_index("text", replace=True)
+                    logger.info("Created FTS index on table %s", table_name)
+                except Exception as e:
+                    logger.debug("FTS index creation skipped for %s: %s", table_name, e)
             return len(chunks_with_vectors)
 
         count = await asyncio.get_event_loop().run_in_executor(None, _upsert)
@@ -162,31 +168,25 @@ class IndexService:
 
         def _search() -> List[SearchResult]:
             table = self.db.open_table(table_name)
-            # Safety: don't load more than 100K rows into memory
-            count = len(table)
-            if count > 100_000:
-                logger.warning("Table %s has %d rows, skipping lexical fallback scan", table_name, count)
-                return []
-            # Use LanceDB's full-text search if available, otherwise fall back
-            # to a simple string-contains filter.
+            # Use LanceDB's native full-text search (best practice: avoid materializing)
             try:
                 results = table.search(query, query_type="fts").limit(top_k).to_list()
             except Exception:
-                # Fallback: manual string matching via filter
-                all_rows = table.to_arrow()
-                query_lower = query.lower()
-                matched: List[Dict[str, Any]] = []
-                for i in range(len(all_rows)):
-                    text_val = all_rows.column("text")[i].as_py()
-                    if query_lower in text_val.lower():
-                        row_dict = {
-                            "entity_id": all_rows.column("entity_id")[i].as_py(),
-                            "chunk_index": all_rows.column("chunk_index")[i].as_py(),
-                            "text": text_val,
-                            "metadata": all_rows.column("metadata")[i].as_py(),
-                        }
-                        matched.append(row_dict)
-                results = matched[:top_k]
+                # If FTS index doesn't exist, create it and retry
+                try:
+                    table.create_fts_index("text", replace=True)
+                    results = table.search(query, query_type="fts").limit(top_k).to_list()
+                except Exception:
+                    # Last resort: do NOT load full table. Use a simple limit + filter.
+                    # This is slower than FTS but doesn't OOM on large tables.
+                    logger.warning("FTS unavailable for %s, falling back to filtered search", table_name)
+                    query_lower = query.lower()
+                    results = (
+                        table.to_pandas(limit=10_000)
+                        .pipe(lambda df: df[df["text"].str.lower().str.contains(query_lower, na=False)])
+                        .head(top_k)
+                        .to_dict(orient="records")
+                    )
 
             out: List[SearchResult] = []
             for rank, row in enumerate(results):
