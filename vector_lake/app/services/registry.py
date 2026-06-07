@@ -98,6 +98,10 @@ class StepResult:
     content: bytes
     output_format: str  # e.g. "pdf", "png", "md"
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Optional: text extracted from this step's output for indexing.
+    # If provided and the step has index_mode set, this text will be
+    # chunked and indexed independently (even for non-text formats like PDF).
+    indexable_text: str | None = None
 
 
 @dataclass
@@ -139,16 +143,33 @@ class RepStep(Protocol):
     The registry builds a DAG from all registered steps and resolves
     the shortest path from source to target format.
 
+    **Per-step indexing**: a step can declare ``index_mode`` to have its
+    output indexed independently.  Supported modes:
+
+    - ``None``   — no indexing (default, for pure intermediate steps)
+    - ``"text"`` — chunk + embed + vector index (standard text flow)
+    - ``"lexical"`` — chunk + FTS index only (no embeddings)
+    - ``"vision"`` — image embedding + vector index (future)
+
+    When ``index_mode`` is set, the step should also provide
+    ``indexable_text`` in its StepResult (or the pipeline will try
+    to decode ``content`` as UTF-8 text).
+
     Example steps:
-        - WordToPdf:  input_format="docx", output_format="pdf"
-        - PdfToPng:   input_format="pdf",  output_format="png"
-        - PngToMd:    input_format="png",  output_format="md"
-        - MdPassThru: input_format="md",   output_format="md"  (identity)
+        - WordToPdf:  input_format="docx", output_format="pdf",
+                      index_mode="text"  (index extracted PDF text)
+        - PdfToPng:   input_format="pdf",  output_format="png",
+                      index_mode=None  (no indexing of images)
+        - PngToMd:    input_format="png",  output_format="md",
+                      index_mode="text"  (index OCR text)
+        - MdPassThru: input_format="md",   output_format="md",
+                      index_mode="text"  (index markdown text)
     """
 
     name: str  # unique step name (e.g. "word_to_pdf")
     input_format: str  # source format (e.g. "docx")
     output_format: str  # target format (e.g. "pdf")
+    index_mode: str | None  # None, "text", "lexical", "vision"
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Transform input content to output format."""
@@ -288,6 +309,7 @@ class TemplateRegistry:
                 "name": s.name,
                 "input_format": s.input_format,
                 "output_format": s.output_format,
+                "index_mode": getattr(s, "index_mode", None),
             }
             for s in self._steps.values()
         ]

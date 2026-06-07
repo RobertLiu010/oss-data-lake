@@ -45,9 +45,11 @@ class MdPassThruStep:
     name = "md_passthru"
     input_format = "md"
     output_format = "md"
+    index_mode = "text"  # index the markdown text
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Pass through MD content unchanged."""
+        text = ctx.input_content.decode("utf-8", errors="replace")
         return StepResult(
             content=ctx.input_content,
             output_format="md",
@@ -56,6 +58,7 @@ class MdPassThruStep:
                 "step": self.name,
                 "step_index": ctx.step_index,
             },
+            indexable_text=text,
         )
 
 
@@ -64,11 +67,16 @@ class WordToPdfStep:
 
     **Requires an external converter** (e.g. LibreOffice headless).
     Raises NotImplementedError until a converter backend is configured.
+
+    index_mode="text": when a real converter is plugged in, the step
+    should extract text from the DOCX and provide it as indexable_text
+    so the document is searchable even at the PDF stage.
     """
 
     name = "word_to_pdf"
     input_format = "docx"
     output_format = "pdf"
+    index_mode = "text"  # index extracted text from DOCX
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Convert DOCX bytes to PDF bytes.
@@ -87,11 +95,15 @@ class PdfToPngStep:
 
     **Requires an external converter** (e.g. pdf2image / Poppler).
     Raises NotImplementedError until a converter backend is configured.
+
+    index_mode=None: PNG images are not text-searchable, so no
+    per-step indexing.  The text will be indexed at the final MD step.
     """
 
     name = "pdf_to_png"
     input_format = "pdf"
     output_format = "png"
+    index_mode = None  # images are not text-searchable
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Convert PDF bytes to PNG bytes.
@@ -110,11 +122,15 @@ class PngToMdStep:
 
     **Requires an external OCR engine** (e.g. Tesseract, PaddleOCR).
     Raises NotImplementedError until an OCR backend is configured.
+
+    index_mode="text": the OCR text will be indexed as soon as
+    this step completes.
     """
 
     name = "png_to_md"
     input_format = "png"
     output_format = "md"
+    index_mode = "text"  # index OCR text
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Convert PNG bytes to Markdown text via OCR.

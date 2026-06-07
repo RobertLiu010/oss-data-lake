@@ -29,6 +29,7 @@ from app.services.registry import (
     RepPipeline,
     SearchContext,
     StepContext,
+    StepResult,
     TemplateRegistry,
 )
 from app.services.registry import registry as default_registry
@@ -285,6 +286,11 @@ class PipelineService:
         - Step 0 output → ``rep_{output_format}`` (e.g. rep_pdf, rep_png)
         - Final step output → ``canonical_md`` (the chunkable text)
 
+        If a step declares ``index_mode``, its output is also indexed
+        independently (chunked + embedded + indexed) right after the step
+        executes.  This allows intermediate products like PDF text to be
+        searchable even before the full pipeline completes.
+
         Returns (canonical_text, metadata_dict).
         """
         current_content = source_content
@@ -340,6 +346,16 @@ class PipelineService:
                 rep_name, step_result.content,
             )
 
+            # Per-step indexing: if the step declares index_mode,
+            # index its output independently.
+            index_mode = getattr(step, "index_mode", None)
+            step_indexed = False
+            if index_mode and not is_last:
+                step_indexed = await self._index_step_output(
+                    workspace_id, collection_id, entity_id,
+                    step_result, rep_name, index_mode,
+                )
+
             all_metadata["intermediate_reps"].append({
                 "step": step.name,
                 "step_index": i,
@@ -347,14 +363,17 @@ class PipelineService:
                 "output_format": step_result.output_format,
                 "rep_name": rep_name,
                 "size_bytes": len(step_result.content),
+                "index_mode": index_mode,
+                "indexed": step_indexed,
             })
             all_metadata.update(step_result.metadata)
 
             logger.info(
-                "Pipeline: step %d/%d (%s) %s → %s, saved as %s (%d bytes)",
+                "Pipeline: step %d/%d (%s) %s → %s, saved as %s (%d bytes)%s",
                 i + 1, len(pipeline.steps), step.name,
                 current_format, step_result.output_format,
                 rep_name, len(step_result.content),
+                f", indexed={step_indexed}" if index_mode else "",
             )
 
             current_content = step_result.content
@@ -366,6 +385,111 @@ class PipelineService:
         all_metadata["modality"] = "text"
 
         return canonical_text, all_metadata
+
+    async def _index_step_output(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+        step_result: StepResult,
+        rep_name: str,
+        index_mode: str,
+    ) -> bool:
+        """Index a step's output independently.
+
+        Returns True if indexing succeeded, False otherwise.
+        """
+        # Get the text to index
+        text = step_result.indexable_text
+        if text is None:
+            # Try to decode content as text
+            try:
+                text = step_result.content.decode("utf-8", errors="replace")
+            except Exception:
+                logger.warning(
+                    "Step output %s has no indexable_text and content is not text",
+                    rep_name,
+                )
+                return False
+
+        if not text.strip():
+            return False
+
+        # Chunk the text
+        metadata: dict[str, Any] = {
+            "entity_id": entity_id,
+            "workspace_id": workspace_id,
+            "collection_id": collection_id,
+            "rep_name": rep_name,
+            "source_step": step_result.metadata.get("step", ""),
+            **step_result.metadata,
+        }
+        chunks = await self.chunking.execute(text, metadata)
+        if not chunks:
+            return False
+
+        if index_mode == "lexical":
+            # FTS-only indexing — no embeddings needed
+            try:
+                chunks_for_index = [
+                    {
+                        "chunk_index": idx,
+                        "text": c.text,
+                        "embedding": [],
+                        "metadata": c.metadata,
+                    }
+                    for idx, c in enumerate(chunks)
+                ]
+                await self.index.upsert_chunks(
+                    workspace_id, collection_id, entity_id,
+                    chunks_for_index,
+                )
+                logger.info(
+                    "Per-step index: %d chunks indexed (lexical) for rep %s",
+                    len(chunks), rep_name,
+                )
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "Per-step lexical index failed for rep %s: %s",
+                    rep_name, exc,
+                )
+                return False
+
+        # index_mode == "text" (default) — embed + vector index
+        texts_to_embed = [c.embedding_text or c.text for c in chunks]
+        try:
+            vectors = await self.embedding.embed_passages(texts_to_embed)
+        except Exception as exc:
+            logger.warning(
+                "Per-step embedding failed for rep %s: %s", rep_name, exc,
+            )
+            return False
+
+        chunks_with_vectors: list[dict[str, Any]] = []
+        for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
+            chunks_with_vectors.append({
+                "chunk_index": idx,
+                "text": chunk.text,
+                "embedding": vector,
+                "metadata": chunk.metadata,
+            })
+
+        try:
+            await self.index.upsert_chunks(
+                workspace_id, collection_id, entity_id,
+                chunks_with_vectors,
+            )
+            logger.info(
+                "Per-step index: %d chunks indexed (vector) for rep %s",
+                len(chunks), rep_name,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Per-step vector index failed for rep %s: %s", rep_name, exc,
+            )
+            return False
 
     # ------------------------------------------------------------------
     # Legacy convenience method (backward compat)
