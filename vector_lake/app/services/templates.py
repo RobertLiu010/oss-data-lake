@@ -204,18 +204,20 @@ class VectorIndexTemplate:
     index_type = "vector"
 
     async def build(self, ctx: IndexContext) -> None:
-        """Write chunks to parquet, then sync to LanceDB."""
+        """Write chunks to parquet. Sync is handled by SyncQueue/Worker."""
         rep_name = ctx.chunks[0].get("rep_name", "canonical_md") if ctx.chunks else "canonical_md"
         await ctx.index_service.upsert_chunks(
             ctx.workspace_id, ctx.collection_id, ctx.entity_id,
             ctx.chunks,
             rep_name=rep_name,
         )
-        # Sync parquet → LanceDB
-        await ctx.index_service.sync_to_lance(
-            ctx.workspace_id, ctx.collection_id, ctx.entity_id,
-            rep_name,
-        )
+        # Note: LanceDB sync is handled by SyncWorker consuming SyncQueue.
+        # If no SyncQueue is configured, call sync_to_lance directly.
+        if not hasattr(ctx, '_sync_queue') or ctx._sync_queue is None:
+            await ctx.index_service.sync_to_lance(
+                ctx.workspace_id, ctx.collection_id, ctx.entity_id,
+                rep_name,
+            )
 
     async def search(self, ctx: SearchContext) -> list[SearchResult]:
         """Search using the configured search_type."""

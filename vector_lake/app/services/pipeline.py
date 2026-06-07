@@ -19,6 +19,7 @@ Per PRD §2.6 the pipeline is split into two independent sub-pipelines:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from typing import Any
@@ -40,6 +41,7 @@ from app.services.registry import (
     TemplateRegistry,
 )
 from app.services.registry import registry as default_registry
+from app.services.sync_queue import SyncQueue, SyncTask
 from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
@@ -427,6 +429,7 @@ class IndexPipelineService:
         settings: Settings,
         event_bus: EventBus | None = None,
         template_registry: TemplateRegistry | None = None,
+        sync_queue: SyncQueue | None = None,
     ):
         self.chunking = chunking
         self.embedding = embedding
@@ -434,6 +437,7 @@ class IndexPipelineService:
         self.settings = settings
         self.event_bus = event_bus
         self._registry = template_registry or default_registry
+        self.sync_queue = sync_queue
 
     async def run_index_pipeline(
         self,
@@ -566,10 +570,8 @@ class IndexPipelineService:
                     chunks_for_index,
                     rep_name=rep_name,
                 )
-                # Sync parquet → LanceDB
-                await self.index.sync_to_lance(
-                    workspace_id, collection_id, entity_id, rep_name,
-                )
+                # Enqueue sync task (parquet → LanceDB)
+                self._enqueue_sync(workspace_id, collection_id, entity_id, rep_name)
                 logger.info(
                     "IndexPipeline: %d chunks indexed (lexical) for rep %s",
                     len(chunks), rep_name,
@@ -609,10 +611,8 @@ class IndexPipelineService:
                 chunks_with_vectors,
                 rep_name=rep_name,
             )
-            # Sync parquet → LanceDB
-            await self.index.sync_to_lance(
-                workspace_id, collection_id, entity_id, rep_name,
-            )
+            # Enqueue sync task (parquet → LanceDB)
+            self._enqueue_sync(workspace_id, collection_id, entity_id, rep_name)
             logger.info(
                 "IndexPipeline: %d chunks indexed (vector) for rep %s",
                 len(chunks), rep_name,
@@ -624,6 +624,32 @@ class IndexPipelineService:
                 rep_name, exc,
             )
             return False
+
+    def _enqueue_sync(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+        rep_name: str,
+    ) -> None:
+        """Enqueue a parquet → LanceDB sync task.
+
+        If sync_queue is available, enqueues for async processing.
+        Otherwise, falls back to direct sync (backward compat for tests).
+        """
+        if self.sync_queue is not None:
+            task = SyncTask(
+                workspace_id=workspace_id,
+                collection_id=collection_id,
+                entity_id=entity_id,
+                rep_name=rep_name,
+            )
+            asyncio.ensure_future(self.sync_queue.enqueue(task))
+        else:
+            # Fallback: direct sync (for tests without sync_queue)
+            asyncio.ensure_future(
+                self.index.sync_to_lance(workspace_id, collection_id, entity_id, rep_name)
+            )
 
 
 # ======================================================================
@@ -648,6 +674,7 @@ class PipelineService:
         settings: Settings,
         event_bus: EventBus | None = None,
         template_registry: TemplateRegistry | None = None,
+        sync_queue: SyncQueue | None = None,
     ):
         self._storage = storage
         self._chunking = chunking
@@ -656,6 +683,7 @@ class PipelineService:
         self._settings = settings
         self._event_bus = event_bus
         self._registry = template_registry or default_registry
+        self._sync_queue = sync_queue
 
         # Create sub-services sharing the same registry
         self.rep_pipeline = RepPipelineService(
@@ -663,6 +691,7 @@ class PipelineService:
         )
         self.index_pipeline = IndexPipelineService(
             chunking, embedding, index, settings, event_bus, self._registry,
+            sync_queue=sync_queue,
         )
 
     # -- Properties that sync to sub-services for backward compat --------
@@ -1079,10 +1108,8 @@ class PipelineService:
                     chunks_for_index,
                     rep_name=rep_name,
                 )
-                # Sync parquet → LanceDB
-                await self.index.sync_to_lance(
-                    workspace_id, collection_id, entity_id, rep_name,
-                )
+                # Enqueue sync task (parquet → LanceDB)
+                self.index_pipeline._enqueue_sync(workspace_id, collection_id, entity_id, rep_name)
                 logger.info(
                     "Per-step index: %d chunks indexed (lexical) for rep %s",
                     len(chunks), rep_name,
@@ -1121,10 +1148,8 @@ class PipelineService:
                 chunks_with_vectors,
                 rep_name=rep_name,
             )
-            # Sync parquet → LanceDB
-            await self.index.sync_to_lance(
-                workspace_id, collection_id, entity_id, rep_name,
-            )
+            # Enqueue sync task (parquet → LanceDB)
+            self.index_pipeline._enqueue_sync(workspace_id, collection_id, entity_id, rep_name)
             logger.info(
                 "Per-step index: %d chunks indexed (vector) for rep %s",
                 len(chunks), rep_name,

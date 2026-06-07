@@ -25,6 +25,7 @@ from app.services.event_bus import EventBus
 from app.services.index import IndexService
 from app.services.pipeline import PipelineService
 from app.services.reconciler import ReconcilerService
+from app.services.sync_queue import SyncQueue, SyncWorker
 from app.services.templates import register_builtin_templates
 from app.services.vfs import VfsService
 from app.services.watch import WatchService
@@ -161,7 +162,16 @@ async def lifespan(app: FastAPI):
     embedding = EmbeddingService(settings)
     index = IndexService(settings)
     event_bus = EventBus()
-    pipeline = PipelineService(storage, chunking, embedding, index, settings, event_bus=event_bus)
+
+    # Sync queue + worker for reliable parquet → LanceDB sync
+    sync_queue = SyncQueue(settings)
+    sync_worker = SyncWorker(sync_queue, index)
+    await sync_worker.start()
+
+    pipeline = PipelineService(
+        storage, chunking, embedding, index, settings,
+        event_bus=event_bus, sync_queue=sync_queue,
+    )
     entity_service = EntityService(storage, pipeline, settings)
     vfs_service = VfsService(storage, settings)
     reconciler_service = ReconcilerService(storage, entity_service, pipeline, settings)
@@ -175,6 +185,8 @@ async def lifespan(app: FastAPI):
     app.state.reconciler_service = reconciler_service
     app.state.watch_service = watch_service
     app.state.event_bus = event_bus
+    app.state.sync_queue = sync_queue
+    app.state.sync_worker = sync_worker
 
     # Periodic cleanup of stale event bus subscribers
     async def _event_bus_cleanup_loop():
@@ -188,6 +200,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: cancel cleanup task
     cleanup_task.cancel()
+    # Shutdown: stop sync worker
+    await sync_worker.stop()
     # Shutdown: close embedding client
     await embedding.close()
     # Shutdown: stop all watch tasks

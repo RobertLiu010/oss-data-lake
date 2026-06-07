@@ -300,3 +300,20 @@ async def rebuild_index(ws: str, col: str, request: Request):
     index_service = request.app.state.index_service
     count = await index_service.rebuild_lance_table(ws, col)
     return {"rows_synced": count}
+
+
+# ---------------------------------------------------------------------------
+# Sync queue status endpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/sync/status")
+async def sync_status(ws: str, request: Request):
+    """Get sync queue status: pending tasks, completed, failed."""
+    try:
+        validate_id(ws, "ws")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    sync_queue = getattr(request.app.state, "sync_queue", None)
+    if sync_queue is None:
+        return {"enabled": False}
+    return {"enabled": True, **sync_queue.stats()}
