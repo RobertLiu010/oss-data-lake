@@ -108,7 +108,7 @@ class TestUpsertWithParquet:
     async def test_upsert_creates_parquet_and_lance(
         self, index_service: IndexService, settings
     ):
-        """upsert_chunks writes entity parquet and syncs to LanceDB."""
+        """upsert_chunks writes parquet; sync_to_lance syncs to LanceDB."""
         chunks = [
             {"chunk_index": 0, "text": "hello world", "embedding": [0.1] * DIM, "metadata": {}},
         ]
@@ -120,7 +120,14 @@ class TestUpsertWithParquet:
         # Parquet file exists
         assert index_service.read_entity_parquet("ws", "col", "ent1", "canonical_md") is not None
 
-        # LanceDB table exists and has data
+        # LanceDB table does NOT exist yet (upsert only writes parquet)
+        assert not index_service.table_exists("ws", "col")
+
+        # Explicit sync
+        sync_count = await index_service.sync_to_lance("ws", "col", "ent1", "canonical_md")
+        assert sync_count == 1
+
+        # Now LanceDB table exists and has data
         assert index_service.table_exists("ws", "col")
         assert index_service.count_entity_chunks("ws", "col", "ent1") == 1
 
@@ -137,7 +144,9 @@ class TestUpsertWithParquet:
             {"chunk_index": 1, "text": "extra chunk", "embedding": [0.3] * DIM, "metadata": {}},
         ]
         await index_service.upsert_chunks("ws", "col", "ent1", chunks_v1, "canonical_md")
+        await index_service.sync_to_lance("ws", "col", "ent1", "canonical_md")
         await index_service.upsert_chunks("ws", "col", "ent1", chunks_v2, "canonical_md")
+        await index_service.sync_to_lance("ws", "col", "ent1", "canonical_md")
 
         # Parquet should have 2 rows (v2)
         table = index_service.read_entity_parquet("ws", "col", "ent1", "canonical_md")
@@ -156,7 +165,9 @@ class TestUpsertWithParquet:
             {"chunk_index": 0, "text": "page image", "embedding": [0.2] * DIM, "metadata": {}},
         ]
         await index_service.upsert_chunks("ws", "col", "ent1", chunks_a, "canonical_md")
+        await index_service.sync_to_lance("ws", "col", "ent1", "canonical_md")
         await index_service.upsert_chunks("ws", "col", "ent1", chunks_b, "page_image")
+        await index_service.sync_to_lance("ws", "col", "ent1", "page_image")
 
         reps = index_service.list_entity_parquets("ws", "col", "ent1")
         assert set(reps) == {"canonical_md", "page_image"}
@@ -179,6 +190,7 @@ class TestRebuildLanceTable:
             {"chunk_index": 0, "text": "hello", "embedding": [0.1] * DIM, "metadata": {}},
         ]
         await index_service.upsert_chunks("ws", "col", "ent1", chunks, "canonical_md")
+        await index_service.sync_to_lance("ws", "col", "ent1", "canonical_md")
 
         # Drop LanceDB table
         index_service.drop_table("ws", "col")
@@ -215,6 +227,7 @@ class TestDeleteEntityChunks:
             {"chunk_index": 0, "text": "hello", "embedding": [0.1] * DIM, "metadata": {}},
         ]
         await index_service.upsert_chunks("ws", "col", "ent1", chunks, "canonical_md")
+        await index_service.sync_to_lance("ws", "col", "ent1", "canonical_md")
 
         index_service.delete_entity_chunks("ws", "col", "ent1")
         assert index_service.read_entity_parquet("ws", "col", "ent1", "canonical_md") is None
@@ -228,7 +241,9 @@ class TestDeleteEntityChunks:
             {"chunk_index": 0, "text": "hello", "embedding": [0.1] * DIM, "metadata": {}},
         ]
         await index_service.upsert_chunks("ws", "col", "ent1", chunks, "canonical_md")
+        await index_service.sync_to_lance("ws", "col", "ent1", "canonical_md")
         await index_service.upsert_chunks("ws", "col", "ent2", chunks, "canonical_md")
+        await index_service.sync_to_lance("ws", "col", "ent2", "canonical_md")
 
         ids = index_service.get_indexed_entity_ids("ws", "col")
         assert ids == {"ent1", "ent2"}

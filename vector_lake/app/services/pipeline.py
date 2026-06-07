@@ -566,6 +566,10 @@ class IndexPipelineService:
                     chunks_for_index,
                     rep_name=rep_name,
                 )
+                # Sync parquet → LanceDB
+                await self.index.sync_to_lance(
+                    workspace_id, collection_id, entity_id, rep_name,
+                )
                 logger.info(
                     "IndexPipeline: %d chunks indexed (lexical) for rep %s",
                     len(chunks), rep_name,
@@ -604,6 +608,10 @@ class IndexPipelineService:
                 workspace_id, collection_id, entity_id,
                 chunks_with_vectors,
                 rep_name=rep_name,
+            )
+            # Sync parquet → LanceDB
+            await self.index.sync_to_lance(
+                workspace_id, collection_id, entity_id, rep_name,
             )
             logger.info(
                 "IndexPipeline: %d chunks indexed (vector) for rep %s",
@@ -1071,6 +1079,10 @@ class PipelineService:
                     chunks_for_index,
                     rep_name=rep_name,
                 )
+                # Sync parquet → LanceDB
+                await self.index.sync_to_lance(
+                    workspace_id, collection_id, entity_id, rep_name,
+                )
                 logger.info(
                     "Per-step index: %d chunks indexed (lexical) for rep %s",
                     len(chunks), rep_name,
@@ -1108,6 +1120,10 @@ class PipelineService:
                 workspace_id, collection_id, entity_id,
                 chunks_with_vectors,
                 rep_name=rep_name,
+            )
+            # Sync parquet → LanceDB
+            await self.index.sync_to_lance(
+                workspace_id, collection_id, entity_id, rep_name,
             )
             logger.info(
                 "Per-step index: %d chunks indexed (vector) for rep %s",

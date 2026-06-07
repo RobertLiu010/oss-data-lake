@@ -352,7 +352,7 @@ class IndexService:
         return count
 
     # ------------------------------------------------------------------
-    # Upsert (write parquet + sync to LanceDB)
+    # Upsert (write parquet ONLY — LanceDB sync is a separate operation)
     # ------------------------------------------------------------------
 
     async def upsert_chunks(
@@ -363,26 +363,22 @@ class IndexService:
         chunks_with_vectors: list[dict[str, Any]],
         rep_name: str = "canonical_md",
     ) -> int:
-        """Insert/update chunks: write entity parquet first, then sync to LanceDB.
+        """Insert/update chunks into entity-level parquet file.
 
-        This is the primary write API. It:
-        1. Writes chunks to entity-level parquet (source of truth)
-        2. Syncs the parquet data into LanceDB (search index)
+        This is the ONLY write API. It writes chunks to parquet only.
+        LanceDB is NOT updated here — call sync_to_lance() separately.
+
+        Architecture: parquet is the single source of truth.
+        LanceDB is a derived view that must be synced from parquet.
 
         Each item in chunks_with_vectors should have keys:
             chunk_index, text, embedding, metadata
         """
-        # Step 1: Write entity parquet
         self.write_entity_parquet(
             workspace_id, collection_id, entity_id,
             chunks_with_vectors, rep_name,
         )
-
-        # Step 2: Sync to LanceDB
-        count = await self.sync_to_lance(
-            workspace_id, collection_id, entity_id, rep_name,
-        )
-        return count
+        return len(chunks_with_vectors)
 
     # ------------------------------------------------------------------
     # Table management
