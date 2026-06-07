@@ -1,7 +1,7 @@
 """VFS service — Virtual File System over local storage.
 
-Maps the physical layout {root}/{ws}/{col}/{entity_id}/{rep_type}
-to virtual paths: /{entity_name}/{rep_type}
+Maps the physical layout {root}/{ws}/{col}/{entity_id}/{stage}/{file}
+to virtual paths: /{entity_name}/{virtual_name}
 
 Provides: ls, stat, read, glob, grep.
 """
@@ -20,6 +20,7 @@ from app.models.vfs import (
     VfsGrepMatch,
     VfsStatResponse,
 )
+from app.storage.lineage import REP_TYPE_TO_PATH
 from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
@@ -113,23 +114,26 @@ class VfsService:
                 "type": "dir",
             }
 
-            # File entries for each rep
-            for rep_file in sorted(entity_dir.iterdir()):
-                if not rep_file.is_file():
+            # File entries for each rep — walk lineage subdirectories
+            for rep_type in REP_TYPE_TO_PATH:
+                relpath_str = f"{REP_TYPE_TO_PATH[rep_type][0]}/{REP_TYPE_TO_PATH[rep_type][1]}"
+                rep_file = entity_dir / relpath_str
+                if not rep_file.exists():
                     continue
-                rep_type = rep_file.name
-                if rep_type in HIDDEN_FILES:
-                    continue  # hidden
                 vname = self._rep_to_virtual_name(rep_type)
                 if vname is None:
                     continue
+                try:
+                    size = rep_file.stat().st_size if rep_file.is_file() else 0
+                except OSError:
+                    size = 0
                 tree[f"/{entity_name}/{vname}"] = {
                     "entity_id": entity_id,
                     "rep_type": rep_type,
                     "path": rep_file,
                     "meta": meta,
                     "type": "file",
-                    "size": rep_file.stat().st_size,
+                    "size": size,
                 }
 
         return tree

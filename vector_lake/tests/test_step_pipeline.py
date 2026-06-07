@@ -42,6 +42,9 @@ class UpperStep:
     name = "upper_step"
     input_format = "lower"
     output_format = "upper"
+    index_mode = None
+    required_input_reps = ["source_original"]
+    output_reps = ["rep_upper"]
 
     async def transform(self, ctx: StepContext) -> StepResult:
         text = ctx.input_content.decode("utf-8")
@@ -58,6 +61,9 @@ class LowerStep:
     name = "lower_step"
     input_format = "upper"
     output_format = "md"
+    index_mode = None
+    required_input_reps = ["rep_upper"]
+    output_reps = ["canonical_md"]
 
     async def transform(self, ctx: StepContext) -> StepResult:
         text = ctx.input_content.decode("utf-8")

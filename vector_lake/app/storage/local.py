@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 from app.config import Settings
+from app.storage.lineage import rep_type_to_relpath
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,8 @@ class LocalStorage:
         """Save content bytes to {root}/{ws}/{col}/{entity_id}/{rep_type}."""
         entity_dir = self._entity_dir(workspace_id, collection_id, entity_id)
         entity_dir.mkdir(parents=True, exist_ok=True)
-        file_path = entity_dir / rep_type
+        file_path = entity_dir / rep_type_to_relpath(rep_type)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_bytes(content)
         return str(file_path)
 
@@ -88,7 +90,7 @@ class LocalStorage:
         rep_type: str,
     ) -> bytes | None:
         """Read bytes from the stored file, or None if not found."""
-        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type
+        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type_to_relpath(rep_type)
         if file_path.exists():
             return file_path.read_bytes()
         return None
@@ -101,7 +103,7 @@ class LocalStorage:
         rep_type: str,
     ) -> bool:
         """Check whether a stored file exists."""
-        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type
+        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type_to_relpath(rep_type)
         return file_path.exists()
 
     def list_entities(self, workspace_id: str, collection_id: str) -> list[str]:
@@ -112,7 +114,7 @@ class LocalStorage:
         return [
             d.name
             for d in sorted(col_dir.iterdir())
-            if d.is_dir()
+            if d.is_dir() and not d.name.startswith("_")
         ]
 
     # ------------------------------------------------------------------
@@ -131,7 +133,7 @@ class LocalStorage:
         tags: dict[str, str],
     ) -> None:
         """Set Entity Tags on source_original file (simulating OSS Object Tag)."""
-        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / "source_original"
+        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type_to_relpath("source_original")
         if not file_path.exists():
             logger.warning("Cannot set tags: source_original not found for %s", entity_id)
             return
@@ -149,7 +151,7 @@ class LocalStorage:
         entity_id: str,
     ) -> dict[str, str]:
         """Get Entity Tags from source_original file."""
-        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / "source_original"
+        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type_to_relpath("source_original")
         if not file_path.exists():
             return {}
         tags = {}
@@ -170,7 +172,7 @@ class LocalStorage:
         tags: dict[str, str],
     ) -> None:
         """Set Representation Tags on a rep file."""
-        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type
+        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type_to_relpath(rep_type)
         if not file_path.exists():
             return
         for key, value in tags.items():
@@ -188,7 +190,7 @@ class LocalStorage:
         rep_type: str,
     ) -> dict[str, str]:
         """Get Representation Tags from a rep file."""
-        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type
+        file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type_to_relpath(rep_type)
         if not file_path.exists():
             return {}
         tags = {}

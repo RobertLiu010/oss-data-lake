@@ -29,12 +29,10 @@ from app.models.entity import Entity, EntityStatus, PipelineStatus, RepInfo, Sou
 from app.services.pipeline import PipelineService
 from app.services.registry import TemplateRegistry
 from app.services.registry import registry as default_registry
+from app.storage.lineage import REP_TYPE_TO_PATH
 from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
-
-# Known rep_types for v0.1 MD entities
-KNOWN_REP_TYPES = ["source_original", "canonical_md"]
 
 
 class EntityService:
@@ -219,25 +217,22 @@ class EntityService:
         # Write Entity Tags + manifest AFTER pipeline (source_original must exist)
         self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
 
-        # Set Rep Tags on all known rep types
-        entity_dir = self.root / workspace_id / collection_id / entity_id
-        if entity_dir.exists():
-            for rep_file in sorted(entity_dir.iterdir()):
-                if rep_file.is_file() and rep_file.name != ".entity_manifest.json":
-                    self.storage.set_rep_tags(
-                        workspace_id, collection_id, entity_id, rep_file.name,
-                        {
-                            "rep_type": rep_file.name,
-                            "transform": "pipeline" if rep_file.name != "source_original" else "upload",
-                            "pipeline_id": "rep_pipeline_a",
-                            "pipeline_version": "1",
-                            "input_content_hash": content_hash if rep_file.name != "source_original" else "",
-                            "content_hash": content_hash,
-                            "status": "active",
-                            "modality": "text",
-                            "model_version": "",
-                        },
-                    )
+        # Set Rep Tags on source_original
+        source_hash = hashlib.sha256(content).hexdigest()[:16]
+        self.storage.set_rep_tags(
+            workspace_id, collection_id, entity_id, "source_original",
+            {
+                "rep_type": "source_original",
+                "transform": "upload",
+                "pipeline_id": "",
+                "pipeline_version": "",
+                "input_content_hash": "",
+                "content_hash": source_hash,
+                "status": "active",
+                "modality": "text",
+                "model_version": "",
+            },
+        )
 
         logger.info("Created entity %s from file %s", entity_id, filename)
         self._invalidate_list_cache(workspace_id, collection_id)
@@ -308,35 +303,32 @@ class EntityService:
                 pipeline_stage="pending",
             )
 
-        # Check each known rep
+        # Check all known rep types
         reps: list[RepInfo] = []
-        for rep_type in KNOWN_REP_TYPES:
-            rep_path = entity_dir / rep_type
-            if rep_path.exists():
-                rep_tags = self.storage.get_rep_tags(workspace_id, collection_id, entity_id, rep_type)
+        for rep_type in REP_TYPE_TO_PATH:
+            if self.storage.file_exists(workspace_id, collection_id, entity_id, rep_type):
+                rep_tags = self.storage.get_rep_tags(
+                    workspace_id, collection_id, entity_id, rep_type,
+                )
                 reps.append(RepInfo(
                     rep_type=rep_type,
                     exists=True,
-                    size=rep_path.stat().st_size,
+                    size=0,  # size not easily available via storage protocol
                     content_hash=rep_tags.get("content_hash", ""),
+                    index_mode=rep_tags.get("index_mode") or None,
+                    indexed=bool(rep_tags.get("status") == "active"),
+                    source_step=rep_tags.get("transform", ""),
                 ))
             else:
                 reps.append(RepInfo(rep_type=rep_type, exists=False))
 
-        # Extra rep files
-        for f in sorted(entity_dir.iterdir()):
-            if f.is_file() and f.name not in KNOWN_REP_TYPES and f.name != ".entity_manifest.json":
-                rep_tags = self.storage.get_rep_tags(workspace_id, collection_id, entity_id, f.name)
-                reps.append(RepInfo(
-                    rep_type=f.name,
-                    exists=True,
-                    size=f.stat().st_size,
-                    content_hash=rep_tags.get("content_hash", ""),
-                ))
-
         # Determine pipeline stage
-        source_exists = entity_dir.joinpath("source_original").exists()
-        canonical_exists = entity_dir.joinpath("canonical_md").exists()
+        source_exists = self.storage.file_exists(
+            workspace_id, collection_id, entity_id, "source_original",
+        )
+        canonical_exists = self.storage.file_exists(
+            workspace_id, collection_id, entity_id, "canonical_md",
+        )
 
         if source_exists and canonical_exists:
             pipeline_stage = "completed"

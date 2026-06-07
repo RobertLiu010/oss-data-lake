@@ -9,6 +9,23 @@ class SourceType(StrEnum):
     URL = "url"
 
 
+class EntityType(StrEnum):
+    """Entity type determines which RepPipeline(s) are dispatched.
+
+    Aligned with PRD §4.1:
+    - document: pdf/doc/docx/ppt/pptx/md/wps/wpt/dps/dpt/txt etc.
+    - table: csv/xls/xlsx/et/ett/tsv/parquet/json etc.
+    - image: jpg/png/gif/webp/bmp/tiff/avif/heic/svg etc.
+    - audio: wav/mp3/flac/ogg/m4a/opus etc.
+    - video: mp4/avi/mov/mkv/webm/flv/wmv etc.
+    """
+    DOCUMENT = "document"
+    TABLE = "table"
+    IMAGE = "image"
+    AUDIO = "audio"
+    VIDEO = "video"
+
+
 class EntityStatus(StrEnum):
     ENABLED = "enabled"
     HIDDEN = "hidden"

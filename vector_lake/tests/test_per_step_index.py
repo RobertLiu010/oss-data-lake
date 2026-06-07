@@ -15,7 +15,7 @@ import os
 
 os.environ["EMBEDDING_MOCK"] = "1"
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -41,6 +41,8 @@ class TextStep:
     input_format: str = "raw"
     output_format: str = "text"
     index_mode: str | None = "text"
+    required_input_reps: list[str] = field(default_factory=lambda: ["source_original"])
+    output_reps: list[str] = field(default_factory=lambda: ["rep_text"])
 
     async def transform(self, ctx: StepContext) -> StepResult:
         original = ctx.input_content.decode("utf-8", errors="replace")
@@ -60,6 +62,8 @@ class LexicalStep:
     input_format: str = "text"
     output_format: str = "md"
     index_mode: str | None = "lexical"
+    required_input_reps: list[str] = field(default_factory=lambda: ["rep_text"])
+    output_reps: list[str] = field(default_factory=lambda: ["canonical_md"])
 
     async def transform(self, ctx: StepContext) -> StepResult:
         original = ctx.input_content.decode("utf-8", errors="replace")
@@ -79,6 +83,8 @@ class NoIndexStep:
     input_format: str = "raw"
     output_format: str = "mid"
     index_mode: str | None = None
+    required_input_reps: list[str] = field(default_factory=lambda: ["source_original"])
+    output_reps: list[str] = field(default_factory=lambda: ["rep_mid"])
 
     async def transform(self, ctx: StepContext) -> StepResult:
         original = ctx.input_content.decode("utf-8", errors="replace")
@@ -195,6 +201,8 @@ class TestPerStepIndexTextMode:
             input_format: str = "text"
             output_format: str = "md"
             index_mode: str | None = None
+            required_input_reps: list[str] = field(default_factory=lambda: ["rep_text"])
+            output_reps: list[str] = field(default_factory=lambda: ["canonical_md"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 original = ctx.input_content.decode("utf-8", errors="replace")
@@ -256,6 +264,8 @@ class TestPerStepIndexLexicalMode:
             input_format: str = "raw"
             output_format: str = "text"
             index_mode: str | None = None
+            required_input_reps: list[str] = field(default_factory=lambda: ["source_original"])
+            output_reps: list[str] = field(default_factory=lambda: ["rep_text"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 return StepResult(
@@ -269,6 +279,8 @@ class TestPerStepIndexLexicalMode:
             input_format: str = "text"
             output_format: str = "mid"
             index_mode: str | None = "lexical"
+            required_input_reps: list[str] = field(default_factory=lambda: ["rep_text"])
+            output_reps: list[str] = field(default_factory=lambda: ["rep_mid"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 original = ctx.input_content.decode("utf-8", errors="replace")
@@ -285,6 +297,8 @@ class TestPerStepIndexLexicalMode:
             input_format: str = "mid"
             output_format: str = "md"
             index_mode: str | None = None
+            required_input_reps: list[str] = field(default_factory=lambda: ["rep_mid"])
+            output_reps: list[str] = field(default_factory=lambda: ["canonical_md"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 return StepResult(
@@ -348,6 +362,8 @@ class TestPerStepIndexNoneMode:
             input_format: str = "mid"
             output_format: str = "md"
             index_mode: str | None = None
+            required_input_reps: list[str] = field(default_factory=lambda: ["rep_mid"])
+            output_reps: list[str] = field(default_factory=lambda: ["canonical_md"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 return StepResult(
@@ -403,6 +419,8 @@ class TestPerStepIndexNoIndexableText:
             input_format: str = "raw"
             output_format: str = "text"
             index_mode: str | None = "text"
+            required_input_reps: list[str] = field(default_factory=lambda: ["source_original"])
+            output_reps: list[str] = field(default_factory=lambda: ["rep_text"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 # Return StepResult WITHOUT indexable_text
@@ -418,6 +436,8 @@ class TestPerStepIndexNoIndexableText:
             input_format: str = "text"
             output_format: str = "md"
             index_mode: str | None = None
+            required_input_reps: list[str] = field(default_factory=lambda: ["rep_text"])
+            output_reps: list[str] = field(default_factory=lambda: ["canonical_md"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 return StepResult(
@@ -574,6 +594,8 @@ class TestPerStepIndexMetadata:
             input_format: str = "text"
             output_format: str = "md"
             index_mode: str | None = None
+            required_input_reps: list[str] = field(default_factory=lambda: ["rep_text"])
+            output_reps: list[str] = field(default_factory=lambda: ["canonical_md"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 return StepResult(
@@ -645,6 +667,8 @@ class TestFullPipelineWithPerStepIndex:
             input_format: str = "raw"
             output_format: str = "text"
             index_mode: str | None = "text"
+            required_input_reps: list[str] = field(default_factory=lambda: ["source_original"])
+            output_reps: list[str] = field(default_factory=lambda: ["rep_text"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 original = ctx.input_content.decode("utf-8", errors="replace")
@@ -661,6 +685,8 @@ class TestFullPipelineWithPerStepIndex:
             input_format: str = "text"
             output_format: str = "md"
             index_mode: str | None = "text"
+            required_input_reps: list[str] = field(default_factory=lambda: ["rep_text"])
+            output_reps: list[str] = field(default_factory=lambda: ["canonical_md"])
 
             async def transform(self, ctx: StepContext) -> StepResult:
                 original = ctx.input_content.decode("utf-8", errors="replace")

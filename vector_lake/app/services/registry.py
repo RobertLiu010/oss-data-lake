@@ -139,9 +139,25 @@ class SearchContext:
 class RepStep(Protocol):
     """Protocol for a single representation transformation step.
 
-    Each step declares its ``input_format`` and ``output_format``.
-    The registry builds a DAG from all registered steps and resolves
-    the shortest path from source to target format.
+    Each step declares its ``input_format`` and ``output_format`` for
+    DAG-based pipeline resolution, plus ``required_input_reps`` and
+    ``output_reps`` for lineage tracking and topological ordering.
+
+    **Lineage declarations** (aligned with PRD §6.7):
+
+    - ``required_input_reps``: list of rep_type names this step
+      consumes (e.g. ``["source_original"]`` or
+      ``["canonical_md", "layout_json"]``).  Used for:
+        - Topological ordering of steps within a pipeline
+        - Lineage cascade: when an input rep goes stale, this step's
+          output is also stale
+        - Detecting when a step has all its inputs ready
+
+    - ``output_reps``: list of rep_type names this step produces
+      (e.g. ``["canonical_md", "layout_json"]``).  Used for:
+        - Saving outputs to the correct lineage directory
+        - Tracking which reps exist after a pipeline run
+        - Determining pipeline completion
 
     **Per-step indexing**: a step can declare ``index_mode`` to have its
     output indexed independently.  Supported modes:
@@ -151,25 +167,31 @@ class RepStep(Protocol):
     - ``"lexical"`` — chunk + FTS index only (no embeddings)
     - ``"vision"`` — image embedding + vector index (future)
 
-    When ``index_mode`` is set, the step should also provide
-    ``indexable_text`` in its StepResult (or the pipeline will try
-    to decode ``content`` as UTF-8 text).
-
-    Example steps:
-        - WordToPdf:  input_format="docx", output_format="pdf",
-                      index_mode="text"  (index extracted PDF text)
-        - PdfToPng:   input_format="pdf",  output_format="png",
-                      index_mode=None  (no indexing of images)
-        - PngToMd:    input_format="png",  output_format="md",
-                      index_mode="text"  (index OCR text)
-        - MdPassThru: input_format="md",   output_format="md",
-                      index_mode="text"  (index markdown text)
+    Example steps (aligned with PRD §6.7):
+        - parse:            input_format="raw", output_format="md",
+                            required_input_reps=["source_original"],
+                            output_reps=["canonical_md", "layout_json"]
+        - render_page:      input_format="raw", output_format="png",
+                            required_input_reps=["source_original"],
+                            output_reps=["page_image"]
+        - visual_recognize: input_format="png", output_format="md",
+                            required_input_reps=["page_image"],
+                            output_reps=["vlm_md"]
+        - transcribe:       input_format="audio", output_format="md",
+                            required_input_reps=["audio_segment"],
+                            output_reps=["transcript"]
+        - compile_wiki:     input_format="md", output_format="md",
+                            required_input_reps=["canonical_md"],
+                            output_reps=["wiki_md"]
     """
 
-    name: str  # unique step name (e.g. "word_to_pdf")
-    input_format: str  # source format (e.g. "docx")
-    output_format: str  # target format (e.g. "pdf")
+    name: str  # unique step name (e.g. "parse", "render_page")
+    input_format: str  # source format (e.g. "docx", "raw")
+    output_format: str  # target format (e.g. "pdf", "md")
     index_mode: str | None  # None, "text", "lexical", "vision"
+    # Lineage declarations (PRD §6.7)
+    required_input_reps: list[str]  # e.g. ["source_original"] or ["canonical_md", "layout_json"]
+    output_reps: list[str]  # e.g. ["canonical_md", "layout_json"] or ["page_image"]
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Transform input content to output format."""
@@ -268,6 +290,9 @@ class TemplateRegistry:
         # Extension → format mapping (e.g. ".docx" → "docx")
         self._extension_format_map: dict[str, str] = {}
 
+        # Extension → entity_type mapping (e.g. ".pdf" → "document")
+        self._extension_entity_type_map: dict[str, str] = {}
+
     # ------------------------------------------------------------------
     # Step registration (multi-step pipeline)
     # ------------------------------------------------------------------
@@ -310,6 +335,8 @@ class TemplateRegistry:
                 "input_format": s.input_format,
                 "output_format": s.output_format,
                 "index_mode": getattr(s, "index_mode", None),
+                "required_input_reps": getattr(s, "required_input_reps", []),
+                "output_reps": getattr(s, "output_reps", []),
             }
             for s in self._steps.values()
         ]
@@ -326,9 +353,21 @@ class TemplateRegistry:
         self._extension_format_map[extension.lower()] = format_name
         logger.debug("Mapped extension %s → format %s", extension, format_name)
 
+    def register_extension_entity_type(self, extension: str, entity_type: str) -> None:
+        """Map a file extension to an entity type.
+
+        Example: register_extension_entity_type(".pdf", "document")
+        """
+        self._extension_entity_type_map[extension.lower()] = entity_type
+        logger.debug("Mapped extension %s → entity_type %s", extension, entity_type)
+
     def get_format_for_extension(self, extension: str) -> str | None:
         """Get the format name for a file extension."""
         return self._extension_format_map.get(extension.lower())
+
+    def get_entity_type_for_extension(self, extension: str) -> str | None:
+        """Get the entity type for a file extension."""
+        return self._extension_entity_type_map.get(extension.lower())
 
     # ------------------------------------------------------------------
     # DAG resolution — find shortest path from source to target format

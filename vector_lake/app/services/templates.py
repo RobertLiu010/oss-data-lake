@@ -46,6 +46,8 @@ class MdPassThruStep:
     input_format = "md"
     output_format = "md"
     index_mode = "text"  # index the markdown text
+    required_input_reps = ["source_original"]
+    output_reps = ["canonical_md"]
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Pass through MD content unchanged."""
@@ -77,6 +79,8 @@ class WordToPdfStep:
     input_format = "docx"
     output_format = "pdf"
     index_mode = "text"  # index extracted text from DOCX
+    required_input_reps = ["source_original"]
+    output_reps = ["rep_pdf"]
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Convert DOCX bytes to PDF bytes.
@@ -104,6 +108,8 @@ class PdfToPngStep:
     input_format = "pdf"
     output_format = "png"
     index_mode = None  # images are not text-searchable
+    required_input_reps = ["rep_pdf"]
+    output_reps = ["page_image"]
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Convert PDF bytes to PNG bytes.
@@ -131,6 +137,8 @@ class PngToMdStep:
     input_format = "png"
     output_format = "md"
     index_mode = "text"  # index OCR text
+    required_input_reps = ["page_image"]
+    output_reps = ["canonical_md"]
 
     async def transform(self, ctx: StepContext) -> StepResult:
         """Convert PNG bytes to Markdown text via OCR.
@@ -242,18 +250,71 @@ class VectorIndexTemplate:
 
 # Extension → format mapping for common file types
 _EXTENSION_FORMAT_MAP: dict[str, str] = {
+    # Document formats
     ".md": "md",
     ".markdown": "md",
+    ".txt": "md",  # plain text treated as md
+    ".html": "md",  # HTML treated as md (after stripping tags)
     ".docx": "docx",
     ".doc": "docx",
     ".pdf": "pdf",
+    ".pptx": "docx",
+    ".ppt": "docx",
+    # Image formats
     ".png": "png",
     ".jpg": "png",
     ".jpeg": "png",
     ".tiff": "png",
     ".bmp": "png",
-    ".txt": "md",  # plain text treated as md
-    ".html": "md",  # HTML treated as md (after stripping tags)
+    ".gif": "png",
+    ".webp": "png",
+    ".svg": "png",
+    ".heic": "png",
+    ".avif": "png",
+    # Audio formats
+    ".wav": "audio",
+    ".mp3": "audio",
+    ".flac": "audio",
+    ".ogg": "audio",
+    ".m4a": "audio",
+    ".opus": "audio",
+    # Video formats
+    ".mp4": "video",
+    ".avi": "video",
+    ".mov": "video",
+    ".mkv": "video",
+    ".webm": "video",
+    ".flv": "video",
+    ".wmv": "video",
+    # Table formats
+    ".csv": "table",
+    ".tsv": "table",
+    ".xlsx": "table",
+    ".xls": "table",
+    ".parquet": "table",
+    ".json": "table",
+}
+
+# Extension → entity_type mapping (PRD §4.1)
+_EXTENSION_ENTITY_TYPE_MAP: dict[str, str] = {
+    # Document
+    ".md": "document", ".markdown": "document", ".txt": "document",
+    ".html": "document", ".docx": "document", ".doc": "document",
+    ".pdf": "document", ".pptx": "document", ".ppt": "document",
+    ".wps": "document", ".wpt": "document", ".dps": "document", ".dpt": "document",
+    # Image
+    ".png": "image", ".jpg": "image", ".jpeg": "image", ".tiff": "image",
+    ".bmp": "image", ".gif": "image", ".webp": "image", ".svg": "image",
+    ".heic": "image", ".avif": "image",
+    # Audio
+    ".wav": "audio", ".mp3": "audio", ".flac": "audio",
+    ".ogg": "audio", ".m4a": "audio", ".opus": "audio",
+    # Video
+    ".mp4": "video", ".avi": "video", ".mov": "video",
+    ".mkv": "video", ".webm": "video", ".flv": "video", ".wmv": "video",
+    # Table
+    ".csv": "table", ".tsv": "table", ".xlsx": "table",
+    ".xls": "table", ".parquet": "table", ".json": "table",
 }
 
 
@@ -265,6 +326,10 @@ def register_builtin_templates() -> None:
     # Register extension → format mappings
     for ext, fmt in _EXTENSION_FORMAT_MAP.items():
         registry.register_extension_format(ext, fmt)
+
+    # Register extension → entity_type mappings
+    for ext, et in _EXTENSION_ENTITY_TYPE_MAP.items():
+        registry.register_extension_entity_type(ext, et)
 
     # Register RepSteps (multi-step pipeline)
     registry.register_step(MdPassThruStep())

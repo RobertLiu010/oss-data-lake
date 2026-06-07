@@ -185,13 +185,10 @@ class ReconcilerService:
                     ))
                     continue
 
-                # Check required rep files exist
-                existing_reps = {
-                    f.name for f in entity_dir.iterdir() if f.is_file()
-                }
-
+                # Check required rep files exist via storage API
+                # (lineage paths mean files are in subdirs like source/original)
                 for rep_type in self.REQUIRED_REP_TYPES:
-                    if rep_type not in existing_reps:
+                    if not self.storage.file_exists(ws, col, entity_id, rep_type):
                         result.drifts_found.append(DriftRecord(
                             entity_id=entity_id,
                             workspace_id=ws,
@@ -201,26 +198,26 @@ class ReconcilerService:
                         ))
 
                 # Check content staleness: source_original hash vs Tag content_hash
-                source_file = entity_dir / "source_original"
-                canonical_file = entity_dir / "canonical_md"
-                if source_file.exists() and canonical_file.exists():
+                source_exists = self.storage.file_exists(ws, col, entity_id, "source_original")
+                canonical_exists = self.storage.file_exists(ws, col, entity_id, "canonical_md")
+                if source_exists and canonical_exists:
                     try:
                         recorded_hash = entity_tags.get("content_hash", "")
-                        actual_hash = hashlib.sha256(
-                            source_file.read_bytes()
-                        ).hexdigest()[:16]
+                        source_content = self.storage.read_file(ws, col, entity_id, "source_original")
+                        if source_content is not None:
+                            actual_hash = hashlib.sha256(source_content).hexdigest()[:16]
 
-                        if recorded_hash and actual_hash != recorded_hash:
-                            result.drifts_found.append(DriftRecord(
-                                entity_id=entity_id,
-                                workspace_id=ws,
-                                collection_id=col,
-                                drift_type=DriftType.STALE_REP,
-                                detail=(
-                                    f"source_original hash changed: "
-                                    f"recorded={recorded_hash}, actual={actual_hash}"
-                                ),
-                            ))
+                            if recorded_hash and actual_hash != recorded_hash:
+                                result.drifts_found.append(DriftRecord(
+                                    entity_id=entity_id,
+                                    workspace_id=ws,
+                                    collection_id=col,
+                                    drift_type=DriftType.STALE_REP,
+                                    detail=(
+                                        f"source_original hash changed: "
+                                        f"recorded={recorded_hash}, actual={actual_hash}"
+                                    ),
+                                ))
                     except Exception as e:
                         result.errors.append(
                             f"Error checking staleness for {entity_id}: {e}"
@@ -235,7 +232,7 @@ class ReconcilerService:
                     if not entity_dir.is_dir():
                         continue
                     entity_id = entity_dir.name
-                    has_canonical = (entity_dir / "canonical_md").exists()
+                    has_canonical = self.storage.file_exists(ws, col, entity_id, "canonical_md")
                     if has_canonical and entity_id not in indexed_entities:
                         result.drifts_found.append(DriftRecord(
                             entity_id=entity_id,
