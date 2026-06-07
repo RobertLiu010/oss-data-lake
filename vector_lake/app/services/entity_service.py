@@ -5,6 +5,11 @@ Entity attributes assembled from manifest (source of truth) or xattr (fallback):
 - Entity Tag (7 keys) on source_original: rag_status, entity_type, name, content_hash, version, labels, model_version
 - xattr tags serve as optional cache, synced from manifest after every write
 - Write order: manifest first (fsync), then tags (best-effort cache)
+
+File type handling is now driven by the TemplateRegistry: the
+``create_from_bytes`` method looks up the appropriate RepTemplate for
+the file's extension, so new file types can be supported by simply
+registering a new RepTemplate — no code changes needed here.
 """
 
 from __future__ import annotations
@@ -22,6 +27,8 @@ from fastapi import UploadFile
 from app.config import Settings
 from app.models.entity import Entity, EntityStatus, PipelineStatus, RepInfo, SourceType
 from app.services.pipeline import PipelineService
+from app.services.registry import TemplateRegistry
+from app.services.registry import registry as default_registry
 from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
@@ -38,11 +45,13 @@ class EntityService:
         storage: StorageProtocol,
         pipeline: PipelineService,
         settings: Settings,
+        template_registry: TemplateRegistry | None = None,
     ):
         self.storage = storage
         self.pipeline = pipeline
         self.settings = settings
         self.root = Path(settings.storage.local.root)
+        self._registry = template_registry or default_registry
         # TTL cache for list_entities
         self._list_cache: dict = {}
         self._list_cache_ts: dict = {}
@@ -140,8 +149,8 @@ class EntityService:
         collection_id: str,
         file: UploadFile,
     ) -> Entity:
-        """Create entity from an uploaded file (only .md supported in v0.1)."""
-        filename = file.filename or "unknown.md"
+        """Create entity from an uploaded file."""
+        filename = file.filename or "unknown"
         content = await file.read()
         return await self.create_from_bytes(workspace_id, collection_id, filename, content)
 
@@ -151,14 +160,36 @@ class EntityService:
         collection_id: str,
         filename: str,
         content: bytes,
+        *,
+        rep_template_name: str | None = None,
+        index_template_name: str | None = None,
     ) -> Entity:
-        """Create entity from filename + bytes directly."""
-        if not filename.lower().endswith(".md"):
-            raise ValueError(f"Unsupported file type: {filename}. Only .md files are supported in v0.1.")
+        """Create entity from filename + bytes directly.
+
+        The file type is resolved via the TemplateRegistry: if a
+        RepTemplate is registered for the file's extension, the entity
+        will be processed through that template's pipeline.
+        """
+        # Validate that a RepTemplate exists for this file type
+        if rep_template_name:
+            rep_tmpl = self._registry.get_rep_template(rep_template_name)
+            if rep_tmpl is None:
+                raise ValueError(f"RepTemplate '{rep_template_name}' not found")
+        else:
+            rep_tmpl = self._registry.find_rep_template_for_file(filename)
+            if rep_tmpl is None:
+                supported = sorted({
+                    ext
+                    for exts in self._registry._extension_map.values()
+                    for ext in self._registry._extension_map
+                })
+                raise ValueError(
+                    f"No RepTemplate registered for file '{filename}'. "
+                    f"Supported extensions: {supported or 'none'}"
+                )
 
         content_hash = hashlib.sha256(content).hexdigest()[:16]
         entity_id = f"ent_{content_hash}"
-        md_content = content.decode("utf-8", errors="replace")
 
         now = datetime.now()
         entity = Entity(
@@ -176,45 +207,37 @@ class EntityService:
             updated_at=now,
         )
 
-        # Trigger pipeline (saves source_original + canonical_md)
-        await self.pipeline.process_md_entity(
-            workspace_id, collection_id, entity_id, md_content,
+        # Trigger pipeline via registry-driven process_entity
+        await self.pipeline.process_entity(
+            workspace_id, collection_id, entity_id,
+            filename=filename,
+            source_content=content,
+            rep_template_name=rep_template_name,
+            index_template_name=index_template_name,
         )
 
         # Write Entity Tags + manifest AFTER pipeline (source_original must exist)
         self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
 
-        # Set Rep Tags on canonical_md
-        self.storage.set_rep_tags(
-            workspace_id, collection_id, entity_id, "canonical_md",
-            {
-                "rep_type": "canonical_md",
-                "transform": "parse",
-                "pipeline_id": "rep_pipeline_a",
-                "pipeline_version": "1",
-                "input_content_hash": content_hash,
-                "content_hash": content_hash,
-                "status": "active",
-                "modality": "text",
-                "model_version": "",
-            },
-        )
-
-        # Set Rep Tags on source_original
-        self.storage.set_rep_tags(
-            workspace_id, collection_id, entity_id, "source_original",
-            {
-                "rep_type": "source_original",
-                "transform": "upload",
-                "pipeline_id": "",
-                "pipeline_version": "",
-                "input_content_hash": "",
-                "content_hash": content_hash,
-                "status": "active",
-                "modality": "text",
-                "model_version": "",
-            },
-        )
+        # Set Rep Tags on all known rep types
+        entity_dir = self.root / workspace_id / collection_id / entity_id
+        if entity_dir.exists():
+            for rep_file in sorted(entity_dir.iterdir()):
+                if rep_file.is_file() and rep_file.name != ".entity_manifest.json":
+                    self.storage.set_rep_tags(
+                        workspace_id, collection_id, entity_id, rep_file.name,
+                        {
+                            "rep_type": rep_file.name,
+                            "transform": "pipeline" if rep_file.name != "source_original" else "upload",
+                            "pipeline_id": "rep_pipeline_a",
+                            "pipeline_version": "1",
+                            "input_content_hash": content_hash if rep_file.name != "source_original" else "",
+                            "content_hash": content_hash,
+                            "status": "active",
+                            "modality": "text",
+                            "model_version": "",
+                        },
+                    )
 
         logger.info("Created entity %s from file %s", entity_id, filename)
         self._invalidate_list_cache(workspace_id, collection_id)

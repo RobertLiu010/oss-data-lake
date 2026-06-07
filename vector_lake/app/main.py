@@ -17,7 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from app.config import load_settings
-from app.routers import entities, events, reconcile, search, vfs, workspaces
+from app.routers import entities, events, reconcile, search, templates, vfs, workspaces
 from app.services.chunking import ChunkingService
 from app.services.embedding import EmbeddingService
 from app.services.entity_service import EntityService
@@ -25,6 +25,7 @@ from app.services.event_bus import EventBus
 from app.services.index import IndexService
 from app.services.pipeline import PipelineService
 from app.services.reconciler import ReconcilerService
+from app.services.templates import register_builtin_templates
 from app.services.vfs import VfsService
 from app.services.watch import WatchService
 from app.storage.local import LocalStorage
@@ -151,6 +152,9 @@ _cached_settings = load_settings()
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     settings = _cached_settings
+
+    # Register built-in templates (MD rep + vector index)
+    register_builtin_templates()
 
     storage = LocalStorage(settings)
     chunking = ChunkingService(settings)
@@ -305,6 +309,7 @@ app.include_router(vfs.router)
 app.include_router(reconcile.router)
 app.include_router(events.router)
 app.include_router(workspaces.router)
+app.include_router(templates.router)
 
 
 # ---------------------------------------------------------------------------

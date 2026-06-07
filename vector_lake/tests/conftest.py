@@ -22,9 +22,20 @@ from app.services.event_bus import EventBus
 from app.services.index import IndexService
 from app.services.pipeline import PipelineService
 from app.services.reconciler import ReconcilerService
+from app.services.templates import register_builtin_templates
 from app.services.vfs import VfsService
 from app.services.watch import WatchService
 from app.storage.local import LocalStorage
+
+# ---------------------------------------------------------------------------
+# Session-scoped setup: register builtin templates once
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _register_builtin_templates():
+    """Ensure builtin templates are in the global registry for all tests."""
+    register_builtin_templates()
 
 # ---------------------------------------------------------------------------
 # Synchronous fixtures
