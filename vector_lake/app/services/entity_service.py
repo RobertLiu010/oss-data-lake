@@ -1,9 +1,14 @@
-"""Entity business logic."""
+"""Entity business logic.
+
+Entity attributes assembled from OSS Tag + path (PRD §4.1):
+- Entity Tag (7 keys) on source_original: rag_status, entity_type, name, content_hash, version, labels, model_version
+- workspace_id / collection_id / entity_id from path
+- .entity_manifest.json sidecar for non-derivable info (source_type, source_uri, timestamps)
+"""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import shutil
 from datetime import datetime
@@ -38,6 +43,73 @@ class EntityService:
         self.root = Path(settings.storage.local.root)
 
     # ------------------------------------------------------------------
+    # Internal: Entity ↔ dict conversion (from OSS Tag + path)
+    # ------------------------------------------------------------------
+
+    def _assemble_entity(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+    ) -> Optional[Entity]:
+        """Assemble Entity from OSS Tag + path + manifest."""
+        data = self.storage.assemble_entity(workspace_id, collection_id, entity_id)
+        if data is None:
+            return None
+        try:
+            return Entity(
+                entity_id=data["entity_id"],
+                entity_type=data.get("entity_type", "document"),
+                workspace_id=data.get("workspace_id", workspace_id),
+                collection_id=data.get("collection_id", collection_id),
+                name=data.get("name", entity_id),
+                source_type=SourceType(data.get("source_type", "oss")),
+                source_uri=data.get("source_uri", ""),
+                content_hash=data.get("content_hash", ""),
+                version=data.get("version", 1),
+                status=EntityStatus(data.get("status", "enabled")),
+                labels=data.get("labels", []),
+                created_at=data.get("created_at") or datetime.now(),
+                updated_at=data.get("updated_at") or datetime.now(),
+            )
+        except Exception as e:
+            logger.warning("Failed to assemble entity %s: %s", entity_id, e)
+            return None
+
+    def _write_entity_meta(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+        entity: Entity,
+    ) -> None:
+        """Write Entity Tags (xattr) + manifest (sidecar)."""
+        # Entity Tags on source_original
+        self.storage.set_entity_tags(
+            workspace_id, collection_id, entity_id,
+            {
+                "rag_status": entity.status.value,
+                "entity_type": entity.entity_type,
+                "name": entity.name,
+                "content_hash": entity.content_hash,
+                "version": str(entity.version),
+                "labels": ",".join(entity.labels),
+                "model_version": "embedding-v5",
+            },
+        )
+
+        # Manifest sidecar (non-derivable info)
+        self.storage.save_entity_manifest(
+            workspace_id, collection_id, entity_id,
+            {
+                "source_type": entity.source_type.value,
+                "source_uri": entity.source_uri,
+                "created_at": str(entity.created_at),
+                "updated_at": str(entity.updated_at),
+            },
+        )
+
+    # ------------------------------------------------------------------
     # Create
     # ------------------------------------------------------------------
 
@@ -51,18 +123,14 @@ class EntityService:
         filename = file.filename or "unknown.md"
         content = await file.read()
 
-        # Only .md supported in MVP
         if not filename.lower().endswith(".md"):
             raise ValueError(f"Unsupported file type: {filename}. Only .md files are supported in v0.1.")
 
-        # Generate entity_id from content hash
         content_hash = hashlib.sha256(content).hexdigest()[:16]
         entity_id = f"ent_{content_hash}"
-
-        # Decode content
         md_content = content.decode("utf-8", errors="replace")
 
-        # Create Entity model
+        now = datetime.now()
         entity = Entity(
             entity_id=entity_id,
             entity_type="document",
@@ -74,19 +142,48 @@ class EntityService:
             content_hash=content_hash,
             version=1,
             status=EntityStatus.ENABLED,
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
+            created_at=now,
+            updated_at=now,
         )
 
-        # Save entity metadata as JSON
-        self.storage.save_file(
-            workspace_id, collection_id, entity_id,
-            "entity_meta", entity.model_dump_json().encode("utf-8"),
-        )
-
-        # Trigger pipeline (MD files)
+        # Trigger pipeline (saves source_original + canonical_md)
         await self.pipeline.process_md_entity(
             workspace_id, collection_id, entity_id, md_content,
+        )
+
+        # Write Entity Tags + manifest AFTER pipeline (source_original must exist)
+        self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
+
+        # Set Rep Tags on canonical_md
+        self.storage.set_rep_tags(
+            workspace_id, collection_id, entity_id, "canonical_md",
+            {
+                "rep_type": "canonical_md",
+                "transform": "parse",
+                "pipeline_id": "rep_pipeline_a",
+                "pipeline_version": "1",
+                "input_content_hash": content_hash,
+                "content_hash": content_hash,
+                "status": "active",
+                "modality": "text",
+                "model_version": "",
+            },
+        )
+
+        # Set Rep Tags on source_original
+        self.storage.set_rep_tags(
+            workspace_id, collection_id, entity_id, "source_original",
+            {
+                "rep_type": "source_original",
+                "transform": "upload",
+                "pipeline_id": "",
+                "pipeline_version": "",
+                "input_content_hash": "",
+                "content_hash": content_hash,
+                "status": "active",
+                "modality": "text",
+                "model_version": "",
+            },
         )
 
         logger.info("Created entity %s from file %s", entity_id, filename)
@@ -102,13 +199,8 @@ class EntityService:
         collection_id: str,
         entity_id: str,
     ) -> Optional[Entity]:
-        """Get entity by ID."""
-        raw = self.storage.read_file(
-            workspace_id, collection_id, entity_id, "entity_meta",
-        )
-        if raw is None:
-            return None
-        return Entity.model_validate_json(raw.decode("utf-8"))
+        """Get entity by ID — assembled from OSS Tag + path."""
+        return self._assemble_entity(workspace_id, collection_id, entity_id)
 
     # ------------------------------------------------------------------
     # List
@@ -120,21 +212,15 @@ class EntityService:
         collection_id: str,
         status_filter: Optional[str] = None,
     ) -> list[Entity]:
-        """List all entities in a collection, optionally filtered by status."""
+        """List all entities, optionally filtered by rag_status."""
         entity_ids = self.storage.list_entities(workspace_id, collection_id)
         entities: list[Entity] = []
         for eid in entity_ids:
-            raw = self.storage.read_file(
-                workspace_id, collection_id, eid, "entity_meta",
-            )
-            if raw is not None:
-                try:
-                    entity = Entity.model_validate_json(raw.decode("utf-8"))
-                    if status_filter and entity.status.value != status_filter:
-                        continue
-                    entities.append(entity)
-                except Exception:
-                    logger.warning("Failed to parse entity meta for %s", eid)
+            entity = self._assemble_entity(workspace_id, collection_id, eid)
+            if entity is not None:
+                if status_filter and entity.status.value != status_filter:
+                    continue
+                entities.append(entity)
         return entities
 
     # ------------------------------------------------------------------
@@ -165,23 +251,25 @@ class EntityService:
         for rep_type in KNOWN_REP_TYPES:
             rep_path = entity_dir / rep_type
             if rep_path.exists():
+                rep_tags = self.storage.get_rep_tags(workspace_id, collection_id, entity_id, rep_type)
                 reps.append(RepInfo(
                     rep_type=rep_type,
                     exists=True,
                     size=rep_path.stat().st_size,
-                    content_hash=hashlib.sha256(rep_path.read_bytes()).hexdigest()[:16],
+                    content_hash=rep_tags.get("content_hash", ""),
                 ))
             else:
                 reps.append(RepInfo(rep_type=rep_type, exists=False))
 
-        # Also check for any extra rep files
+        # Extra rep files
         for f in sorted(entity_dir.iterdir()):
-            if f.is_file() and f.name not in KNOWN_REP_TYPES and f.name != "entity_meta":
+            if f.is_file() and f.name not in KNOWN_REP_TYPES and f.name != ".entity_manifest.json":
+                rep_tags = self.storage.get_rep_tags(workspace_id, collection_id, entity_id, f.name)
                 reps.append(RepInfo(
                     rep_type=f.name,
                     exists=True,
                     size=f.stat().st_size,
-                    content_hash=hashlib.sha256(f.read_bytes()).hexdigest()[:16],
+                    content_hash=rep_tags.get("content_hash", ""),
                 ))
 
         # Determine pipeline stage
@@ -199,15 +287,12 @@ class EntityService:
         indexed = False
         chunk_count = 0
         try:
-            from app.services.index import IndexService
             import lancedb
             lance_dir = self.settings.lance.data_dir
             db = lancedb.connect(lance_dir)
             table_name = f"{workspace_id}_{collection_id}_chunks"
             if table_name in db.table_names():
                 tbl = db.open_table(table_name)
-                # Count chunks for this entity
-                import pyarrow.compute as pc
                 df = tbl.to_pandas()
                 entity_chunks = df[df["metadata"].apply(
                     lambda m: m.get("entity_id") == entity_id if isinstance(m, dict) else False
@@ -227,7 +312,7 @@ class EntityService:
         )
 
     # ------------------------------------------------------------------
-    # Update status
+    # Update status (via OSS Tag)
     # ------------------------------------------------------------------
 
     async def patch_entity(
@@ -238,7 +323,7 @@ class EntityService:
         status: Optional[EntityStatus] = None,
         labels: Optional[list[str]] = None,
     ) -> Optional[Entity]:
-        """Update entity status and/or labels."""
+        """Update entity status/labels — writes to OSS Tag + manifest."""
         entity = await self.get_entity(workspace_id, collection_id, entity_id)
         if entity is None:
             return None
@@ -250,11 +335,8 @@ class EntityService:
 
         entity.updated_at = datetime.now()
 
-        # Persist updated meta
-        self.storage.save_file(
-            workspace_id, collection_id, entity_id,
-            "entity_meta", entity.model_dump_json().encode("utf-8"),
-        )
+        # Update OSS Tags + manifest
+        self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
 
         logger.info("Patched entity %s: status=%s, labels=%s", entity_id, entity.status, entity.labels)
         return entity
@@ -272,7 +354,7 @@ class EntityService:
     ) -> bool:
         """Delete an entity.
 
-        soft delete (default): set status=deleted, keep data
+        soft delete (default): set rag_status=deleted via OSS Tag
         hard delete: remove storage dir + LanceDB index entries
         """
         entity = await self.get_entity(workspace_id, collection_id, entity_id)
@@ -280,15 +362,12 @@ class EntityService:
             return False
 
         if hard:
-            # Remove storage directory
             entity_dir = self.root / workspace_id / collection_id / entity_id
             if entity_dir.exists():
                 shutil.rmtree(entity_dir)
                 logger.info("Hard deleted entity %s: removed storage", entity_id)
 
-            # Remove from LanceDB index
             try:
-                from app.services.index import IndexService
                 import lancedb
                 lance_dir = self.settings.lance.data_dir
                 db = lancedb.connect(lance_dir)
@@ -300,13 +379,10 @@ class EntityService:
             except Exception as e:
                 logger.warning("Failed to remove entity %s from index: %s", entity_id, e)
         else:
-            # Soft delete: just update status
+            # Soft delete: update rag_status tag
             entity.status = EntityStatus.DELETED
             entity.updated_at = datetime.now()
-            self.storage.save_file(
-                workspace_id, collection_id, entity_id,
-                "entity_meta", entity.model_dump_json().encode("utf-8"),
-            )
+            self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
             logger.info("Soft deleted entity %s", entity_id)
 
         return True

@@ -115,15 +115,22 @@ class ReconcilerService:
             entity_id = entity_dir.name
             result.entities_scanned += 1
 
-            # Load entity metadata
-            meta_path = entity_dir / "entity_meta"
-            if not meta_path.exists():
+            # Load entity metadata from OSS Tag + manifest
+            entity_tags = self.storage.get_entity_tags(ws, col, entity_id)
+            manifest = self.storage.read_entity_manifest(ws, col, entity_id)
+            has_meta = bool(entity_tags) or bool(manifest)
+            # Also check legacy entity_meta file
+            if not has_meta:
+                meta_path = entity_dir / "entity_meta"
+                has_meta = meta_path.exists()
+
+            if not has_meta:
                 result.drifts_found.append(DriftRecord(
                     entity_id=entity_id,
                     workspace_id=ws,
                     collection_id=col,
                     drift_type=DriftType.MISSING_ENTITY_META,
-                    detail="entity_meta file missing",
+                    detail="No OSS Tags, manifest, or entity_meta found",
                 ))
                 continue
 
@@ -142,14 +149,12 @@ class ReconcilerService:
                         detail=f"Required rep_type '{rep_type}' not found",
                     ))
 
-            # Check content staleness: source_original hash vs entity_meta.content_hash
+            # Check content staleness: source_original hash vs Tag content_hash
             source_file = entity_dir / "source_original"
             canonical_file = entity_dir / "canonical_md"
             if source_file.exists() and canonical_file.exists():
                 try:
-                    meta_raw = meta_path.read_text("utf-8")
-                    meta = json.loads(meta_raw)
-                    recorded_hash = meta.get("content_hash", "")
+                    recorded_hash = entity_tags.get("content_hash", "")
                     actual_hash = hashlib.sha256(
                         source_file.read_bytes()
                     ).hexdigest()[:16]
