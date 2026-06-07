@@ -226,37 +226,24 @@ class ReconcilerService:
                             f"Error checking staleness for {entity_id}: {e}"
                         )
 
-            # Phase 2: Index consistency — use entity_id column directly
+            # Phase 2: Index consistency via IndexService (single entry point)
             try:
-                import lancedb
-                lance_dir = self.settings.lance.data_dir
-                db = lancedb.connect(lance_dir)
-                table_name = f"{ws}_{col}_chunks"
-                if table_name in db.list_tables():
-                    tbl = db.open_table(table_name)
-                    # Get distinct entity_ids from the index using the dedicated column
-                    try:
-                        df = tbl.to_pandas(columns=["entity_id"], limit=100_000)
-                        indexed_entities = set(df["entity_id"].unique())
-                    except Exception:
-                        # Fallback: scan with limit
-                        df = tbl.to_pandas(limit=10_000)
-                        indexed_entities = set(df["entity_id"].unique())
+                indexed_entities = self.pipeline.index.get_indexed_entity_ids(ws, col)
 
-                    # Check: entities with canonical_md but no index entries
-                    for entity_dir in sorted(col_dir.iterdir()):
-                        if not entity_dir.is_dir():
-                            continue
-                        entity_id = entity_dir.name
-                        has_canonical = (entity_dir / "canonical_md").exists()
-                        if has_canonical and entity_id not in indexed_entities:
-                            result.drifts_found.append(DriftRecord(
-                                entity_id=entity_id,
-                                workspace_id=ws,
-                                collection_id=col,
-                                drift_type=DriftType.MISSING_INDEX,
-                                detail="Entity has canonical_md but no LanceDB index entries",
-                            ))
+                # Check: entities with canonical_md but no index entries
+                for entity_dir in sorted(col_dir.iterdir()):
+                    if not entity_dir.is_dir():
+                        continue
+                    entity_id = entity_dir.name
+                    has_canonical = (entity_dir / "canonical_md").exists()
+                    if has_canonical and entity_id not in indexed_entities:
+                        result.drifts_found.append(DriftRecord(
+                            entity_id=entity_id,
+                            workspace_id=ws,
+                            collection_id=col,
+                            drift_type=DriftType.MISSING_INDEX,
+                            detail="Entity has canonical_md but no LanceDB index entries",
+                        ))
             except Exception as e:
                 result.errors.append(f"Phase 2 index check failed: {e}")
 

@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import json
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +28,41 @@ from app.services.reconciler import ReconcilerService
 from app.services.vfs import VfsService
 from app.services.watch import WatchService
 from app.storage.local import LocalStorage
+
+# ---------------------------------------------------------------------------
+# Structured JSON logging with request_id support
+# ---------------------------------------------------------------------------
+
+
+class JsonFormatter(logging.Formatter):
+    """Emit logs as JSON with request_id from thread-local context."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "line": record.lineno,
+        }
+        # Inject request_id from thread-local if available
+        req_id = getattr(record, "request_id", None) or _current_request_id.get()
+        if req_id:
+            log_entry["request_id"] = req_id
+        if record.exc_info and record.exc_info[1]:
+            log_entry["exception"] = str(record.exc_info[1])
+        return json.dumps(log_entry, ensure_ascii=False)
+
+
+_current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler])
+# silence noisy libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +185,47 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Middleware: X-Request-ID (must run first — before CORS/GZip/Prometheus)
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Extract/generate X-Request-ID, inject into logging, record Prometheus metrics."""
+    req_id = request.headers.get("X-Request-ID", "") or str(uuid.uuid4())
+    _current_request_id.set(req_id)
+
+    start = time.monotonic()
+    response = await call_next(request)
+    elapsed = time.monotonic() - start
+
+    response.headers["X-Request-ID"] = req_id
+
+    # Prometheus metrics
+    if REQUEST_COUNT is not None:
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=request.url.path,
+            status=response.status_code,
+        ).inc()
+    if REQUEST_LATENCY is not None:
+        REQUEST_LATENCY.labels(
+            method=request.method,
+            endpoint=request.url.path,
+        ).observe(elapsed)
+
+    # Access log (structured JSON)
+    logger.info(
+        "request",
+        extra={
+            "request_id": req_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round(elapsed * 1000, 3),
+            "client": request.client.host if request.client else "-",
+        },
+    )
+    return response
+
+
 # Middleware (best practice: gzip large responses, allow CORS for web clients)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -170,34 +251,25 @@ if _limiter is not None:
 # Global exception handler (best practice: never leak internals)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception: %s %s", request.method, request.url.path)
+    logger.exception(
+        "Unhandled exception: %s %s",
+        request.method,
+        request.url.path,
+        extra={"request_id": _current_request_id.get()},
+    )
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error", "type": type(exc).__name__},
+        content={
+            "detail": "Internal server error",
+            "type": type(exc).__name__,
+            "request_id": _current_request_id.get(),
+        },
     )
 
 
 # ---------------------------------------------------------------------------
-# Prometheus metrics middleware + endpoint
+# Prometheus metrics endpoint (middleware merged with request_id_middleware above)
 # ---------------------------------------------------------------------------
-
-@app.middleware("http")
-async def prometheus_middleware(request: Request, call_next):
-    """Record request count and latency for Prometheus."""
-    response = await call_next(request)
-    if REQUEST_COUNT is not None:
-        REQUEST_COUNT.labels(
-            method=request.method,
-            endpoint=request.url.path,
-            status=response.status_code,
-        ).inc()
-    if REQUEST_LATENCY is not None:
-        REQUEST_LATENCY.labels(
-            method=request.method,
-            endpoint=request.url.path,
-        ).observe(0)  # simplified; real impl would measure actual latency
-    return response
-
 
 @app.get("/metrics", tags=["system"], include_in_schema=False)
 async def metrics():

@@ -20,8 +20,18 @@ class IndexService:
     """Manage chunk vectors in LanceDB."""
 
     def __init__(self, settings: Settings):
+        self.settings = settings
         self.db = lancedb.connect(settings.lance.data_dir)
         self.dimension = settings.embedding.dimension
+        # Run schema migrations on startup
+        from app.services.migration import run_migrations
+
+        try:
+            applied = run_migrations(self.db, settings)
+            if applied:
+                logger.info("Applied %d schema migration(s)", applied)
+        except Exception:
+            logger.exception("Schema migration failed — continuing with best-effort")
 
     @staticmethod
     def _table_name(workspace_id: str, collection_id: str) -> str:
@@ -76,7 +86,7 @@ class IndexService:
         }, schema=schema)
 
         def _upsert() -> int:
-            existing_tables = self.db.list_tables()
+            existing_tables = self.db.list_tables().tables
             if table_name in existing_tables:
                 table = self.db.open_table(table_name)
                 # Delete old chunks for this entity before adding new ones
@@ -100,8 +110,54 @@ class IndexService:
         return count
 
     # ------------------------------------------------------------------
-    # Search
+    # Table management
     # ------------------------------------------------------------------
+
+    def table_exists(self, workspace_id: str, collection_id: str) -> bool:
+        """Check whether the LanceDB table exists for a workspace/collection."""
+        table_name = self._table_name(workspace_id, collection_id)
+        return table_name in self.db.list_tables().tables
+
+    def count_entity_chunks(self, workspace_id: str, collection_id: str, entity_id: str) -> int:
+        """Count indexed chunks for a specific entity. Returns 0 if table doesn't exist."""
+        table_name = self._table_name(workspace_id, collection_id)
+        if table_name not in self.db.list_tables().tables:
+            return 0
+
+        table = self.db.open_table(table_name)
+        try:
+            filtered = table.search().where(
+                f'entity_id = "{entity_id}"'
+            ).limit(10_000).to_list()
+            return len(filtered)
+        except Exception:
+            df = table.to_pandas(columns=["entity_id"], limit=10_000)
+            return len(df[df["entity_id"] == entity_id])
+
+    def delete_entity_chunks(self, workspace_id: str, collection_id: str, entity_id: str) -> int:
+        """Delete all chunks for an entity. Returns the number of deleted rows."""
+        table_name = self._table_name(workspace_id, collection_id)
+        if table_name not in self.db.list_tables().tables:
+            return 0
+
+        table = self.db.open_table(table_name)
+        safe_id = entity_id.replace('"', '').replace("'", "")
+        table.delete(f'entity_id = "{safe_id}"')
+        return 0  # LanceDB delete doesn't return count
+
+    def get_indexed_entity_ids(self, workspace_id: str, collection_id: str) -> set[str]:
+        """Get the set of entity_ids that have chunks in the index."""
+        table_name = self._table_name(workspace_id, collection_id)
+        if table_name not in self.db.list_tables().tables:
+            return set()
+
+        table = self.db.open_table(table_name)
+        try:
+            df = table.to_pandas(columns=["entity_id"], limit=100_000)
+            return set(df["entity_id"].unique())
+        except Exception:
+            df = table.to_pandas(limit=10_000)
+            return set(df["entity_id"].unique())
 
     async def search(
         self,
@@ -113,7 +169,7 @@ class IndexService:
         """Search by vector, return top_k results."""
         table_name = self._table_name(workspace_id, collection_id)
 
-        existing_tables = self.db.list_tables()
+        existing_tables = self.db.list_tables().tables
         if table_name not in existing_tables:
             return []
 
@@ -162,7 +218,7 @@ class IndexService:
         """Search by text matching on the `text` column."""
         table_name = self._table_name(workspace_id, collection_id)
 
-        existing_tables = self.db.list_tables()
+        existing_tables = self.db.list_tables().tables
         if table_name not in existing_tables:
             return []
 

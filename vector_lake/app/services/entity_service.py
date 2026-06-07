@@ -322,32 +322,15 @@ class EntityService:
         else:
             pipeline_stage = "pending"
 
-        # Check index — use entity_id column directly (no full-table scan)
+        # Check index via IndexService (single entry point for LanceDB)
         indexed = False
         chunk_count = 0
         try:
-            import lancedb
-            lance_dir = self.settings.lance.data_dir
-            db = lancedb.connect(lance_dir)
-            table_name = f"{workspace_id}_{collection_id}_chunks"
-            if table_name in db.list_tables():
-                tbl = db.open_table(table_name)
-
-                def _count_chunks() -> int:
-                    # Use LanceDB filter on entity_id column (indexed) instead of
-                    # materializing the full table and parsing JSON metadata.
-                    try:
-                        filtered = tbl.search().where(
-                            f'entity_id = "{entity_id}"'
-                        ).limit(10_000).to_list()
-                        return len(filtered)
-                    except Exception:
-                        # Fallback: scan with limit
-                        df = tbl.to_pandas(limit=10_000)
-                        return len(df[df["entity_id"] == entity_id])
-
-                chunk_count = await asyncio.get_event_loop().run_in_executor(None, _count_chunks)
-                indexed = chunk_count > 0
+            chunk_count = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.pipeline.index.count_entity_chunks(workspace_id, collection_id, entity_id),
+            )
+            indexed = chunk_count > 0
         except Exception:
             pass
 
@@ -418,16 +401,8 @@ class EntityService:
                 logger.info("Hard deleted entity %s: removed storage", entity_id)
 
             try:
-                import lancedb
-                lance_dir = self.settings.lance.data_dir
-                db = lancedb.connect(lance_dir)
-                table_name = f"{workspace_id}_{collection_id}_chunks"
-                if table_name in db.list_tables():
-                    tbl = db.open_table(table_name)
-                    # Use parameterized filter to avoid injection
-                    safe_id = entity_id.replace('"', '').replace("'", "")
-                    tbl.delete(f'entity_id = "{safe_id}"')
-                    logger.info("Hard deleted entity %s: removed from index", entity_id)
+                self.pipeline.index.delete_entity_chunks(workspace_id, collection_id, entity_id)
+                logger.info("Hard deleted entity %s: removed from index", entity_id)
             except Exception as e:
                 logger.warning("Failed to remove entity %s from index: %s", entity_id, e)
         else:
