@@ -49,7 +49,10 @@ REP_TAG_KEYS = [
 
 
 class LocalStorage:
-    """Local filesystem storage with OSS Tag simulation via xattr."""
+    """Local filesystem storage with OSS Tag simulation via xattr.
+
+    Implements StorageProtocol — see app.storage.protocol for the contract.
+    """
 
     def __init__(self, settings: Settings):
         self.root = settings.storage.local.root

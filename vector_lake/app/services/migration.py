@@ -38,9 +38,12 @@ def _read_version(lance_dir: str) -> int:
 
 
 def _write_version(lance_dir: str, version: int) -> None:
+    """Atomic write of schema version file (write tmp → fsync → rename)."""
     vf = _get_version_file(lance_dir)
     vf.parent.mkdir(parents=True, exist_ok=True)
-    vf.write_text(str(version))
+    tmp_path = vf.with_suffix(".tmp")
+    tmp_path.write_text(str(version))
+    tmp_path.replace(vf)
 
 
 def migration(version: int):
@@ -61,7 +64,10 @@ def migration(version: int):
 @migration(1)
 def _migration_001_create_fts_indexes(db, settings):
     """Create FTS indexes on all existing tables."""
-    for table_name in db.list_tables():
+    tables = db.list_tables()
+    # LanceDB >=0.33 returns ListTablesResponse; fall back to list for older versions
+    table_names = tables.tables if hasattr(tables, "tables") else list(tables)
+    for table_name in table_names:
         try:
             table = db.open_table(table_name)
             table.create_fts_index("text", replace=True)

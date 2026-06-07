@@ -90,7 +90,8 @@ class IndexService:
             if table_name in existing_tables:
                 table = self.db.open_table(table_name)
                 # Delete old chunks for this entity before adding new ones
-                table.delete(f'entity_id = "{entity_id}"')
+                safe_id = entity_id.replace('"', '').replace("'", "")
+                table.delete(f'entity_id = "{safe_id}"')
                 table.add(new_data)
             else:
                 table = self.db.create_table(table_name, new_data)
@@ -118,6 +119,14 @@ class IndexService:
         table_name = self._table_name(workspace_id, collection_id)
         return table_name in self.db.list_tables().tables
 
+    def drop_table(self, workspace_id: str, collection_id: str) -> None:
+        """Drop the entire LanceDB table for a workspace/collection."""
+        table_name = self._table_name(workspace_id, collection_id)
+        if table_name not in self.db.list_tables().tables:
+            return
+        self.db.drop_table(table_name)
+        logger.info("Dropped LanceDB table %s", table_name)
+
     def count_entity_chunks(self, workspace_id: str, collection_id: str, entity_id: str) -> int:
         """Count indexed chunks for a specific entity. Returns 0 if table doesn't exist."""
         table_name = self._table_name(workspace_id, collection_id)
@@ -126,24 +135,28 @@ class IndexService:
 
         table = self.db.open_table(table_name)
         try:
-            filtered = table.search().where(
-                f'entity_id = "{entity_id}"'
-            ).limit(10_000).to_list()
-            return len(filtered)
+            return table.count_rows(filter=f'entity_id = "{entity_id}"')
+        except (AttributeError, TypeError):
+            pass
         except Exception:
-            df = table.to_pandas(columns=["entity_id"], limit=10_000)
-            return len(df[df["entity_id"] == entity_id])
+            pass
 
-    def delete_entity_chunks(self, workspace_id: str, collection_id: str, entity_id: str) -> int:
-        """Delete all chunks for an entity. Returns the number of deleted rows."""
+        # Fallback: scan without count_rows
+        try:
+            rows = table.search().where(f'entity_id = "{entity_id}"').limit(10_000).to_list()
+            return len(rows)
+        except Exception:
+            return 0
+
+    def delete_entity_chunks(self, workspace_id: str, collection_id: str, entity_id: str) -> None:
+        """Delete all chunks for an entity."""
         table_name = self._table_name(workspace_id, collection_id)
         if table_name not in self.db.list_tables().tables:
-            return 0
+            return
 
         table = self.db.open_table(table_name)
         safe_id = entity_id.replace('"', '').replace("'", "")
         table.delete(f'entity_id = "{safe_id}"')
-        return 0  # LanceDB delete doesn't return count
 
     def get_indexed_entity_ids(self, workspace_id: str, collection_id: str) -> set[str]:
         """Get the set of entity_ids that have chunks in the index."""
@@ -153,11 +166,21 @@ class IndexService:
 
         table = self.db.open_table(table_name)
         try:
-            df = table.to_pandas(columns=["entity_id"], limit=100_000)
+            # Use to_pandas if pandas is available (fast path)
+            import pandas  # noqa: F401
+            df = table.to_pandas(limit=50_000)
             return set(df["entity_id"].unique())
+        except ImportError:
+            pass
         except Exception:
-            df = table.to_pandas(limit=10_000)
-            return set(df["entity_id"].unique())
+            pass
+
+        # Fallback: scan without pandas
+        try:
+            rows = table.search().limit(50_000).to_list()
+            return {r.get("entity_id", "") for r in rows if r.get("entity_id")}
+        except Exception:
+            return set()
 
     async def search(
         self,
@@ -233,16 +256,17 @@ class IndexService:
                     table.create_fts_index("text", replace=True)
                     results = table.search(query, query_type="fts").limit(top_k).to_list()
                 except Exception:
-                    # Last resort: do NOT load full table. Use a simple limit + filter.
-                    # This is slower than FTS but doesn't OOM on large tables.
+                    # Last resort: scan rows and filter in Python (no pandas needed)
                     logger.warning("FTS unavailable for %s, falling back to filtered search", table_name)
                     query_lower = query.lower()
-                    results = (
-                        table.to_pandas(limit=10_000)
-                        .pipe(lambda df: df[df["text"].str.lower().str.contains(query_lower, na=False)])
-                        .head(top_k)
-                        .to_dict(orient="records")
-                    )
+                    try:
+                        rows = table.search().limit(10_000).to_list()
+                        results = [
+                            r for r in rows
+                            if query_lower in (r.get("text", "") or "").lower()
+                        ][:top_k]
+                    except Exception:
+                        results = []
 
             out: list[SearchResult] = []
             for rank, row in enumerate(results):

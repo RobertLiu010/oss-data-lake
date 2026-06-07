@@ -2,31 +2,29 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 
 # MUST set EMBEDDING_MOCK before importing any app modules
 os.environ["EMBEDDING_MOCK"] = "1"
 
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import AsyncGenerator
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.config import Settings
-from app.storage.local import LocalStorage
 from app.services.chunking import ChunkingService
 from app.services.embedding import EmbeddingService
+from app.services.entity_service import EntityService
 from app.services.event_bus import EventBus
 from app.services.index import IndexService
 from app.services.pipeline import PipelineService
-from app.services.entity_service import EntityService
-from app.services.vfs import VfsService
 from app.services.reconciler import ReconcilerService
+from app.services.vfs import VfsService
 from app.services.watch import WatchService
-
+from app.storage.local import LocalStorage
 
 # ---------------------------------------------------------------------------
 # Synchronous fixtures

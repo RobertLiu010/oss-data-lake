@@ -22,7 +22,7 @@ from fastapi import UploadFile
 from app.config import Settings
 from app.models.entity import Entity, EntityStatus, PipelineStatus, RepInfo, SourceType
 from app.services.pipeline import PipelineService
-from app.storage.local import LocalStorage
+from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class EntityService:
 
     def __init__(
         self,
-        storage: LocalStorage,
+        storage: StorageProtocol,
         pipeline: PipelineService,
         settings: Settings,
     ):

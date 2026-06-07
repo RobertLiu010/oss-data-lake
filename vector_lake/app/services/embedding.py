@@ -29,7 +29,9 @@ class EmbeddingService:
         self.task_query = settings.embedding.task_query
         self.batch_size = settings.embedding.batch_size
         self._mock = os.environ.get("EMBEDDING_MOCK", "").strip() == "1"
-        self._client = httpx.AsyncClient(timeout=300.0)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
+        )
 
     async def close(self) -> None:
         """Close the underlying httpx client."""

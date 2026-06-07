@@ -22,7 +22,7 @@ from pathlib import Path
 from app.config import Settings
 from app.services.entity_service import EntityService
 from app.services.pipeline import PipelineService
-from app.storage.local import LocalStorage
+from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class ReconcilerService:
 
     def __init__(
         self,
-        storage: LocalStorage,
+        storage: StorageProtocol,
         entity_service: EntityService,
         pipeline: PipelineService,
         settings: Settings,

@@ -6,11 +6,34 @@ from pathlib import Path
 
 import pytest
 
-from app.config import Settings
-from app.services.entity_service import EntityService
-from app.services.pipeline import PipelineService
 from app.services.reconciler import DriftType, ReconcilerService
 from app.storage.local import LocalStorage
+
+
+def _make_manifest(
+    entity_id: str,
+    workspace_id: str,
+    collection_id: str,
+    name: str = "test.md",
+    content_hash: str = "abc123",
+) -> dict:
+    """Create a standard entity manifest dict for testing."""
+    return {
+        "entity_id": entity_id,
+        "workspace_id": workspace_id,
+        "collection_id": collection_id,
+        "entity_type": "document",
+        "name": name,
+        "source_type": "oss",
+        "source_uri": f"local://{workspace_id}/{collection_id}/{entity_id}/source_original",
+        "content_hash": content_hash,
+        "version": 1,
+        "status": "enabled",
+        "labels": [],
+        "model_version": "v5",
+        "created_at": "2025-01-01",
+        "updated_at": "2025-01-01",
+    }
 
 
 class TestScanNoDrift:
@@ -19,7 +42,6 @@ class TestScanNoDrift:
     @pytest.mark.asyncio
     async def test_scan_no_drift(self, reconciler_service: ReconcilerService):
         ws, col = "ws_scan", "col_empty"
-        # Ensure collection dir exists
         col_dir = Path(reconciler_service.root) / ws / col
         col_dir.mkdir(parents=True, exist_ok=True)
 
@@ -39,24 +61,8 @@ class TestScanMissingRep:
         reconciler_service: ReconcilerService,
     ):
         ws, col, eid = "ws_rep", "col_missing", "ent_missing_rep"
-        # Create entity with source_original but no canonical_md
         storage.save_file(ws, col, eid, "source_original", b"# Hello\nContent here")
-        storage.save_entity_manifest(ws, col, eid, {
-            "entity_id": eid,
-            "workspace_id": ws,
-            "collection_id": col,
-            "entity_type": "document",
-            "name": "test.md",
-            "source_type": "oss",
-            "source_uri": f"local://{ws}/{col}/{eid}/source_original",
-            "content_hash": "abc123",
-            "version": 1,
-            "status": "enabled",
-            "labels": [],
-            "model_version": "v5",
-            "created_at": "2025-01-01",
-            "updated_at": "2025-01-01",
-        })
+        storage.save_entity_manifest(ws, col, eid, _make_manifest(eid, ws, col))
         storage.sync_tags_from_manifest(ws, col, eid)
 
         result = await reconciler_service.reconcile(ws, col)
@@ -76,25 +82,9 @@ class TestScanMissingIndex:
         reconciler_service: ReconcilerService,
     ):
         ws, col, eid = "ws_idx", "col_missing_idx", "ent_missing_idx"
-        # Create entity with both source_original and canonical_md
         storage.save_file(ws, col, eid, "source_original", b"# Hello\nContent")
         storage.save_file(ws, col, eid, "canonical_md", b"# Hello\nContent")
-        storage.save_entity_manifest(ws, col, eid, {
-            "entity_id": eid,
-            "workspace_id": ws,
-            "collection_id": col,
-            "entity_type": "document",
-            "name": "test.md",
-            "source_type": "oss",
-            "source_uri": f"local://{ws}/{col}/{eid}/source_original",
-            "content_hash": "abc123",
-            "version": 1,
-            "status": "enabled",
-            "labels": [],
-            "model_version": "v5",
-            "created_at": "2025-01-01",
-            "updated_at": "2025-01-01",
-        })
+        storage.save_entity_manifest(ws, col, eid, _make_manifest(eid, ws, col))
         storage.sync_tags_from_manifest(ws, col, eid)
 
         result = await reconciler_service.reconcile(ws, col)
@@ -116,12 +106,10 @@ class TestScanOrphanRep:
         col_dir = Path(reconciler_service.root) / ws / col
         col_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create an orphan file directly in the collection dir (not in an entity dir)
         orphan_file = col_dir / "orphan_canonical_md"
         orphan_file.write_text("# Orphan content")
 
         result = await reconciler_service.reconcile(ws, col)
-        # The reconciler only scans directories, so the orphan file is ignored
         assert result.entities_scanned == 0
         assert result.drift_count == 0
 
@@ -137,35 +125,16 @@ class TestRepairCreatesMissingRep:
     ):
         ws, col, eid = "ws_repair", "col_repair", "ent_repair"
         content = b"# Test Repair\nSome content for repair"
-        # Create entity with source_original but no canonical_md
         storage.save_file(ws, col, eid, "source_original", content)
-        storage.save_entity_manifest(ws, col, eid, {
-            "entity_id": eid,
-            "workspace_id": ws,
-            "collection_id": col,
-            "entity_type": "document",
-            "name": "test.md",
-            "source_type": "oss",
-            "source_uri": f"local://{ws}/{col}/{eid}/source_original",
-            "content_hash": "abc123",
-            "version": 1,
-            "status": "enabled",
-            "labels": [],
-            "model_version": "v5",
-            "created_at": "2025-01-01",
-            "updated_at": "2025-01-01",
-        })
+        storage.save_entity_manifest(ws, col, eid, _make_manifest(eid, ws, col))
         storage.sync_tags_from_manifest(ws, col, eid)
 
-        # Before reconcile, canonical_md should not exist
         assert not storage.file_exists(ws, col, eid, "canonical_md")
 
         result = await reconciler_service.reconcile(ws, col)
         assert result.entities_scanned == 1
-        # Repair should have created canonical_md
         assert result.drifts_repaired >= 1
 
-        # Verify canonical_md was created
         canonical = storage.read_file(ws, col, eid, "canonical_md")
         assert canonical is not None
         assert b"Test Repair" in canonical
@@ -188,22 +157,7 @@ class TestScanMultipleCollections:
             eid = f"ent_{col}"
             storage.save_file(ws, col, eid, "source_original", b"# Content")
             storage.save_file(ws, col, eid, "canonical_md", b"# Content")
-            storage.save_entity_manifest(ws, col, eid, {
-                "entity_id": eid,
-                "workspace_id": ws,
-                "collection_id": col,
-                "entity_type": "document",
-                "name": "test.md",
-                "source_type": "oss",
-                "source_uri": f"local://{ws}/{col}/{eid}/source_original",
-                "content_hash": "abc123",
-                "version": 1,
-                "status": "enabled",
-                "labels": [],
-                "model_version": "v5",
-                "created_at": "2025-01-01",
-                "updated_at": "2025-01-01",
-            })
+            storage.save_entity_manifest(ws, col, eid, _make_manifest(eid, ws, col))
             storage.sync_tags_from_manifest(ws, col, eid)
 
             result = await reconciler_service.reconcile(ws, col)

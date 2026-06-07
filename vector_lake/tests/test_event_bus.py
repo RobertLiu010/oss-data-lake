@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from app.services.event_bus import EventBus, Event, EventType
+from app.services.event_bus import Event, EventBus, EventType
 
 
 class TestEventBusSubscribe:

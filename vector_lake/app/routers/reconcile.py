@@ -77,7 +77,6 @@ async def reconcile_status(ws: str, col: str, request: Request):
             lock_info = {
                 "locked": True,
                 "lock_age_seconds": round(age, 1),
-                "lock_path": str(lock_file),
             }
         except FileNotFoundError:
             lock_info = {"locked": False}

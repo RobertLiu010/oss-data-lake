@@ -11,7 +11,7 @@ from app.services.chunking import ChunkingService
 from app.services.embedding import EmbeddingService
 from app.services.event_bus import Event, EventBus, EventType
 from app.services.index import IndexService
-from app.storage.local import LocalStorage
+from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class PipelineService:
 
     def __init__(
         self,
-        storage: LocalStorage,
+        storage: StorageProtocol,
         chunking: ChunkingService,
         embedding: EmbeddingService,
         index: IndexService,

@@ -35,10 +35,16 @@ from app.storage.local import LocalStorage
 
 
 class JsonFormatter(logging.Formatter):
-    """Emit logs as JSON with request_id from thread-local context."""
+    """Emit logs as JSON with request_id and extra fields."""
+
+    # Fields that are part of the base log entry (not from extra)
+    _BASE_FIELDS = frozenset({
+        "timestamp", "level", "logger", "message", "module", "line",
+        "request_id", "exception",
+    })
 
     def format(self, record: logging.LogRecord) -> str:
-        log_entry = {
+        log_entry: dict = {
             "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
@@ -46,13 +52,17 @@ class JsonFormatter(logging.Formatter):
             "module": record.module,
             "line": record.lineno,
         }
-        # Inject request_id from thread-local if available
+        # Inject request_id from context var or record extra
         req_id = getattr(record, "request_id", None) or _current_request_id.get()
         if req_id:
             log_entry["request_id"] = req_id
         if record.exc_info and record.exc_info[1]:
             log_entry["exception"] = str(record.exc_info[1])
-        return json.dumps(log_entry, ensure_ascii=False)
+        # Merge any extra fields from the log call
+        for key, value in record.__dict__.items():
+            if key not in self._BASE_FIELDS and not key.startswith("_"):
+                log_entry[key] = value
+        return json.dumps(log_entry, ensure_ascii=False, default=str)
 
 
 _current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
@@ -126,6 +136,12 @@ def _init_rate_limiter():
 
 _init_rate_limiter()
 
+# ---------------------------------------------------------------------------
+# Cached settings (avoid repeated YAML parsing)
+# ---------------------------------------------------------------------------
+
+_cached_settings = load_settings()
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -134,7 +150,7 @@ _init_rate_limiter()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
-    settings = load_settings()
+    settings = _cached_settings
 
     storage = LocalStorage(settings)
     chunking = ChunkingService(settings)
@@ -229,9 +245,8 @@ async def request_id_middleware(request: Request, call_next):
 # Middleware (best practice: gzip large responses, allow CORS for web clients)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# CORS — origins from config (env: CORS_ORIGINS)
-_settings_for_cors = load_settings()
-_cors_origins = _settings_for_cors.cors.origins.split(",") if _settings_for_cors.cors.origins != "*" else ["*"]
+# CORS — origins from cached config (env: CORS_ORIGINS)
+_cors_origins = _cached_settings.cors.origins.split(",") if _cached_settings.cors.origins != "*" else ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,

@@ -20,7 +20,7 @@ from app.models.vfs import (
     VfsGrepMatch,
     VfsStatResponse,
 )
-from app.storage.local import LocalStorage
+from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ TEXT_REP_TYPES = {"source_original", "canonical_md"}
 class VfsService:
     """Virtual File System service over LocalStorage."""
 
-    def __init__(self, storage: LocalStorage, settings: Settings):
+    def __init__(self, storage: StorageProtocol, settings: Settings):
         self.storage = storage
         self.settings = settings
         self.root = Path(settings.storage.local.root)

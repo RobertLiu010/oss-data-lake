@@ -91,8 +91,20 @@ async def delete_workspace(ws: str, request: Request):
             detail=f"Cannot delete workspace: active watch strategies reference it: {watch_ids}",
         )
 
+    # Collect collection names before removing directory
+    col_names = [d.name for d in ws_dir.iterdir() if d.is_dir()]
+
     import shutil
     shutil.rmtree(ws_dir)
+
+    # Clean up LanceDB index tables for all collections in this workspace
+    try:
+        index_svc = request.app.state.index_service
+        for col_name in col_names:
+            index_svc.drop_table(ws, col_name)
+    except Exception:
+        pass  # best-effort: index cleanup failure should not block deletion
+
     return {"workspace_id": ws, "deleted": True}
 
 # Collection endpoints
@@ -169,4 +181,12 @@ async def delete_collection(ws: str, col: str, request: Request):
 
     import shutil
     shutil.rmtree(col_dir)
+
+    # Clean up LanceDB index table for this collection
+    try:
+        index_svc = request.app.state.index_service
+        index_svc.drop_table(ws, col)
+    except Exception:
+        pass  # best-effort
+
     return {"workspace_id": ws, "collection_id": col, "deleted": True}

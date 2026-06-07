@@ -6,7 +6,7 @@ import asyncio
 import json
 from dataclasses import asdict
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.services.event_bus import EventType
@@ -29,7 +29,10 @@ async def get_events(
 ):
     """Get recent events, optionally filtered by type."""
     event_bus = _get_event_bus(request)
-    et = EventType(event_type) if event_type else None
+    try:
+        et = EventType(event_type) if event_type else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid event_type: {event_type}")
     events = event_bus.get_history(event_type=et, limit=limit)
     return [asdict(e) for e in events]
 

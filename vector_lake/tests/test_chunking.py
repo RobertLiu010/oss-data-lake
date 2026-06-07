@@ -7,7 +7,6 @@ import pytest
 from app.config import Settings
 from app.services.chunking import ChunkingService, MarkdownSplitter, TableDetector, _truncate_center
 
-
 # ---------------------------------------------------------------------------
 # MarkdownSplitter
 # ---------------------------------------------------------------------------

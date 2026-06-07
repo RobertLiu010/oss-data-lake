@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.watch import FileEventType, WatchService, WatchStrategy
+from app.services.watch import WatchService, WatchStrategy
 from app.storage.local import LocalStorage
 
 
@@ -34,6 +34,21 @@ def _make_watch_strategy(
     )
 
 
+async def _poll_until(
+    predicate: callable,
+    timeout: float = 5.0,
+    interval: float = 0.1,
+) -> None:
+    """Poll until predicate() returns True, or raise TimeoutError."""
+    elapsed = 0.0
+    while elapsed < timeout:
+        if predicate():
+            return
+        await asyncio.sleep(interval)
+        elapsed += interval
+    raise TimeoutError(f"Condition not met within {timeout}s")
+
+
 class TestStartStop:
     """Start and stop watch without error."""
 
@@ -52,7 +67,6 @@ class TestStartStop:
         watch_service.create_watch(strategy)
         watch_service.start_watch("test_start_stop")
 
-        # Let it run briefly
         await asyncio.sleep(0.3)
 
         watch_service.stop_watch("test_start_stop")
@@ -86,14 +100,11 @@ class TestCreateEntityOnNewFile:
         md_file = watch_dir / "hello.md"
         md_file.write_text("# Hello World\nThis is a test file.")
 
-        # Wait for polling to detect and process
-        await asyncio.sleep(0.5)
-
-        # Verify entity was created in storage
-        entities = storage.list_entities(ws, col)
-        assert len(entities) >= 1
+        # Poll until entity is created
+        await _poll_until(lambda: len(storage.list_entities(ws, col)) >= 1)
 
         # Verify the entity has content
+        entities = storage.list_entities(ws, col)
         eid = entities[0]
         source = storage.read_file(ws, col, eid, "source_original")
         assert source is not None
@@ -117,27 +128,30 @@ class TestUpdateEntityOnModified:
         watch_dir = tmp_path / "watch_modify"
         watch_dir.mkdir(parents=True, exist_ok=True)
 
-        # Pre-create a file
-        md_file = watch_dir / "doc.md"
-        md_file.write_text("# Version 1\nOriginal content.")
-
         strategy = _make_watch_strategy(
             "test_modify", ws, col, str(watch_dir),
         )
         watch_service.create_watch(strategy)
         watch_service.start_watch("test_modify")
 
-        # Wait for initial scan + processing
-        await asyncio.sleep(0.5)
+        # Wait for initial scan to complete
+        await asyncio.sleep(0.3)
 
-        # Record initial entities
-        entities_before = storage.list_entities(ws, col)
+        # Create a file AFTER initial scan so it triggers a CREATED event
+        md_file = watch_dir / "doc.md"
+        md_file.write_text("# Version 1\nOriginal content.")
+
+        # Poll until entity is created from the CREATED event
+        await _poll_until(lambda: len(storage.list_entities(ws, col)) >= 1)
 
         # Modify the file
         md_file.write_text("# Version 2\nModified content here.")
 
         # Wait for polling to detect modification
-        await asyncio.sleep(0.5)
+        await _poll_until(
+            lambda: watch_service.watches.get("test_modify") is not None
+            and watch_service.watches["test_modify"].total_events >= 2,
+        )
 
         # Verify entities exist (content hash change may create new entity)
         entities_after = storage.list_entities(ws, col)
@@ -173,9 +187,8 @@ class TestIgnoreNonMdFiles:
         txt_file = watch_dir / "notes.txt"
         txt_file.write_text("This should be ignored.")
 
+        # Wait a bit and verify no entities created
         await asyncio.sleep(0.5)
-
-        # No entities should be created for .txt files
         entities = storage.list_entities(ws, col)
         assert len(entities) == 0
 
@@ -210,24 +223,21 @@ class TestRemoveEntityOnDelete:
         md_file = watch_dir / "to_delete.md"
         md_file.write_text("# To Delete\nThis file will be deleted.")
 
-        # Wait for polling to detect and create entity
-        await asyncio.sleep(0.5)
-
-        # Verify entity was created
-        entities_before = storage.list_entities(ws, col)
-        assert len(entities_before) >= 1
+        # Poll until entity is created
+        await _poll_until(lambda: len(storage.list_entities(ws, col)) >= 1)
 
         # Delete the file
         md_file.unlink()
 
-        # Wait for polling to detect deletion
-        await asyncio.sleep(0.5)
+        # Poll until watch detects the deletion event
+        await _poll_until(
+            lambda: watch_service.watches.get("test_delete") is not None
+            and watch_service.watches["test_delete"].total_events >= 2,
+        )
 
         # v0.1: delete event is logged but entity is not auto-deleted
-        # Verify the watch processed events without error
-        assert "test_delete" in watch_service.watches
         strategy_after = watch_service.watches["test_delete"]
-        assert strategy_after.total_events >= 1
+        assert strategy_after.total_events >= 2
 
         # Cleanup
         watch_service.stop_watch("test_delete")
@@ -261,11 +271,8 @@ class TestPollingBackend:
         md_file = watch_dir / "poll_test.md"
         md_file.write_text("# Polling Test\nContent for polling test.")
 
-        await asyncio.sleep(0.5)
-
-        # Verify file was processed
-        entities = storage.list_entities(ws, col)
-        assert len(entities) >= 1
+        # Poll until entity is created
+        await _poll_until(lambda: len(storage.list_entities(ws, col)) >= 1)
 
         # Verify the watch recorded events
         strategy_after = watch_service.watches["test_polling"]

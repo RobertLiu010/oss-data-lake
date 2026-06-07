@@ -3,10 +3,11 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Install build dependencies
+# Copy source and build wheels
 COPY pyproject.toml ./
+COPY app/ ./app/
 RUN pip install --no-cache-dir --upgrade pip setuptools \
-    && pip wheel --no-cache-dir --wheel-dir /wheels -e ".[dev]" 2>/dev/null || true
+    && pip wheel --no-cache-dir --wheel-dir /wheels .
 
 # ---------- Stage 2: Runtime ----------
 FROM python:3.11-slim
@@ -19,10 +20,9 @@ WORKDIR /app
 # Install runtime deps from wheels
 COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --find-links /wheels vector-lake \
-    && pip install --no-cache-dir uvicorn[standard] \
     && rm -rf /wheels
 
-# Copy app code
+# Copy app code and config
 COPY --chown=vectorlake:vectorlake app/ ./app/
 COPY --chown=vectorlake:vectorlake config.yaml ./
 

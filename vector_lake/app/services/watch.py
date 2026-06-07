@@ -22,7 +22,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.services.entity_service import EntityService
-from app.storage.local import LocalStorage
+from app.storage.protocol import StorageProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ class WatchService:
 
     def __init__(
         self,
-        storage: LocalStorage,
+        storage: StorageProtocol,
         entity_service: EntityService,
         settings: Settings,
     ):
