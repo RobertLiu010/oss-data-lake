@@ -118,19 +118,13 @@ class ReconcilerService:
             # Load entity metadata from OSS Tag + manifest
             entity_tags = self.storage.get_entity_tags(ws, col, entity_id)
             manifest = self.storage.read_entity_manifest(ws, col, entity_id)
-            has_meta = bool(entity_tags) or bool(manifest)
-            # Also check legacy entity_meta file
-            if not has_meta:
-                meta_path = entity_dir / "entity_meta"
-                has_meta = meta_path.exists()
-
-            if not has_meta:
+            if not entity_tags and not manifest:
                 result.drifts_found.append(DriftRecord(
                     entity_id=entity_id,
                     workspace_id=ws,
                     collection_id=col,
                     drift_type=DriftType.MISSING_ENTITY_META,
-                    detail="No OSS Tags, manifest, or entity_meta found",
+                    detail="No OSS Tags or manifest found",
                 ))
                 continue
 

@@ -25,13 +25,12 @@ from app.storage.local import LocalStorage
 
 logger = logging.getLogger(__name__)
 
-HIDDEN_FILES = {"entity_meta", ".entity_manifest.json"}
+HIDDEN_FILES = {".entity_manifest.json"}
 
 # rep_type → virtual file name mapping
 REP_TYPE_MAP = {
     "source_original": "original",
     "canonical_md": "canonical.md",
-    "entity_meta": None,  # hidden metadata file
 }
 
 # Reverse: virtual name → rep_type
@@ -58,10 +57,7 @@ class VfsService:
 
     def _load_entity_meta(self, entity_dir: Path) -> Optional[dict]:
         """Load entity meta from OSS Tag + manifest (PRD §4.1)."""
-        # Try assembling from xattr + manifest via storage layer
-        # Extract ws/col/entity_id from path
         parts = entity_dir.parts
-        # path: .../{root}/{ws}/{col}/{entity_id}
         if len(parts) >= 3:
             entity_id = parts[-1]
             col = parts[-2]
@@ -69,13 +65,6 @@ class VfsService:
             data = self.storage.assemble_entity(ws, col, entity_id)
             if data:
                 return data
-        # Fallback: try old entity_meta file
-        meta_path = entity_dir / "entity_meta"
-        if meta_path.exists():
-            try:
-                return json.loads(meta_path.read_text("utf-8"))
-            except Exception:
-                return None
         return None
 
     def _entity_name(self, meta: Optional[dict], entity_id: str) -> str:
@@ -131,8 +120,6 @@ class VfsService:
                 if not rep_file.is_file():
                     continue
                 rep_type = rep_file.name
-                if rep_type == "entity_meta":
-                    continue  # hidden
                 if rep_type in HIDDEN_FILES:
                     continue  # hidden
                 vname = self._rep_to_virtual_name(rep_type)
