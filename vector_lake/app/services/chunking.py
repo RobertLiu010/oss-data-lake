@@ -12,9 +12,30 @@ import re
 from typing import Any
 
 from app.config import Settings
-from app.models.chunk import Chunk
+from app.models.chunk import Chunk, ChunkAnchor
 
 logger = logging.getLogger(__name__)
+
+
+def _slugify(text: str) -> str:
+    """Convert heading text to a Markdown slug (lowercase, hyphens)."""
+    slug = re.sub(r'[^\w\s-]', '', text.lower())
+    slug = re.sub(r'[\s_]+', '-', slug).strip('-')
+    return slug or "section"
+
+
+def _make_anchor(header: str | None, level: int, start_pos: int) -> ChunkAnchor | None:
+    """Create a ChunkAnchor from header metadata.
+
+    Returns None if no header info is available.
+    """
+    if not header and start_pos == 0:
+        return None
+    slug = _slugify(header) if header else ""
+    return ChunkAnchor(
+        slug=slug,
+        char_offset=start_pos,
+    )
 
 
 # =========================================================================
@@ -220,8 +241,10 @@ class ChunkingService:
                 chunks.append(Chunk(
                     text=text,
                     start_pos=start_pos,
+                    end_pos=start_pos + len(text),
                     token_count=token_count,
                     chunk_chars=len(text),
+                    anchor=_make_anchor(header, level, start_pos),
                     metadata={
                         'header': header,
                         'level': level,
@@ -337,8 +360,10 @@ class ChunkingService:
                     chunks.append(Chunk(
                         text=chunk_text,
                         start_pos=start_pos,
+                        end_pos=start_pos + len(chunk_text),
                         token_count=current_tokens,
                         chunk_chars=len(chunk_text),
+                        anchor=_make_anchor(header, level, start_pos),
                         metadata={
                             'header': header,
                             'level': level,
@@ -354,8 +379,10 @@ class ChunkingService:
                     chunks.append(Chunk(
                         text=chunk_text,
                         start_pos=start_pos,
+                        end_pos=start_pos + len(chunk_text),
                         token_count=self._count_tokens(chunk_text),
                         chunk_chars=len(chunk_text),
+                        anchor=_make_anchor(header, level, start_pos),
                         metadata={
                             'header': header,
                             'level': level,
@@ -368,8 +395,10 @@ class ChunkingService:
                         chunks.append(Chunk(
                             text=remaining,
                             start_pos=start_pos + len(chunk_text),
+                            end_pos=start_pos + len(chunk_text) + len(remaining),
                             token_count=self._count_tokens(remaining),
                             chunk_chars=len(remaining),
+                            anchor=_make_anchor(header, level, start_pos + len(chunk_text)),
                             metadata={
                                 'header': header,
                                 'level': level,
@@ -388,8 +417,10 @@ class ChunkingService:
             chunks.append(Chunk(
                 text=chunk_text,
                 start_pos=start_pos,
+                end_pos=start_pos + len(chunk_text),
                 token_count=current_tokens,
                 chunk_chars=len(chunk_text),
+                anchor=_make_anchor(header, level, start_pos),
                 metadata={
                     'header': header,
                     'level': level,
@@ -414,8 +445,10 @@ class ChunkingService:
         return Chunk(
             text=text,
             start_pos=start_pos,
+            end_pos=start_pos + len(text),
             token_count=token_count,
             chunk_chars=chunk_chars,
+            anchor=_make_anchor(header, level, start_pos),
             metadata={
                 'header': header,
                 'level': level,
