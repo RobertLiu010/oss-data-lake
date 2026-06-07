@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
 from app.config import Settings
@@ -74,12 +75,18 @@ class LocalStorage:
         rep_type: str,
         content: bytes,
     ) -> str:
-        """Save content bytes to {root}/{ws}/{col}/{entity_id}/{rep_type}."""
+        """Save content bytes to {root}/{ws}/{col}/{entity_id}/{rep_type}.
+
+        Uses atomic write (tmp + rename) to prevent partial files on crash.
+        """
         entity_dir = self._entity_dir(workspace_id, collection_id, entity_id)
         entity_dir.mkdir(parents=True, exist_ok=True)
         file_path = entity_dir / rep_type_to_relpath(rep_type)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_bytes(content)
+        # Atomic write: tmp + rename
+        tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+        tmp_path.write_bytes(content)
+        tmp_path.replace(file_path)
         return str(file_path)
 
     def read_file(
@@ -277,6 +284,66 @@ class LocalStorage:
             self.set_entity_tags(workspace_id, collection_id, entity_id, tags)
         except Exception as e:
             logger.warning("Failed to sync xattr tags for %s (non-fatal): %s", entity_id, e)
+
+    # ------------------------------------------------------------------
+    # Version log (append-only history, PRD §5.12)
+    # ------------------------------------------------------------------
+
+    def append_version_log(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+        version: int,
+        content_hash: str,
+        trigger: str = "update",
+    ) -> None:
+        """Append an entry to .version_log.jsonl (PRD §5.12).
+
+        The version log is append-only — never modifies historical lines.
+        Used to recover the version field when Tags are lost.
+        """
+        entity_dir = self._entity_dir(workspace_id, collection_id, entity_id)
+        entity_dir.mkdir(parents=True, exist_ok=True)
+        log_path = entity_dir / ".version_log.jsonl"
+        entry = {
+            "version": version,
+            "content_hash": content_hash,
+            "timestamp": datetime.now().isoformat() + "Z",
+            "trigger": trigger,
+        }
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            logger.warning("Failed to append version log for %s: %s", entity_id, e)
+
+    def read_version_log(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+    ) -> list[dict]:
+        """Read all entries from .version_log.jsonl. Returns list of dicts, oldest first."""
+        log_path = self._entity_dir(workspace_id, collection_id, entity_id) / ".version_log.jsonl"
+        if not log_path.exists():
+            return []
+        entries: list[dict] = []
+        try:
+            with open(log_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        except Exception as e:
+            logger.warning("Failed to read version log for %s: %s", entity_id, e)
+        return entries
 
     # ------------------------------------------------------------------
     # Entity assembly from manifest (source of truth) or xattr (fallback)

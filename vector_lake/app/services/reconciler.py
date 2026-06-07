@@ -268,6 +268,36 @@ class ReconcilerService:
                             f"Repair failed for {drift.entity_id}: {e}"
                         )
 
+                # Auto-repair: stale index → rebuild from parquet
+                elif drift.drift_type == DriftType.STALE_INDEX:
+                    try:
+                        count = await self.pipeline.index.sync_to_lance(
+                            ws, col, drift.entity_id, "canonical_md",
+                        )
+                        drift.repaired = True
+                        drift.repair_detail = f"Re-synced {count} rows to LanceDB"
+                        result.drifts_repaired += 1
+                    except Exception as e:
+                        drift.repair_detail = f"Index repair failed: {e}"
+                        result.errors.append(
+                            f"Index repair failed for {drift.entity_id}: {e}"
+                        )
+
+                # Auto-repair: missing index → sync from parquet
+                elif drift.drift_type == DriftType.MISSING_INDEX:
+                    try:
+                        count = await self.pipeline.index.sync_to_lance(
+                            ws, col, drift.entity_id, "canonical_md",
+                        )
+                        drift.repaired = True
+                        drift.repair_detail = f"Synced {count} rows to LanceDB"
+                        result.drifts_repaired += 1
+                    except Exception as e:
+                        drift.repair_detail = f"Index sync failed: {e}"
+                        result.errors.append(
+                            f"Index sync failed for {drift.entity_id}: {e}"
+                        )
+
             result.finished_at = datetime.now()
             self._last_result = result
             logger.info(

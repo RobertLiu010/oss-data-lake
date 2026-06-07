@@ -95,6 +95,7 @@ class EntityService:
         collection_id: str,
         entity_id: str,
         entity: Entity,
+        trigger: str = "update",
     ) -> None:
         """Write manifest (source of truth) then sync xattr tags (best-effort cache).
 
@@ -124,6 +125,14 @@ class EntityService:
 
         # 2. Sync xattr tags from manifest (best-effort cache)
         self.storage.sync_tags_from_manifest(workspace_id, collection_id, entity_id)
+
+        # 3. Append version log (PRD §5.12, Phase 2c)
+        self.storage.append_version_log(
+            workspace_id, collection_id, entity_id,
+            version=entity.version,
+            content_hash=entity.content_hash,
+            trigger=trigger,
+        )
 
     # ------------------------------------------------------------------
     # Cache invalidation
@@ -215,7 +224,7 @@ class EntityService:
         )
 
         # Write Entity Tags + manifest AFTER pipeline (source_original must exist)
-        self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
+        self._write_entity_meta(workspace_id, collection_id, entity_id, entity, trigger="ingest")
 
         # Set Rep Tags on source_original
         source_hash = hashlib.sha256(content).hexdigest()[:16]
@@ -415,11 +424,22 @@ class EntityService:
                 shutil.rmtree(entity_dir)
                 logger.info("Hard deleted entity %s: removed storage", entity_id)
 
+            # Delete from index (parquet + LanceDB)
+            index_errors: list[str] = []
             try:
                 self.pipeline.index.delete_entity_chunks(workspace_id, collection_id, entity_id)
                 logger.info("Hard deleted entity %s: removed from index", entity_id)
             except Exception as e:
+                index_errors.append(f"LanceDB delete failed: {e}")
                 logger.warning("Failed to remove entity %s from index: %s", entity_id, e)
+
+            # If LanceDB delete failed but storage was removed, log prominently
+            if index_errors:
+                logger.error(
+                    "Entity %s storage deleted but index cleanup incomplete: %s. "
+                    "Run reconcile to repair.",
+                    entity_id, "; ".join(index_errors),
+                )
         else:
             # Soft delete: update rag_status tag
             entity.status = EntityStatus.DELETED

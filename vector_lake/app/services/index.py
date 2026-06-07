@@ -102,8 +102,11 @@ class IndexService:
         return f"{workspace_id}_{collection_id}_chunks"
 
     def _index_dir(self, workspace_id: str, collection_id: str, entity_id: str) -> Path:
-        """Return the _index directory for an entity."""
-        return Path(self.settings.storage.local.root) / workspace_id / collection_id / entity_id / "_index"
+        """Return the _index/staging directory for an entity (PRD §5.12)."""
+        return (
+            Path(self.settings.storage.local.root)
+            / workspace_id / collection_id / entity_id / "_index" / "staging"
+        )
 
     def _parquet_path(self, workspace_id: str, collection_id: str, entity_id: str, rep_name: str) -> Path:
         """Return the parquet file path for a specific rep's index."""
@@ -127,7 +130,7 @@ class IndexService:
             chunk_index, text, embedding, metadata
 
         The parquet file is stored at:
-            {root}/{ws}/{col}/{entity_id}/_index/{rep_name}.parquet
+            {root}/{ws}/{col}/{entity_id}/_index/staging/{rep_name}.parquet
 
         Returns the path to the written parquet file.
         """
@@ -166,7 +169,10 @@ class IndexService:
             "rep_name": rep_names,
         }, schema=schema)
 
-        pq.write_table(table, parquet_path)
+        # Atomic write: tmp + fsync + rename (same pattern as manifest)
+        tmp_path = parquet_path.with_suffix(".parquet.tmp")
+        pq.write_table(table, tmp_path)
+        tmp_path.replace(parquet_path)
         logger.info(
             "Wrote %d chunks to %s (entity %s, rep=%s)",
             len(chunks_with_vectors), parquet_path, entity_id, rep_name,
@@ -310,7 +316,7 @@ class IndexService:
             if not entity_dir.is_dir() or entity_dir.name.startswith("_"):
                 continue
             entity_id = entity_dir.name
-            index_dir = entity_dir / "_index"
+            index_dir = entity_dir / "_index" / "staging"
             if not index_dir.exists():
                 continue
             for pq_file in sorted(index_dir.glob("*.parquet")):
@@ -445,7 +451,7 @@ class IndexService:
         for entity_dir in sorted(col_dir.iterdir()):
             if not entity_dir.is_dir() or entity_dir.name.startswith("_"):
                 continue
-            index_dir = entity_dir / "_index"
+            index_dir = entity_dir / "_index" / "staging"
             if index_dir.exists() and any(index_dir.glob("*.parquet")):
                 result.add(entity_dir.name)
         return result

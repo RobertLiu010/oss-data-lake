@@ -123,6 +123,27 @@ class StorageProtocol(Protocol):
         entity_id: str,
     ) -> dict | None: ...
 
+    # ------------------------------------------------------------------
+    # Version log (append-only history, PRD §5.12)
+    # ------------------------------------------------------------------
+
+    def append_version_log(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+        version: int,
+        content_hash: str,
+        trigger: str = "update",
+    ) -> None: ...
+
+    def read_version_log(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+    ) -> list[dict]: ...
+
 
 # Type alias for storage instances
 StorageBackend = StorageProtocol

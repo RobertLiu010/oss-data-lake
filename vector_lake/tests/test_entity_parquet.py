@@ -21,7 +21,7 @@ class TestEntityParquet:
     def test_write_entity_parquet_creates_file(
         self, index_service: IndexService, settings
     ):
-        """write_entity_parquet creates _index/{rep_name}.parquet."""
+        """write_entity_parquet creates _index/staging/{rep_name}.parquet."""
         chunks = [
             {"chunk_index": 0, "text": "hello", "embedding": [0.1] * DIM, "metadata": {}},
             {"chunk_index": 1, "text": "world", "embedding": [0.2] * DIM, "metadata": {}},
@@ -31,7 +31,7 @@ class TestEntityParquet:
         )
         assert path.exists()
         assert path.name == "canonical_md.parquet"
-        assert path.parent.name == "_index"
+        assert path.parent.name == "staging"
 
     def test_write_entity_parquet_data_roundtrip(
         self, index_service: IndexService, settings

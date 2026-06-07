@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -185,11 +186,17 @@ class SyncQueue:
     # ------------------------------------------------------------------
 
     def _append_sidecar(self, task: SyncTask) -> None:
-        """Append a task to the JSONL sidecar file."""
+        """Append a task to the JSONL sidecar file.
+
+        Each line is self-contained JSON. Uses fsync to ensure durability.
+        Malformed lines from partial writes are safely skipped on recovery.
+        """
         try:
             self._sidecar_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._sidecar_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(asdict(task), ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         except Exception as e:
             logger.warning("Failed to persist sync task to sidecar: %s", e)
 
@@ -209,6 +216,7 @@ class SyncQueue:
 
         # Read all entries, keep latest per task_id
         latest: dict[str, dict] = {}
+        corrupted_lines = 0
         try:
             with open(self._sidecar_path, encoding="utf-8") as f:
                 for line in f:
@@ -220,10 +228,15 @@ class SyncQueue:
                         tid = entry.get("task_id", "")
                         latest[tid] = entry
                     except json.JSONDecodeError:
-                        pass
+                        corrupted_lines += 1
         except Exception as e:
             logger.warning("Failed to read sync sidecar: %s", e)
             return 0
+
+        if corrupted_lines > 0:
+            logger.warning(
+                "Sidecar JSONL had %d corrupted lines (skipped)", corrupted_lines,
+            )
 
         # Recover PENDING/ RUNNING tasks
         recovered = 0
