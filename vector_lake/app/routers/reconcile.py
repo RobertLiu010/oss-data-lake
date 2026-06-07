@@ -279,3 +279,24 @@ async def cleanup_dead_letters(ws: str, request: Request):
     svc = _get_watch_service(request)
     removed = svc.cleanup_dead_letters()
     return {"removed": removed}
+
+
+# ---------------------------------------------------------------------------
+# Index rebuild endpoint
+# ---------------------------------------------------------------------------
+
+@router.post("/collections/{col}/rebuild-index")
+async def rebuild_index(ws: str, col: str, request: Request):
+    """Rebuild LanceDB table from entity parquet files.
+
+    Scans all entity _index/ directories, reads parquet files,
+    and recreates the LanceDB table from scratch.
+    """
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    index_service = request.app.state.index_service
+    count = await index_service.rebuild_lance_table(ws, col)
+    return {"rows_synced": count}
