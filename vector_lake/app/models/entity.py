@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
+from typing import Optional
 
 
 class SourceType(str, Enum):
@@ -35,3 +36,29 @@ class EntityCreate(BaseModel):
     source_type: SourceType = SourceType.OSS
     source_url: str = ""
     labels: list[str] = Field(default_factory=list)
+
+
+# --- Pipeline / Rep status models ---
+
+class RepInfo(BaseModel):
+    """Single representation status."""
+    rep_type: str
+    exists: bool
+    size: int = 0
+    content_hash: str = ""
+
+
+class PipelineStatus(BaseModel):
+    """Entity pipeline processing status."""
+    entity_id: str
+    entity_status: str
+    reps: list[RepInfo] = Field(default_factory=list)
+    chunk_count: int = 0
+    indexed: bool = False
+    pipeline_stage: str = ""  # "pending" | "processing" | "completed" | "failed"
+
+
+class EntityPatchRequest(BaseModel):
+    """Request body for updating entity status/labels."""
+    status: Optional[EntityStatus] = None
+    labels: Optional[list[str]] = None

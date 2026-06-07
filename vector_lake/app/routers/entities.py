@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request
 
-from app.models.entity import Entity
+from app.models.entity import Entity, EntityPatchRequest, EntityStatus, PipelineStatus
 
 router = APIRouter(
     prefix="/api/v1/workspaces/{ws}/collections/{col}/entities",
@@ -35,10 +35,15 @@ async def create_entity(
 
 
 @router.get("", response_model=list[Entity])
-async def list_entities(ws: str, col: str, request: Request):
-    """List all entities."""
+async def list_entities(
+    ws: str,
+    col: str,
+    status: str = Query(None, description="Filter by status: enabled/hidden/deleted"),
+    request: Request = None,
+):
+    """List all entities, optionally filtered by status."""
     svc = _get_entity_service(request)
-    entities = await svc.list_entities(ws, col)
+    entities = await svc.list_entities(ws, col, status_filter=status)
     return entities
 
 
@@ -50,3 +55,53 @@ async def get_entity(ws: str, col: str, entity_id: str, request: Request):
     if entity is None:
         raise HTTPException(status_code=404, detail="Entity not found")
     return entity
+
+
+@router.get("/{entity_id}/status", response_model=PipelineStatus)
+async def get_entity_status(ws: str, col: str, entity_id: str, request: Request):
+    """Get entity pipeline processing status — reps, chunks, index."""
+    svc = _get_entity_service(request)
+    status = await svc.get_pipeline_status(ws, col, entity_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return status
+
+
+@router.patch("/{entity_id}", response_model=Entity)
+async def patch_entity(
+    ws: str,
+    col: str,
+    entity_id: str,
+    req: EntityPatchRequest,
+    request: Request,
+):
+    """Update entity status (enabled/hidden/deleted) and/or labels."""
+    svc = _get_entity_service(request)
+    entity = await svc.patch_entity(
+        ws, col, entity_id,
+        status=req.status,
+        labels=req.labels,
+    )
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return entity
+
+
+@router.delete("/{entity_id}")
+async def delete_entity(
+    ws: str,
+    col: str,
+    entity_id: str,
+    hard: bool = Query(False, description="Hard delete: remove storage + index"),
+    request: Request = None,
+):
+    """Delete an entity. Soft delete by default (status=deleted), hard delete with ?hard=true."""
+    svc = _get_entity_service(request)
+    success = await svc.delete_entity(ws, col, entity_id, hard=hard)
+    if not success:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return {
+        "entity_id": entity_id,
+        "deleted": True,
+        "hard": hard,
+    }
