@@ -390,6 +390,9 @@ def test_register_builtin_templates():
     registry._rep_templates.clear()
     registry._index_templates.clear()
     registry._extension_map.clear()
+    registry._steps.clear()
+    registry._dag.clear()
+    registry._extension_format_map.clear()
 
     register_builtin_templates()
 

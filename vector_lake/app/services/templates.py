@@ -1,8 +1,14 @@
-"""Built-in templates: MD representation builder and vector index strategy.
+"""Built-in templates and steps for the template registry.
 
-These are registered at application startup so the default MD → chunk →
-embed → index pipeline works out of the box.  Additional templates can be
-registered via ``registry.register_rep()`` / ``registry.register_index()``.
+Provides:
+- **MdPassThru step**: md → md identity step (no transformation needed)
+- **MdRepTemplate** (legacy): backward-compat single-step MD builder
+- **VectorIndexTemplate**: default vector index strategy
+- **Example step skeletons**: WordToPdf, PdfToPng, PngToMd (raise
+  NotImplementedError until a real converter is plugged in)
+
+Extension → format mappings are also registered here so that
+``registry.resolve_pipeline_for_file("report.docx")`` works.
 """
 
 from __future__ import annotations
@@ -16,6 +22,8 @@ from app.services.registry import (
     RepContext,
     RepResult,
     SearchContext,
+    StepContext,
+    StepResult,
     registry,
 )
 
@@ -23,7 +31,105 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# MD Representation Template
+# RepSteps — multi-step pipeline building blocks
+# ---------------------------------------------------------------------------
+
+
+class MdPassThruStep:
+    """Identity step: md → md.
+
+    When the source format is already ``md``, no transformation is needed.
+    This step simply passes the content through unchanged.
+    """
+
+    name = "md_passthru"
+    input_format = "md"
+    output_format = "md"
+
+    async def transform(self, ctx: StepContext) -> StepResult:
+        """Pass through MD content unchanged."""
+        return StepResult(
+            content=ctx.input_content,
+            output_format="md",
+            metadata={
+                "transform": "passthru",
+                "step": self.name,
+                "step_index": ctx.step_index,
+            },
+        )
+
+
+class WordToPdfStep:
+    """Convert Word (.docx) to PDF.
+
+    **Requires an external converter** (e.g. LibreOffice headless).
+    Raises NotImplementedError until a converter backend is configured.
+    """
+
+    name = "word_to_pdf"
+    input_format = "docx"
+    output_format = "pdf"
+
+    async def transform(self, ctx: StepContext) -> StepResult:
+        """Convert DOCX bytes to PDF bytes.
+
+        Override this step or replace it with a real implementation
+        that calls LibreOffice / Gotenberg / etc.
+        """
+        raise NotImplementedError(
+            "WordToPdfStep: no converter backend configured. "
+            "Install LibreOffice or register a custom step."
+        )
+
+
+class PdfToPngStep:
+    """Convert PDF to PNG images.
+
+    **Requires an external converter** (e.g. pdf2image / Poppler).
+    Raises NotImplementedError until a converter backend is configured.
+    """
+
+    name = "pdf_to_png"
+    input_format = "pdf"
+    output_format = "png"
+
+    async def transform(self, ctx: StepContext) -> StepResult:
+        """Convert PDF bytes to PNG bytes.
+
+        Override this step or replace it with a real implementation
+        that calls pdf2image / Poppler / etc.
+        """
+        raise NotImplementedError(
+            "PdfToPngStep: no converter backend configured. "
+            "Install poppler-utils or register a custom step."
+        )
+
+
+class PngToMdStep:
+    """Convert PNG image to Markdown via OCR.
+
+    **Requires an external OCR engine** (e.g. Tesseract, PaddleOCR).
+    Raises NotImplementedError until an OCR backend is configured.
+    """
+
+    name = "png_to_md"
+    input_format = "png"
+    output_format = "md"
+
+    async def transform(self, ctx: StepContext) -> StepResult:
+        """Convert PNG bytes to Markdown text via OCR.
+
+        Override this step or replace it with a real implementation
+        that calls Tesseract / PaddleOCR / etc.
+        """
+        raise NotImplementedError(
+            "PngToMdStep: no OCR backend configured. "
+            "Install Tesseract or register a custom step."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Legacy RepTemplate — backward compat
 # ---------------------------------------------------------------------------
 
 
@@ -38,20 +144,18 @@ class MdRepTemplate:
     name = "md_to_canonical"
     rep_type = "canonical_md"
     source_extensions = [".md"]
-    entity_types: list[str] = []  # empty = all entity types
+    entity_types: list[str] = []
 
     async def build(self, ctx: RepContext) -> RepResult:
         """Transform MD source into canonical_md representation."""
         md_content = ctx.source_content.decode("utf-8", errors="replace")
         content_hash = hashlib.sha256(ctx.source_content).hexdigest()[:16]
 
-        # Save source_original first
         ctx.storage.save_file(
             ctx.workspace_id, ctx.collection_id, ctx.entity_id,
             "source_original", ctx.source_content,
         )
 
-        # For .md files, canonical_md = source content (no transformation)
         return RepResult(
             content=md_content.encode("utf-8"),
             rep_type="canonical_md",
@@ -65,16 +169,12 @@ class MdRepTemplate:
 
 
 # ---------------------------------------------------------------------------
-# Vector Index Template
+# Index Templates
 # ---------------------------------------------------------------------------
 
 
 class VectorIndexTemplate:
-    """Index chunks using vector embeddings (semantic search).
-
-    This is the default index strategy: embed chunk text, upsert to
-    LanceDB, and support semantic / lexical / hybrid search.
-    """
+    """Index chunks using vector embeddings (semantic search)."""
 
     name = "vector_index"
     index_type = "vector"
@@ -106,14 +206,12 @@ class VectorIndexTemplate:
                 lexical_weight=ctx.params.get("lexical_weight", 0.3),
             )
 
-        # Default: semantic
         if ctx.query_vector is not None:
             return await ctx.index_service.search(
                 ctx.workspace_id, ctx.collection_id,
                 ctx.query_vector, top_k=ctx.top_k,
             )
 
-        # No vector available — fall back to lexical
         return await ctx.index_service.search_lexical(
             ctx.workspace_id, ctx.collection_id,
             ctx.query, top_k=ctx.top_k,
@@ -121,15 +219,46 @@ class VectorIndexTemplate:
 
 
 # ---------------------------------------------------------------------------
-# Auto-registration helper
+# Auto-registration
 # ---------------------------------------------------------------------------
+
+# Extension → format mapping for common file types
+_EXTENSION_FORMAT_MAP: dict[str, str] = {
+    ".md": "md",
+    ".markdown": "md",
+    ".docx": "docx",
+    ".doc": "docx",
+    ".pdf": "pdf",
+    ".png": "png",
+    ".jpg": "png",
+    ".jpeg": "png",
+    ".tiff": "png",
+    ".bmp": "png",
+    ".txt": "md",  # plain text treated as md
+    ".html": "md",  # HTML treated as md (after stripping tags)
+}
 
 
 def register_builtin_templates() -> None:
-    """Register all built-in templates into the global registry.
+    """Register all built-in steps, templates, and mappings.
 
     Called once at application startup.
     """
+    # Register extension → format mappings
+    for ext, fmt in _EXTENSION_FORMAT_MAP.items():
+        registry.register_extension_format(ext, fmt)
+
+    # Register RepSteps (multi-step pipeline)
+    registry.register_step(MdPassThruStep())
+    # Skeleton steps — raise NotImplementedError until backend is configured
+    registry.register_step(WordToPdfStep())
+    registry.register_step(PdfToPngStep())
+    registry.register_step(PngToMdStep())
+
+    # Register legacy RepTemplate (backward compat)
     registry.register_rep(MdRepTemplate())
+
+    # Register IndexTemplate
     registry.register_index(VectorIndexTemplate())
-    logger.info("Built-in templates registered")
+
+    logger.info("Built-in templates and steps registered")
