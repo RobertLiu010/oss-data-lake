@@ -136,7 +136,137 @@ class IndexService:
                     text=row.get("text", ""),
                     score=float(row.get("_distance", 0.0)),
                     metadata=meta,
+                    search_type="semantic",
                 ))
             return out
 
         return await asyncio.get_event_loop().run_in_executor(None, _search)
+
+    # ------------------------------------------------------------------
+    # Lexical search
+    # ------------------------------------------------------------------
+
+    async def search_lexical(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        query: str,
+        top_k: int = 5,
+    ) -> List[SearchResult]:
+        """Search by text matching on the `text` column."""
+        table_name = self._table_name(workspace_id, collection_id)
+
+        existing_tables = self.db.table_names()
+        if table_name not in existing_tables:
+            return []
+
+        def _search() -> List[SearchResult]:
+            table = self.db.open_table(table_name)
+            # Use LanceDB's full-text search if available, otherwise fall back
+            # to a simple string-contains filter.
+            try:
+                results = table.search(query, query_type="fts").limit(top_k).to_list()
+            except Exception:
+                # Fallback: manual string matching via filter
+                all_rows = table.to_arrow()
+                query_lower = query.lower()
+                matched: List[Dict[str, Any]] = []
+                for i in range(len(all_rows)):
+                    text_val = all_rows.column("text")[i].as_py()
+                    if query_lower in text_val.lower():
+                        row_dict = {
+                            "entity_id": all_rows.column("entity_id")[i].as_py(),
+                            "chunk_index": all_rows.column("chunk_index")[i].as_py(),
+                            "text": text_val,
+                            "metadata": all_rows.column("metadata")[i].as_py(),
+                        }
+                        matched.append(row_dict)
+                results = matched[:top_k]
+
+            out: List[SearchResult] = []
+            for rank, row in enumerate(results):
+                meta = {}
+                raw_meta = row.get("metadata")
+                if isinstance(raw_meta, str):
+                    try:
+                        meta = json.loads(raw_meta)
+                    except json.JSONDecodeError:
+                        meta = {}
+                elif isinstance(raw_meta, dict):
+                    meta = raw_meta
+
+                out.append(SearchResult(
+                    entity_id=row.get("entity_id", ""),
+                    chunk_index=int(row.get("chunk_index", 0)),
+                    text=row.get("text", ""),
+                    score=float(row.get("_relevance_score", 1.0 / (rank + 1))),
+                    metadata=meta,
+                    search_type="lexical",
+                ))
+            return out
+
+        return await asyncio.get_event_loop().run_in_executor(None, _search)
+
+    # ------------------------------------------------------------------
+    # Hybrid search (RRF)
+    # ------------------------------------------------------------------
+
+    async def search_hybrid(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        query: str,
+        query_vector: List[float],
+        top_k: int = 5,
+        rrf_k: int = 60,
+        semantic_weight: float = 0.7,
+        lexical_weight: float = 0.3,
+    ) -> List[SearchResult]:
+        """Hybrid search using Reciprocal Rank Fusion (RRF).
+
+        1. Run both semantic and lexical search with expanded top_k.
+        2. Compute RRF score for each result: 1 / (k + rank).
+        3. Merge by (entity_id, chunk_index), summing weighted RRF scores.
+        4. Return merged results sorted by combined score.
+        """
+        # Fetch more candidates to ensure good fusion coverage
+        fetch_k = top_k * 3
+
+        semantic_results, lexical_results = await asyncio.gather(
+            self.search(workspace_id, collection_id, query_vector, top_k=fetch_k),
+            self.search_lexical(workspace_id, collection_id, query, top_k=fetch_k),
+        )
+
+        # Compute RRF scores and merge
+        merged: Dict[tuple, float] = {}  # (entity_id, chunk_index) -> combined score
+        data_map: Dict[tuple, SearchResult] = {}  # keep the SearchResult for key
+
+        for rank, result in enumerate(semantic_results):
+            key = (result.entity_id, result.chunk_index)
+            rrf_score = semantic_weight / (rrf_k + rank + 1)
+            merged[key] = merged.get(key, 0.0) + rrf_score
+            data_map[key] = result
+
+        for rank, result in enumerate(lexical_results):
+            key = (result.entity_id, result.chunk_index)
+            rrf_score = lexical_weight / (rrf_k + rank + 1)
+            merged[key] = merged.get(key, 0.0) + rrf_score
+            # Prefer keeping the semantic result's data; only store if not present
+            if key not in data_map:
+                data_map[key] = result
+
+        # Sort by combined RRF score descending
+        sorted_keys = sorted(merged.keys(), key=lambda k: merged[k], reverse=True)[:top_k]
+
+        out: List[SearchResult] = []
+        for key in sorted_keys:
+            result = data_map[key]
+            out.append(SearchResult(
+                entity_id=result.entity_id,
+                chunk_index=result.chunk_index,
+                text=result.text,
+                score=merged[key],
+                metadata=result.metadata,
+                search_type="hybrid",
+            ))
+        return out

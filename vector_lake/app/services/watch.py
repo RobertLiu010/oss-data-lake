@@ -65,6 +65,8 @@ class WatchStrategy:
     on_conflict: str = "update"       # update | skip | error
     recursive: bool = True
     max_file_size_mb: int = 500
+    backend: str = "polling"          # polling | inotify
+    scan_interval: int = 10           # seconds between scans (polling mode)
     status: WatchStatus = WatchStatus.INITIALIZING
     created_at: datetime = field(default_factory=datetime.now)
     last_scan_at: Optional[datetime] = None
@@ -110,8 +112,6 @@ class WatchService:
         self._dead_letters: list[DeadLetterEntry] = []
         # Background tasks
         self._tasks: dict[str, asyncio.Task] = {}
-        # Scan interval in seconds
-        self._scan_interval = 10
 
     @property
     def watches(self) -> dict[str, WatchStrategy]:
@@ -137,7 +137,7 @@ class WatchService:
         return strategy
 
     def start_watch(self, watch_id: str) -> None:
-        """Start background polling for a watch strategy."""
+        """Start background watching for a watch strategy."""
         if watch_id not in self._watches:
             raise ValueError(f"Watch {watch_id} not found")
 
@@ -148,10 +148,24 @@ class WatchService:
         if watch_id in self._tasks:
             self._tasks[watch_id].cancel()
 
-        # Start background polling
+        # Choose backend
+        if strategy.backend == "inotify":
+            try:
+                import inotify_simple  # noqa: F401
+                task = asyncio.create_task(self._inotify_loop(watch_id))
+                self._tasks[watch_id] = task
+                logger.info("Started watch %s with inotify backend", watch_id)
+                return
+            except ImportError:
+                logger.warning(
+                    "inotify_simple not available, falling back to polling for watch %s",
+                    watch_id,
+                )
+
+        # Default: polling backend
         task = asyncio.create_task(self._poll_loop(watch_id))
         self._tasks[watch_id] = task
-        logger.info("Started watch %s", watch_id)
+        logger.info("Started watch %s with polling backend", watch_id)
 
     def pause_watch(self, watch_id: str) -> None:
         """Pause a watch strategy."""
@@ -192,7 +206,7 @@ class WatchService:
 
         while strategy.status == WatchStatus.ACTIVE:
             try:
-                await asyncio.sleep(self._scan_interval)
+                await asyncio.sleep(strategy.scan_interval)
                 events = self._scan_files(watch_id)
                 for event in events:
                     await self._process_event(strategy, event)
@@ -201,6 +215,97 @@ class WatchService:
             except Exception as e:
                 logger.error("Watch %s poll error: %s", watch_id, e)
                 strategy.status = WatchStatus.ERROR
+
+    async def _inotify_loop(self, watch_id: str) -> None:
+        """Background inotify-based watching loop for a watch strategy."""
+        import inotify_simple
+
+        strategy = self._watches.get(watch_id)
+        if not strategy:
+            return
+
+        watch_dir = Path(strategy.watch_dir)
+        if not watch_dir.exists():
+            logger.error("Watch %s: directory %s does not exist", watch_id, strategy.watch_dir)
+            strategy.status = WatchStatus.ERROR
+            return
+
+        # Initial scan — record existing files
+        self._scan_files(watch_id, initial=True)
+
+        inotify = inotify_simple.INotify()
+        mask = (
+            inotify_simple.flags.CREATE
+            | inotify_simple.flags.MODIFY
+            | inotify_simple.flags.DELETE
+            | inotify_simple.flags.MOVED_FROM
+            | inotify_simple.flags.MOVED_TO
+        )
+        wd = inotify.add_watch(str(watch_dir), mask)
+
+        try:
+            while strategy.status == WatchStatus.ACTIVE:
+                try:
+                    # Read events with a timeout to allow periodic cancellation checks
+                    events = inotify.read(timeout=1000)  # 1 second timeout
+                    for raw_event in events:
+                        if raw_event.wd != wd:
+                            continue
+
+                        filename = raw_event.name
+                        if not filename:
+                            continue
+
+                        file_path = watch_dir / filename
+
+                        # Check extension
+                        if strategy.allowed_extensions:
+                            if file_path.suffix.lower() not in strategy.allowed_extensions:
+                                continue
+
+                        # Check file size (skip for deleted files)
+                        if file_path.exists() and file_path.is_file():
+                            size_mb = file_path.stat().st_size / (1024 * 1024)
+                            if size_mb > strategy.max_file_size_mb:
+                                continue
+
+                        # Determine event type
+                        flags = inotify_simple.flags.from_mask(raw_event.mask)
+                        if inotify_simple.flags.CREATE in flags or inotify_simple.flags.MOVED_TO in flags:
+                            if file_path.exists() and file_path.is_file():
+                                event_type = FileEventType.CREATED
+                            else:
+                                continue
+                        elif inotify_simple.flags.MODIFY in flags:
+                            if file_path.exists() and file_path.is_file():
+                                event_type = FileEventType.MODIFIED
+                            else:
+                                continue
+                        elif inotify_simple.flags.DELETE in flags or inotify_simple.flags.MOVED_FROM in flags:
+                            event_type = FileEventType.DELETED
+                        else:
+                            continue
+
+                        event = FileEvent(
+                            event_type=event_type,
+                            file_path=file_path,
+                            file_name=filename,
+                        )
+                        await self._process_event(strategy, event)
+
+                    # Yield control to the event loop
+                    await asyncio.sleep(0)
+
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error("Watch %s inotify error: %s", watch_id, e)
+                    strategy.status = WatchStatus.ERROR
+                    break
+        finally:
+            inotify.rm_watch(wd)
+            inotify.close()
+            logger.info("Watch %s: inotify watcher cleaned up", watch_id)
 
     def _scan_files(
         self, watch_id: str, initial: bool = False

@@ -30,6 +30,8 @@ class WatchStrategyCreate(BaseModel):
     on_conflict: str = "update"
     recursive: bool = True
     max_file_size_mb: int = 500
+    backend: str = "polling"
+    scan_interval: int = 10
 
 
 class WatchStrategyResponse(BaseModel):
@@ -42,6 +44,8 @@ class WatchStrategyResponse(BaseModel):
     on_conflict: str
     recursive: bool
     max_file_size_mb: int
+    backend: str
+    scan_interval: int
     status: str
     total_events: int = 0
     total_processed: int = 0

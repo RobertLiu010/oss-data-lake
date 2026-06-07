@@ -1,10 +1,11 @@
 """Local filesystem storage with OSS Tag simulation via xattr.
 
 Design (aligned with PRD §4.6):
-- Entity metadata stored as xattr on source_original file (simulating OSS Object Tag)
+- .entity_manifest.json is the single source of truth for ALL entity fields
+- Entity metadata cached as xattr on source_original file (simulating OSS Object Tag)
 - Entity Tag (7 keys): rag_status, entity_type, name, content_hash, version, labels, model_version
 - workspace_id / collection_id / entity_id derived from path (not stored in Tag)
-- .entity_manifest.json sidecar for non-derivable info (Ground Truth for disaster recovery)
+- Write order: manifest first (fsync), then tags (best-effort cache)
 - Representation Tag (9 keys) on each rep file
 """
 
@@ -208,11 +209,24 @@ class LocalStorage:
         entity_id: str,
         manifest: dict,
     ) -> None:
-        """Save .entity_manifest.json sidecar (Ground Truth for non-derivable info)."""
+        """Save .entity_manifest.json sidecar (single source of truth for ALL entity fields).
+
+        The manifest stores the complete entity state. Write order: manifest first (fsync),
+        then tags (best-effort cache via sync_tags_from_manifest).
+        """
         entity_dir = self._entity_dir(workspace_id, collection_id, entity_id)
         entity_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = entity_dir / ".entity_manifest.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path = manifest_path.with_suffix(".json.tmp")
+        # Write to temp file, fsync, then atomic rename
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            data = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(str(tmp_path), str(manifest_path))
 
     def read_entity_manifest(
         self,
@@ -229,8 +243,39 @@ class LocalStorage:
                 return None
         return None
 
+    def sync_tags_from_manifest(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        entity_id: str,
+    ) -> None:
+        """Read manifest and write xattr tags as a best-effort cache.
+
+        Called after every manifest write to keep the xattr tag cache in sync.
+        Failures are logged but not raised — tags are cache, not source of truth.
+        """
+        manifest = self.read_entity_manifest(workspace_id, collection_id, entity_id)
+        if not manifest:
+            logger.warning("Cannot sync tags: no manifest for %s", entity_id)
+            return
+
+        # Map manifest fields to xattr tag keys
+        tags = {
+            "rag_status": manifest.get("status", "enabled"),
+            "entity_type": manifest.get("entity_type", "document"),
+            "name": manifest.get("name", entity_id),
+            "content_hash": manifest.get("content_hash", ""),
+            "version": str(manifest.get("version", 1)),
+            "labels": ",".join(manifest.get("labels", [])),
+            "model_version": manifest.get("model_version", ""),
+        }
+        try:
+            self.set_entity_tags(workspace_id, collection_id, entity_id, tags)
+        except Exception as e:
+            logger.warning("Failed to sync xattr tags for %s (non-fatal): %s", entity_id, e)
+
     # ------------------------------------------------------------------
-    # Entity assembly from OSS Tag + path (PRD §4.1)
+    # Entity assembly from manifest (source of truth) or xattr (fallback)
     # ------------------------------------------------------------------
 
     def assemble_entity(
@@ -239,41 +284,56 @@ class LocalStorage:
         collection_id: str,
         entity_id: str,
     ) -> Optional[dict]:
-        """Assemble Entity attributes from OSS Tag + path (PRD §4.1).
+        """Assemble Entity attributes from manifest (source of truth) or xattr (fallback cache).
 
+        Read order: manifest first (authoritative), xattr tags only if manifest missing.
         Returns a dict matching Entity Schema, or None if entity not found.
         """
         entity_dir = self._entity_dir(workspace_id, collection_id, entity_id)
         if not entity_dir.exists():
             return None
 
-        # From path
+        # --- Try manifest first (single source of truth) ---
+        manifest = self.read_entity_manifest(workspace_id, collection_id, entity_id)
+        if manifest:
+            # Manifest contains ALL fields; use it directly
+            result = {
+                "entity_id": manifest.get("entity_id", entity_id),
+                "workspace_id": manifest.get("workspace_id", workspace_id),
+                "collection_id": manifest.get("collection_id", collection_id),
+                "entity_type": manifest.get("entity_type", "document"),
+                "name": manifest.get("name", entity_id),
+                "source_type": manifest.get("source_type", "oss"),
+                "source_uri": manifest.get("source_uri", ""),
+                "content_hash": manifest.get("content_hash", ""),
+                "version": manifest.get("version", 1),
+                "status": manifest.get("status", "enabled"),
+                "labels": manifest.get("labels", []),
+                "model_version": manifest.get("model_version", ""),
+                "created_at": manifest.get("created_at", ""),
+                "updated_at": manifest.get("updated_at", ""),
+            }
+            return result
+
+        # --- Fallback: assemble from xattr tags + path (legacy / no manifest) ---
+        logger.info("No manifest for %s, falling back to xattr tags", entity_id)
         result = {
             "entity_id": entity_id,
             "workspace_id": workspace_id,
             "collection_id": collection_id,
         }
 
-        # From Entity Tags on source_original
         tags = self.get_entity_tags(workspace_id, collection_id, entity_id)
         result["entity_type"] = tags.get("entity_type", "document")
         result["name"] = tags.get("name", entity_id)
-        result["source_type"] = "oss"  # default; URL entities set via manifest
+        result["source_type"] = "oss"
+        result["source_uri"] = f"local://{workspace_id}/{collection_id}/{entity_id}/source_original"
         result["content_hash"] = tags.get("content_hash", "")
         result["version"] = int(tags.get("version", "1"))
         result["status"] = tags.get("rag_status", "enabled")
         result["labels"] = tags.get("labels", "").split(",") if tags.get("labels") else []
-
-        # From manifest (non-derivable info)
-        manifest = self.read_entity_manifest(workspace_id, collection_id, entity_id)
-        if manifest:
-            result["source_type"] = manifest.get("source_type", result["source_type"])
-            result["source_uri"] = manifest.get("source_uri", "")
-            result["created_at"] = manifest.get("created_at", "")
-            result["updated_at"] = manifest.get("updated_at", "")
-        else:
-            result["source_uri"] = f"local://{workspace_id}/{collection_id}/{entity_id}/source_original"
-            result["created_at"] = ""
-            result["updated_at"] = ""
+        result["model_version"] = tags.get("model_version", "")
+        result["created_at"] = ""
+        result["updated_at"] = ""
 
         return result

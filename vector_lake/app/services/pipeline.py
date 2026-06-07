@@ -10,6 +10,7 @@ from app.config import Settings
 from app.models.chunk import Chunk
 from app.services.chunking import ChunkingService
 from app.services.embedding import EmbeddingService
+from app.services.event_bus import EventBus, Event, EventType
 from app.services.index import IndexService
 from app.storage.local import LocalStorage
 
@@ -26,12 +27,14 @@ class PipelineService:
         embedding: EmbeddingService,
         index: IndexService,
         settings: Settings,
+        event_bus: EventBus | None = None,
     ):
         self.storage = storage
         self.chunking = chunking
         self.embedding = embedding
         self.index = index
         self.settings = settings
+        self.event_bus = event_bus
 
     async def process_md_entity(
         self,
@@ -48,6 +51,15 @@ class PipelineService:
             "Pipeline: processing entity %s (%d chars)",
             entity_id, len(md_content),
         )
+
+        # Publish ENTITY_CREATED event
+        if self.event_bus:
+            await self.event_bus.publish(Event(
+                event_type=EventType.ENTITY_CREATED,
+                workspace_id=workspace_id,
+                collection_id=collection_id,
+                entity_id=entity_id,
+            ))
 
         # 1. Save raw MD as source/original
         self.storage.save_file(
@@ -84,6 +96,14 @@ class PipelineService:
                 "chunks saved but not indexed",
                 entity_id, exc,
             )
+            if self.event_bus:
+                await self.event_bus.publish(Event(
+                    event_type=EventType.REP_COMPLETED,
+                    workspace_id=workspace_id,
+                    collection_id=collection_id,
+                    entity_id=entity_id,
+                    payload={"indexed": False},
+                ))
             return chunks
 
         # 5. Upsert to LanceDB
@@ -102,11 +122,27 @@ class PipelineService:
                 chunks_with_vectors,
             )
             logger.info("Pipeline: indexed %d chunks for entity %s", len(chunks), entity_id)
+            if self.event_bus:
+                await self.event_bus.publish(Event(
+                    event_type=EventType.INDEX_COMPLETED,
+                    workspace_id=workspace_id,
+                    collection_id=collection_id,
+                    entity_id=entity_id,
+                    payload={"chunk_count": len(chunks)},
+                ))
         except Exception as exc:
             logger.warning(
                 "Pipeline: index upsert failed for entity %s (%s), "
                 "chunks saved but not searchable",
                 entity_id, exc,
             )
+            if self.event_bus:
+                await self.event_bus.publish(Event(
+                    event_type=EventType.REP_COMPLETED,
+                    workspace_id=workspace_id,
+                    collection_id=collection_id,
+                    entity_id=entity_id,
+                    payload={"indexed": False},
+                ))
 
         return chunks

@@ -14,10 +14,24 @@ router = APIRouter(
 
 @router.post("/search", response_model=list[SearchResult])
 async def search(ws: str, col: str, req: SearchRequest, request: Request):
-    """Semantic search: embed query → search LanceDB → return results."""
+    """Search: semantic, lexical, or hybrid (RRF) based on search_type."""
     embedding_svc = request.app.state.embedding_service
     index_svc = request.app.state.index_service
 
+    # Lexical-only search does not need embeddings
+    if req.search_type == "lexical":
+        try:
+            results = await index_svc.search_lexical(
+                ws, col, req.query, top_k=req.top_k,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Index search error: {exc}",
+            )
+        return results
+
+    # Semantic and hybrid both need a query vector
     try:
         query_vector = await embedding_svc.embed_query(req.query)
     except Exception as exc:
@@ -26,6 +40,23 @@ async def search(ws: str, col: str, req: SearchRequest, request: Request):
             detail=f"Embedding service error: {exc}",
         )
 
+    if req.search_type == "hybrid":
+        try:
+            results = await index_svc.search_hybrid(
+                ws, col, req.query, query_vector,
+                top_k=req.top_k,
+                rrf_k=req.rrf_k,
+                semantic_weight=req.semantic_weight,
+                lexical_weight=req.lexical_weight,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Index search error: {exc}",
+            )
+        return results
+
+    # Default: semantic search
     try:
         results = await index_svc.search(ws, col, query_vector, top_k=req.top_k)
     except Exception as exc:
@@ -33,5 +64,4 @@ async def search(ws: str, col: str, req: SearchRequest, request: Request):
             status_code=500,
             detail=f"Index search error: {exc}",
         )
-
     return results

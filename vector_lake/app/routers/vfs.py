@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from app.models.vfs import (
     VfsGlobRequest,
@@ -83,3 +84,18 @@ async def vfs_grep(ws: str, col: str, req: VfsGrepRequest, request: Request):
         matches=matches,
         total_matches=len(matches),
     )
+
+
+class CacheInvalidateResponse(BaseModel):
+    """Response model for cache invalidation."""
+    status: str
+    ws: str
+    col: str
+
+
+@router.post("/cache/invalidate", response_model=CacheInvalidateResponse)
+async def vfs_cache_invalidate(ws: str, col: str, request: Request):
+    """Invalidate the VFS cache for a specific workspace/collection."""
+    svc = _get_vfs_service(request)
+    svc.invalidate_cache(ws, col)
+    return CacheInvalidateResponse(status="ok", ws=ws, col=col)

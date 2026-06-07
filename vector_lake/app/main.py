@@ -10,13 +10,14 @@ from app.config import load_settings
 from app.storage.local import LocalStorage
 from app.services.chunking import ChunkingService
 from app.services.embedding import EmbeddingService
+from app.services.event_bus import EventBus
 from app.services.index import IndexService
 from app.services.pipeline import PipelineService
 from app.services.entity_service import EntityService
 from app.services.vfs import VfsService
 from app.services.reconciler import ReconcilerService
 from app.services.watch import WatchService
-from app.routers import entities, search, vfs, reconcile
+from app.routers import entities, search, vfs, reconcile, events, workspaces
 
 
 @asynccontextmanager
@@ -28,7 +29,8 @@ async def lifespan(app: FastAPI):
     chunking = ChunkingService(settings)
     embedding = EmbeddingService(settings)
     index = IndexService(settings)
-    pipeline = PipelineService(storage, chunking, embedding, index, settings)
+    event_bus = EventBus()
+    pipeline = PipelineService(storage, chunking, embedding, index, settings, event_bus=event_bus)
     entity_service = EntityService(storage, pipeline, settings)
     vfs_service = VfsService(storage, settings)
     reconciler_service = ReconcilerService(storage, entity_service, pipeline, settings)
@@ -41,6 +43,7 @@ async def lifespan(app: FastAPI):
     app.state.vfs_service = vfs_service
     app.state.reconciler_service = reconciler_service
     app.state.watch_service = watch_service
+    app.state.event_bus = event_bus
 
     yield
 
@@ -54,6 +57,8 @@ app.include_router(entities.router)
 app.include_router(search.router)
 app.include_router(vfs.router)
 app.include_router(reconcile.router)
+app.include_router(events.router)
+app.include_router(workspaces.router)
 
 
 @app.get("/health")

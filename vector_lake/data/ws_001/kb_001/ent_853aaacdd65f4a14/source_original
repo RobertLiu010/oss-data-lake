@@ -1,0 +1,12 @@
+# Deep Design Test
+
+This document tests all the deep design improvements.
+
+## Manifest as Truth
+The manifest is the single source of truth, not OSS Tags.
+
+## VFS Cache
+VFS now has a 30-second TTL memory cache.
+
+## Event Bus
+Pipeline publishes events on completion.

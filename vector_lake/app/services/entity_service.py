@@ -1,9 +1,10 @@
 """Entity business logic.
 
-Entity attributes assembled from OSS Tag + path (PRD §4.1):
+Entity attributes assembled from manifest (source of truth) or xattr (fallback):
+- .entity_manifest.json is the single source of truth for ALL entity fields
 - Entity Tag (7 keys) on source_original: rag_status, entity_type, name, content_hash, version, labels, model_version
-- workspace_id / collection_id / entity_id from path
-- .entity_manifest.json sidecar for non-derivable info (source_type, source_uri, timestamps)
+- xattr tags serve as optional cache, synced from manifest after every write
+- Write order: manifest first (fsync), then tags (best-effort cache)
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ class EntityService:
         self.root = Path(settings.storage.local.root)
 
     # ------------------------------------------------------------------
-    # Internal: Entity ↔ dict conversion (from OSS Tag + path)
+    # Internal: Entity ↔ dict conversion (from manifest or xattr fallback)
     # ------------------------------------------------------------------
 
     def _assemble_entity(
@@ -52,7 +53,7 @@ class EntityService:
         collection_id: str,
         entity_id: str,
     ) -> Optional[Entity]:
-        """Assemble Entity from OSS Tag + path + manifest."""
+        """Assemble Entity from manifest (source of truth) or xattr (fallback)."""
         data = self.storage.assemble_entity(workspace_id, collection_id, entity_id)
         if data is None:
             return None
@@ -83,31 +84,34 @@ class EntityService:
         entity_id: str,
         entity: Entity,
     ) -> None:
-        """Write Entity Tags (xattr) + manifest (sidecar)."""
-        # Entity Tags on source_original
-        self.storage.set_entity_tags(
-            workspace_id, collection_id, entity_id,
-            {
-                "rag_status": entity.status.value,
-                "entity_type": entity.entity_type,
-                "name": entity.name,
-                "content_hash": entity.content_hash,
-                "version": str(entity.version),
-                "labels": ",".join(entity.labels),
-                "model_version": "embedding-v5",
-            },
-        )
+        """Write manifest (source of truth) then sync xattr tags (best-effort cache).
 
-        # Manifest sidecar (non-derivable info)
+        Write order: manifest first (fsync), then tags (best-effort).
+        The manifest stores the COMPLETE entity state.
+        """
+        # 1. Manifest (source of truth) — ALL entity fields
         self.storage.save_entity_manifest(
             workspace_id, collection_id, entity_id,
             {
+                "entity_id": entity.entity_id,
+                "workspace_id": entity.workspace_id,
+                "collection_id": entity.collection_id,
+                "entity_type": entity.entity_type,
+                "name": entity.name,
                 "source_type": entity.source_type.value,
                 "source_uri": entity.source_uri,
+                "content_hash": entity.content_hash,
+                "version": entity.version,
+                "status": entity.status.value,
+                "labels": entity.labels,
+                "model_version": "embedding-v5",
                 "created_at": str(entity.created_at),
                 "updated_at": str(entity.updated_at),
             },
         )
+
+        # 2. Sync xattr tags from manifest (best-effort cache)
+        self.storage.sync_tags_from_manifest(workspace_id, collection_id, entity_id)
 
     # ------------------------------------------------------------------
     # Create

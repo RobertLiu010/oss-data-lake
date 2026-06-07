@@ -54,8 +54,25 @@ async def reconcile_status(ws: str, col: str, request: Request):
     """Get the last reconcile result."""
     reconciler = _get_reconciler(request)
     result = reconciler.last_result
+
+    # Check lock status
+    lock_file = reconciler._lock_path(ws, col)
+    lock_info = {"locked": False}
+    if lock_file.exists():
+        import time
+        try:
+            mtime = lock_file.stat().st_mtime
+            age = time.time() - mtime
+            lock_info = {
+                "locked": True,
+                "lock_age_seconds": round(age, 1),
+                "lock_path": str(lock_file),
+            }
+        except FileNotFoundError:
+            lock_info = {"locked": False}
+
     if result is None:
-        return {"status": "never_run"}
+        return {"status": "never_run", "lock": lock_info}
     return {
         "status": "completed",
         "entities_scanned": result.entities_scanned,
@@ -63,6 +80,7 @@ async def reconcile_status(ws: str, col: str, request: Request):
         "drifts_repaired": result.drifts_repaired,
         "started_at": str(result.started_at),
         "finished_at": str(result.finished_at),
+        "lock": lock_info,
     }
 
 
@@ -86,6 +104,8 @@ async def list_watch_strategies(ws: str, request: Request):
             on_conflict=strategy.on_conflict,
             recursive=strategy.recursive,
             max_file_size_mb=strategy.max_file_size_mb,
+            backend=strategy.backend,
+            scan_interval=strategy.scan_interval,
             status=strategy.status.value,
             total_events=strategy.total_events,
             total_processed=strategy.total_processed,
@@ -113,6 +133,8 @@ async def create_watch_strategy(ws: str, req: WatchStrategyCreate, request: Requ
         on_conflict=req.on_conflict,
         recursive=req.recursive,
         max_file_size_mb=req.max_file_size_mb,
+        backend=req.backend,
+        scan_interval=req.scan_interval,
     )
 
     try:
@@ -130,6 +152,8 @@ async def create_watch_strategy(ws: str, req: WatchStrategyCreate, request: Requ
         on_conflict=strategy.on_conflict,
         recursive=strategy.recursive,
         max_file_size_mb=strategy.max_file_size_mb,
+        backend=strategy.backend,
+        scan_interval=strategy.scan_interval,
         status=strategy.status.value,
     )
 

@@ -1,0 +1,16 @@
+{
+  "entity_id": "ent_853aaacdd65f4a14",
+  "workspace_id": "ws_001",
+  "collection_id": "kb_001",
+  "entity_type": "document",
+  "name": "deep_test.md",
+  "source_type": "oss",
+  "source_uri": "local://ws_001/kb_001/ent_853aaacdd65f4a14/source_original",
+  "content_hash": "853aaacdd65f4a14",
+  "version": 1,
+  "status": "enabled",
+  "labels": [],
+  "model_version": "embedding-v5",
+  "created_at": "2026-06-07 02:42:43.833845",
+  "updated_at": "2026-06-07 02:42:43.833845"
+}

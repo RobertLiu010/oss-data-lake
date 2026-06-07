@@ -12,6 +12,7 @@ import fnmatch
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -47,6 +48,9 @@ class VfsService:
         self.storage = storage
         self.settings = settings
         self.root = Path(settings.storage.local.root)
+        self._cache: dict[str, dict] = {}
+        self._cache_ttl: float = 30.0  # seconds
+        self._cache_timestamps: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -135,13 +139,36 @@ class VfsService:
 
         return tree
 
+    def _get_tree_cached(self, ws: str, col: str) -> dict:
+        """Return the virtual tree for ws/col, using a TTL-based cache."""
+        key = f"{ws}/{col}"
+        now = time.monotonic()
+        ts = self._cache_timestamps.get(key)
+        if ts is not None and (now - ts) < self._cache_ttl and key in self._cache:
+            return self._cache[key]
+        tree = self._build_virtual_tree(ws, col)
+        self._cache[key] = tree
+        self._cache_timestamps[key] = now
+        return tree
+
+    def invalidate_cache(self, ws: str, col: str) -> None:
+        """Clear cache for a specific ws/col."""
+        key = f"{ws}/{col}"
+        self._cache.pop(key, None)
+        self._cache_timestamps.pop(key, None)
+
+    def invalidate_all_cache(self) -> None:
+        """Clear all cached trees."""
+        self._cache.clear()
+        self._cache_timestamps.clear()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def ls(self, ws: str, col: str, path: str = "/") -> list[VfsEntry]:
         """List entries under a virtual path."""
-        tree = self._build_virtual_tree(ws, col)
+        tree = self._get_tree_cached(ws, col)
 
         # Normalize path
         path = path.rstrip("/") or "/"
@@ -185,7 +212,7 @@ class VfsService:
 
     def stat(self, ws: str, col: str, path: str) -> Optional[VfsStatResponse]:
         """Get metadata for a virtual path."""
-        tree = self._build_virtual_tree(ws, col)
+        tree = self._get_tree_cached(ws, col)
         path = path.rstrip("/") or "/"
 
         info = tree.get(path)
@@ -214,7 +241,7 @@ class VfsService:
 
         Returns (content, entity_id, rep_type) or None.
         """
-        tree = self._build_virtual_tree(ws, col)
+        tree = self._get_tree_cached(ws, col)
         path = path.rstrip("/")
 
         info = tree.get(path)
@@ -240,7 +267,7 @@ class VfsService:
           **/canonical.md  — all canonical.md files
           /pricing*/**     — everything under pricing* dirs
         """
-        tree = self._build_virtual_tree(ws, col)
+        tree = self._get_tree_cached(ws, col)
         results = []
 
         for vpath, info in tree.items():
@@ -277,7 +304,7 @@ class VfsService:
         3. Read + regex match each file
         4. Return matches with context
         """
-        tree = self._build_virtual_tree(ws, col)
+        tree = self._get_tree_cached(ws, col)
         path_prefix = path_prefix.rstrip("/") or "/"
 
         # Collect candidate text files

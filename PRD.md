@@ -257,7 +257,7 @@ Vector-Lake 不是另一个向量数据库、搜索引擎或数据治理平台�
 
 1. **Entity 驱动的知识建模** — 不是文档索引，而是以 Entity 为核心的知识对象管理，支持多 Representation 视角和完整血缘。
 2. **解耦的双 Pipeline 架构** — RepPipeline（内容变换）和 IndexPipeline（索引构建）完全解耦，各自有独立的 Plugin 体系，可独立演进。
-3. **准零持久化元数据** — 元数据从 OSS Tag + VFS 路径实时推导，不依赖外部元数据库，从 OSS 扫描即可完整重建。
+3. **准零持久化元数据** — `.entity_manifest.json` 是**唯一真相源（Single Source of Truth）**，包含 Entity 全部 14 个字段；OSS Tag 是可选缓存，可从 manifest 完全重建。
 4. **Projector 层** — 知识引擎层主动将内部数据投影到多种外部消费者（Wiki / RAG API / Dashboard），而非被动等待查询。
 5. **两阶段一致性** — 首次在知识引擎中同时保证内容一致性（Rep↔Raw）和索引一致性（Index↔Rep），可调和、可重建。
 6. **LLM 原生** — MCP Server 作为一等公民，让 LLM 可以直接探索和检索知识湖。
@@ -1270,10 +1270,10 @@ canonical_md#q3-pricing  ←→  page_image?page=7&bbox=72,120,540,144
 
 **核心决策**：
 1. **每个 Entity 一个目录**，所有 representation 文件 + Lance 数据都在这个目录下，自包含。
-2. **准零持久化元数据** — 运行时从 OSS Tag + 路径实时组装（零持久化运行）；但关键不可推导信息（`rag_status` / `labels` / `version`）以 sidecar 文件持久化（`.entity_manifest.json` + `.version_log.jsonl`），作为灾难恢复的 Ground Truth（详见 §5.12）。
+2. **准零持久化元数据** — `.entity_manifest.json` 是**唯一真相源（Single Source of Truth）**，包含 Entity 全部 14 个字段（entity_id, workspace_id, collection_id, entity_type, name, source_type, source_uri, content_hash, version, status, labels, model_version, created_at, updated_at）；OSS Tag（xattr）是**可选缓存（optional cache）**，用于运行时加速，不是真相源。写入顺序：manifest 先写（通过 `.tmp` + `os.replace` 实现 fsync 原子写入），然后以 best-effort 方式同步 Tag。Tag 丢失时（OSS 维护、copy/move 操作等），系统仍可正确运行（直接读 manifest），并可通过 `sync_tags_from_manifest()` 从 manifest 完全重建。
 3. **两套 OSS Object Tagging** — Entity Tag（7个，打在 original 上）+ Representation Tag（9个，打在每个 rep 文件上），作为运行时加速缓存（Tag 可从 Ground Truth 重建）。
 4. **VFS 实时扫描 prefix** 重建目录树 + 从**目录层级 + Pipeline 注册表**推导血缘 DAG，所有元数据从 OSS 实时获取。
-5. **1 张 Lance 表**：`representations.lance`（Entity 目录内）。每行 = 一个可检索单元（chunk），PK = `(entity_id, rep_type, chunk_index)`。
+5. **1 张 Lance 表**：v0.1 采用**全局表策略**——每个 workspace+collection 一张 Lance 表（`{ws}_{col}_chunks`），而非每个 Entity 一张表。v0.2 将迁移为 per-entity Lance 表以获得更好的隔离性。全局表优势：搜索更简单（无需 fan-out 跨多表查询），实现更简单。权衡：删除需要显式 `delete from table` 而非仅删除目录。
 
 ```text
 vector-lake/{workspace_id}/{collection_id}/
@@ -1317,25 +1317,35 @@ vector-lake/{workspace_id}/{collection_id}/
 - Entity 目录 = 该 Entity 的完整知识单元，包含所有 representation 文件 + Lance 索引。
 - 迁移/复制/删除 = 操作整个 Entity 目录。
 - 不同 Entity 之间完全隔离，无并发写入冲突。
-- **准零持久化元数据**：运行时从 OSS Tag + 路径实时组装（零持久化运行）；不可推导信息（rag_status/labels/version）以 sidecar 持久化（§5.12）。
+- **准零持久化元数据**：`.entity_manifest.json` 是唯一真相源（含全部 14 个字段），OSS Tag 是可选缓存；manifest 先写（fsync 原子写入），Tag 以 best-effort 同步；Tag 可从 manifest 完全重建（§5.12）。
 - **每个 representation 文件自带 OSS Tag**：业务元数据直接附着在文件上，删除文件时 Tag 自动消失，不存在"孤儿元数据"问题。血缘从目录层级推导，不存于 Tag。Tag 可从 Ground Truth 重建。
 
 #### 1 张 Lance 表 + OSS Object Tagging
 
+> **v0.1 全局表策略**：每个 workspace+collection 一张 Lance 表（`{ws}_{col}_chunks`），而非 per-entity 表。v0.2 将迁移为 per-entity Lance 表。
+
 | # | 文件 | 位置 | 用途 |
 | --- | --- | --- | --- |
-| 1 | `representations.lance` | Entity 目录内 | 该 Entity 的所有可检索单元（含 vector + text） |
+| 1 | `{ws}_{col}_chunks.lance` | workspace+collection 级 | 该 workspace+collection 下所有 Entity 的可检索单元（含 vector + text） |
 | — | OSS Object Tagging | raw 对象 | Entity 的状态/标签（rag_status / labels / sync_state） |
 
-**为什么只用 1 张 Lance 表**：
-- `catalog.lance` 不需要 — VFS 扫描 prefix 即可获取所有 Entity 目录。
-- `lineage.json` 不需要 — 血缘从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度）。
-- `entity.json` 不需要 — Entity 元数据从 OSS Tag 实时读取（不可推导信息从 `.entity_manifest.json` 读取）。
-- 所有元数据都可以从 Ground Truth（文件 + 路径 + sidecar）重建，准零持久化 → 运行时无同步问题，灾难时可恢复。
+**为什么 v0.1 用全局表**：
+- 搜索更简单：无需 fan-out 跨 N 个 Entity 的 Lance 表并行查询，单表查询即可
+- 实现更简单：无需管理多表生命周期，无需跨表合并结果
+- `catalog.lance` 不需要 — VFS 扫描 prefix 即可获取所有 Entity 目录
+- `lineage.json` 不需要 — 血缘从**目录层级 + Pipeline 注册表**实时推导（目录层级即血缘深度）
+- `entity.json` 不需要 — Entity 元数据从 manifest 读取（`.entity_manifest.json` 为唯一真相源）
+- 所有元数据都可以从 Ground Truth（文件 + 路径 + manifest）重建，准零持久化 → 运行时无同步问题，灾难时可恢复
+
+**权衡**：
+- 删除 Entity 需要显式 `delete from {ws}_{col}_chunks where entity_id = ...`，而非仅删除目录
+- v0.2 将迁移为 per-entity Lance 表（`{entity_id}/representations.lance`），获得更好的隔离性和更简单的删除语义
 
 #### OSS Object Tagging（两套 Tag Schema：Entity + Representation）
 
-**所有元数据存在 OSS 对象的 Tag 上**，通过 `PutObjectTagging` / `GetObjectTagging` API 读写。
+> **重要**：OSS Tag 是**可选缓存（optional cache）**，用于运行时加速，不是真相源。真相源是 `.entity_manifest.json`（见 §5.12）。Tag 可通过 `sync_tags_from_manifest()` 从 manifest 完全重建。Tag 丢失时（OSS 维护、copy/move 操作等），系统仍可正确运行（直接读 manifest）。
+
+**元数据通过 OSS 对象的 Tag 缓存**，通过 `PutObjectTagging` / `GetObjectTagging` API 读写。
 
 **两套 Tag Schema**：
 
@@ -2659,9 +2669,13 @@ lance_dataset.update_metadata({
 
 ### 5.12 元数据可靠性与重建策略
 
-> **核心原则**：**文件内容 + 路径结构 = Ground Truth（可重建），OSS Tag = 加速缓存（可从 Ground Truth 重建）**。
+> **核心原则**：**`.entity_manifest.json` = 唯一真相源（Single Source of Truth）**，包含 Entity 全部 14 个字段；OSS Tag = 可选缓存（optional cache），用于运行时加速，可从 manifest 完全重建。
 >
-> 当前 PRD 的"零持久化"原则在运行时不变（从 OSS Tag + 路径实时组装元数据），但关键不可推导信息（用户意图、版本历史）必须有独立于 Tag 的持久化，作为灾难恢复的 Ground Truth。此即**准零持久化**原则。
+> **写入顺序**：manifest 先写（通过 `.tmp` + `os.replace` 实现 fsync 原子写入），然后以 best-effort 方式同步 Tag。
+>
+> **Tag 丢失容错**：Tag 丢失时（OSS 维护、copy/move 操作等），系统仍可正确运行（直接读 manifest），并可通过 `sync_tags_from_manifest()` 从 manifest 完全重建。
+>
+> 当前 PRD 的"准零持久化"原则在运行时不变（优先从 OSS Tag + 路径实时组装元数据以获得最佳性能），但 `.entity_manifest.json` 作为唯一真相源，在 Tag 缺失/不一致时提供权威数据。
 
 #### 5.12.1 不可推导信息持久化
 
@@ -2673,21 +2687,32 @@ lance_dataset.update_metadata({
 | `labels` | `.entity_manifest.json` | `source/.entity_manifest.json` | 业务标签 |
 | `version` | `.version_log.jsonl` | `source/.version_log.jsonl` | 版本历史（append-only） |
 
-**Entity Manifest 文件**（`source/.entity_manifest.json`）：
+**Entity Manifest 文件**（`source/.entity_manifest.json`）— **唯一真相源（Single Source of Truth）**：
+
+> Manifest 包含 Entity 全部 14 个字段，是系统的权威数据源。OSS Tag 是可选缓存，可从 manifest 完全重建。
 
 ```json
 {
-  "rag_status": "enabled",
-  "labels": ["pricing", "finance"],
-  "version": 3,
-  "content_hash": "sha256:abc...",
+  "entity_id": "abc123",
+  "workspace_id": "ws_001",
+  "collection_id": "kb_001",
   "entity_type": "document",
   "name": "pricing.pdf",
+  "source_type": "oss",
+  "source_uri": "oss://bucket/.../abc123/source/original",
+  "content_hash": "sha256:abc...",
+  "version": 3,
+  "status": "enabled",
+  "labels": ["pricing", "finance"],
+  "model_version": "embedding-v5-retrieval",
+  "created_at": "2026-06-01T10:00:00Z",
   "updated_at": "2026-06-06T10:00:00Z"
 }
 ```
 
-> 写入时机：与 Tag 写入绑定——先写 `.entity_manifest.json`，再写 Tag。Tag 写入失败不影响 manifest。
+> **写入协议**：先写 `.entity_manifest.json`（通过 `.tmp` + `os.replace` 实现 fsync 原子写入），再以 best-effort 方式同步 OSS Tag。Tag 写入失败不影响 manifest。
+>
+> **Tag 重建**：`sync_tags_from_manifest()` 可从 manifest 完全重建所有 OSS Tag，用于 Tag 丢失/不一致场景。
 >
 > **关键约束**：OSS `PutObject` **不支持** `if-match`（阿里云 OSS / AWS S3 / MinIO 均不支持，只有 `CopyObject` 支持）。v0.1 采用 **last-writer-wins** 策略，v0.2 用 `CopyObject` + `if-match` 实现原子交换。
 
@@ -2841,7 +2866,29 @@ Reconciler Phase 0（每天一次，非每 15 min）:
 v0.1 策略：全量扫描（简单可靠），但增加 reconcile_entities_scanned 指标监控
 ```
 
-#### 5.12.8 `.meta.json` sidecar 与 Tag 的一致性模型（v0.2）
+#### 5.12.8 Reconciler 分布式锁
+
+> **设计目标**：防止同一 workspace+collection 的 Reconciler 并发运行，避免重复扫描和修复冲突。
+
+```text
+锁机制：
+  ├─ 锁文件：{ws}/{col}/.reconcile.lock
+  ├─ 创建方式：O_CREAT | O_EXCL（原子创建，文件已存在则失败）
+  ├─ 锁内容：{"pid": 12345, "host": "worker-01", "started_at": "2026-06-07T10:00:00Z"}
+  ├─ 锁过期：300 秒（5 分钟），过期锁自动被下一个 Reconciler 移除
+  └─ 锁状态查询：GET /api/v1/workspaces/{ws}/collections/{col}/reconcile/status
+
+锁生命周期：
+  1. Reconciler 启动 → 尝试 O_CREAT | O_EXCL 创建锁文件
+     ├─ 成功 → 获得锁，开始扫描
+     └─ 失败 → 检查锁文件是否过期
+        ├─ 未过期 → 放弃本次运行（其他 Reconciler 正在执行）
+        └─ 已过期 → 删除过期锁 → 重新创建锁 → 开始扫描
+  2. Reconciler 完成 → 删除锁文件
+  3. Reconciler 崩溃 → 锁文件残留 → 300 秒后自动过期
+```
+
+#### 5.12.9 `.meta.json` sidecar 与 Tag 的一致性模型（v0.2）
 
 ```text
 优先级规则：
@@ -2854,7 +2901,7 @@ v0.1 策略：全量扫描（简单可靠），但增加 reconcile_entities_scan
   Tag 写入失败不影响 .meta.json（下次 Reconciler 从 .meta.json 重建 Tag）
 ```
 
-#### 5.12.9 成熟项目参照与演进路线
+#### 5.12.10 成熟项目参照与演进路线
 
 > v0.1 采用 sidecar 持久化 + Reconciler 兜底方案；以下为 v0.2/v0.3 演进参照。
 
@@ -2866,7 +2913,7 @@ v0.1 策略：全量扫描（简单可靠），但增加 reconcile_entities_scan
 | MVCC + 不可变 Manifest | Lance spec | 每个 version 是不可变 Manifest（JSON），指向一组不可变 Data Fragment；快照隔离 | v0.2 |
 | Schema Evolution | Iceberg / Avro | 字段 ID 永久绑定 + 映射层（field_id → column_name），支持加列/删列/改名/改类型 | v0.3 |
 
-#### 5.12.14 实施路径与 v0.1/v0.2 边界
+#### 5.12.11 实施路径与 v0.1/v0.2 边界
 
 | 阶段 | 内容 | v0.1 状态 | v0.2 实施 |
 |---|---|---|---|
@@ -3350,6 +3397,19 @@ Watch Strategy（监听策略）          Ingest Strategy（接入策略）
 | **OSS 事件** | 生产环境（云端） | < 1s | 中（事件可能丢失） | `type: oss` |
 | **本地 inotify / FSEvents** | 开发/边缘节点 | < 1s | 中（重启后丢失） | `type: local` |
 | **Reconciler 周期扫描** | 兜底（任何场景） | 15min | 高 | `reconciler_fallback` |
+
+**本地监听后端**：
+
+> Watch Mode 的本地监听支持两种后端：
+
+| 后端 | 适用平台 | 依赖 | 延迟 | 配置 |
+| --- | --- | --- | --- | --- |
+| **polling**（默认） | 全平台 | 无 | 可配置（默认 10s） | `backend: polling`, `scan_interval: 10` |
+| **inotify** | Linux only | `inotify_simple` 库 | 实时（< 100ms） | `backend: inotify` |
+
+- inotify 后端使用 `inotify_simple` 库监听文件系统事件（IN_CREATE / IN_MODIFY / IN_DELETE / IN_MOVED），实现实时响应
+- 如果 inotify 不可用（非 Linux 平台或系统限制），自动回退到 polling 模式
+- polling 模式通过 `scan_interval`（默认 10s）控制扫描间隔
 
 #### 5.15.2 自动构建流程
 
@@ -4901,7 +4961,34 @@ Entity 维度的锁：
 | 单 RepStep LLM 调用并发 | 5（per worker） | 队列等待 |
 | 单 RepStep 显存占用 | 8 GB | 失败 + 降级到 CPU |
 
-### 6.10 任务队列：Redis Streams（v0.1 选定）
+### 6.10 Pipeline EventBus（事件总线）
+
+> **设计目标**：为 Pipeline 各阶段提供统一的事件通知机制，支持历史查询和实时订阅。
+
+**EventBus 服务**：Pipeline 在每个阶段转换时发布事件，供内部服务和外部消费者订阅。
+
+**事件类型**：
+
+| 事件类型 | 触发时机 | 载荷 |
+| --- | --- | --- |
+| `ENTITY_CREATED` | Entity 创建完成 | entity_id, workspace_id, collection_id |
+| `REP_COMPLETED` | RepPipeline 步骤完成 | entity_id, rep_type, pipeline_id |
+| `REP_FAILED` | RepPipeline 步骤失败 | entity_id, rep_type, pipeline_id, error |
+| `INDEX_COMPLETED` | IndexPipeline 完成 | entity_id, index_type |
+| `INDEX_FAILED` | IndexPipeline 失败 | entity_id, index_type, error |
+| `ENTITY_DELETED` | Entity 删除 | entity_id, workspace_id, collection_id |
+| `ENTITY_STATUS_CHANGED` | Entity 状态变更 | entity_id, old_status, new_status |
+
+**API 端点**：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/events` | 查询事件历史（支持按 entity_id / event_type / 时间范围过滤） |
+| GET | `/api/v1/events/stream` | SSE 实时事件流（Server-Sent Events） |
+
+**v0.2 演进**：IndexPipeline 订阅 `REP_COMPLETED` 事件，实现 Rep 完成后自动触发索引重建（无需等待全部 Rep ready）。
+
+### 6.11 任务队列：Redis Streams（v0.1 选定）
 
 > **设计决策**：v0.1 使用 **Redis Streams** 作为任务队列，**不使用 Celery / Kafka**。
 >
@@ -4911,7 +4998,7 @@ Entity 维度的锁：
 > - Kafka 对 v0.1 规模过重（Entity 级消息量低，不需要分区 / 副本 / 持久化）
 > - Redis 已是 Vector-Lake 的依赖（VFS 缓存 + 锁），不引入新组件
 
-#### 6.10.1 Stream 拓扑
+#### 6.11.1 Stream 拓扑
 
 ```text
 ┌─────────────┐     XADD          ┌──────────────────────┐
@@ -4940,7 +5027,7 @@ Entity 维度的锁：
                                   └──────────────────────┘
 ```
 
-#### 6.10.2 消息格式
+#### 6.11.2 消息格式
 
 ```json
 // XADD rep_pipeline * entity_id e-123 step_id render_page workspace ws1 ...
@@ -4961,7 +5048,7 @@ Entity 维度的锁：
 }
 ```
 
-#### 6.10.3 消费协议
+#### 6.11.3 消费协议
 
 ```python
 # Worker 伪代码
@@ -5001,7 +5088,7 @@ async def rep_worker():
                             redis.xack("rep_pipeline", "rep_workers", msg_id)
 ```
 
-#### 6.10.4 可靠性保证
+#### 6.11.4 可靠性保证
 
 | 场景 | Redis Streams 机制 | 效果 |
 |---|---|---|
@@ -5012,7 +5099,7 @@ async def rep_worker():
 | 消息丢失 | Redis AOF / RDB 持久化 | 重启后恢复 |
 | 死信 | 超过 max_retries → `stream:dead_letter` | 人工处理 |
 
-#### 6.10.5 与 Celery 的对比
+#### 6.11.5 与 Celery 的对比
 
 | 维度 | Celery + Redis | Redis Streams 直连 |
 |---|---|---|
@@ -5024,7 +5111,7 @@ async def rep_worker():
 | **延迟** | 高（broker → worker → result） | 低（直连 Redis） |
 | **运维** | 复杂（worker 进程管理 + concurrency pool） | 简单（asyncio + Consumer Group） |
 
-#### 6.10.6 背压策略
+#### 6.11.6 背压策略
 
 ```text
 Redis Streams 背压机制：
@@ -5040,7 +5127,7 @@ Redis Streams 背压机制：
      └─ 超时后其他 worker 可安全抢占（检查 worker_id 是否存活）
 ```
 
-#### 6.10.7 v0.2 演进路径
+#### 6.11.7 v0.2 演进路径
 
 ```text
 v0.1: Redis Streams（单 Redis 实例 / Sentinel）
@@ -5122,6 +5209,21 @@ v0.2: Redis Streams → Kafka（仅在以下条件满足时迁移）
 ### 8.1 Virtual File System（VFS）— 文件系统级能力
 
 **VFS 是 OSS 数据湖的虚拟文件系统层**，通过迭代式 prefix 扫描构建目录树缓存，对外提供文件系统级操作。
+
+#### VFS 内存缓存
+
+> VFS 维护一个内存缓存，避免每次操作都扫描 OSS prefix。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `vfs_cache_ttl` | 30s | 缓存过期时间（秒） |
+| 缓存 key | `{ws}/{col}` | 按 workspace+collection 隔离 |
+| 缓存 value | 虚拟目录树 dict | 包含完整路径结构 + 元数据 |
+
+**缓存失效机制**：
+- **自动失效**：TTL 到期后自动过期，下次访问时重新扫描
+- **手动失效**：`POST /api/v1/vfs/cache/invalidate` 立即清除缓存
+- **事件驱动失效**：Entity create/update/delete 操作时自动失效对应 `{ws}/{col}` 缓存
 
 #### VFS 构建方式
 
@@ -5319,6 +5421,18 @@ grep "Q3 定价" /pricing.pdf/**
 
 ### 8.3 Hybrid Search（v0.1 核心检索模式）
 
+> **三种搜索模式**：semantic（默认）、lexical、hybrid。
+
+**搜索模式**：
+
+| 模式 | 说明 | 适用场景 |
+| --- | --- | --- |
+| **semantic**（默认） | 纯向量语义检索 | 概念/解释/模糊匹配 |
+| **lexical** | 全文检索（LanceDB FTS 或字符串匹配 fallback） | 精确关键词/编号/ID |
+| **hybrid** | 语义 + 全文融合（RRF） | 综合场景（推荐） |
+
+**Hybrid Search 请求示例**：
+
 ```json
 {
   "tool": "hybrid",
@@ -5328,10 +5442,30 @@ grep "Q3 定价" /pricing.pdf/**
     "semantic_weight": 0.7,
     "lexical_weight": 0.3,
     "reranker": "rrf",
+    "rrf_k": 60,
     "filters": { "entity_type": ["document"], "workspace_id": "ws_001" },
     "top_k": 10
   }
 }
+```
+
+**RRF（Reciprocal Rank Fusion）参数**：
+
+| 参数 | 默认值 | 范围 | 说明 |
+| --- | --- | --- | --- |
+| `rrf_k` | 60 | 10-100 | RRF 常数，控制排名靠前结果的衰减速度 |
+| `semantic_weight` | 0.7 | 0.0-1.0 | 语义检索结果的权重 |
+| `lexical_weight` | 0.3 | 0.0-1.0 | 全文检索结果的权重 |
+
+**RRF 融合公式**：
+
+```text
+score = weight / (rrf_k + rank + 1)
+
+其中：
+  - rank = 该结果在对应检索通道中的排名（从 0 开始）
+  - weight = semantic_weight 或 lexical_weight
+  - 最终分数 = semantic_score + lexical_score
 ```
 
 **LanceDB 实现**：
@@ -5342,7 +5476,7 @@ results = (
     .vector(query_vector)
     .text(query_text)
     .where(f"workspace_id = 'ws_001' AND status = 'active'")
-    .rerank(RRFReranker())
+    .rerank(RRFReranker(k=60))
     .limit(10)
     .to_pandas()
 )
@@ -5917,7 +6051,20 @@ class EvidencePack(BaseModel):
 
 > 以下为 v0.1 全部 REST API 端点集中汇总。各端点的详细请求/响应格式见对应章节。
 
-#### 9.5.1 Entity 管理
+#### 9.5.1 Workspace / Collection 管理
+
+> Workspace 和 Collection 是纯目录结构，无独立元数据库。创建 = 创建 OSS 目录，删除 = 删除 OSS 目录（需确认目录为空）。
+
+| 方法 | 路径 | 说明 | 章节 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/workspaces` | 列出所有 Workspace | — |
+| POST | `/api/v1/workspaces` | 创建 Workspace（指定 workspace_id） | — |
+| DELETE | `/api/v1/workspaces/{ws}` | 删除 Workspace（需确认目录为空） | — |
+| GET | `/api/v1/workspaces/{ws}/collections` | 列出 Workspace 下所有 Collection | — |
+| POST | `/api/v1/workspaces/{ws}/collections` | 创建 Collection（指定 collection_id） | — |
+| DELETE | `/api/v1/workspaces/{ws}/collections/{col}` | 删除 Collection（需确认目录为空） | — |
+
+#### 9.5.2 Entity 管理
 
 | 方法 | 路径 | 说明 | 章节 |
 | --- | --- | --- | --- |
@@ -5927,7 +6074,7 @@ class EvidencePack(BaseModel):
 | PATCH | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}` | 更新 Entity 元数据（labels/status） | §9.1 |
 | DELETE | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}` | 删除 Entity（逻辑删除） | §9.1 |
 
-#### 9.5.2 Representation 管理
+#### 9.5.3 Representation 管理
 
 | 方法 | 路径 | 说明 | 章节 |
 | --- | --- | --- | --- |
@@ -5935,7 +6082,7 @@ class EvidencePack(BaseModel):
 | GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/representations/{rep_type}` | 获取指定 Rep 内容 | §9.1 |
 | POST | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/representations/{rep_type}/rebuild` | 触发 Rep 重建 | §9.1 |
 
-#### 9.5.3 搜索与检索
+#### 9.5.4 搜索与检索
 
 | 方法 | 路径 | 说明 | 章节 |
 | --- | --- | --- | --- |
@@ -5943,7 +6090,7 @@ class EvidencePack(BaseModel):
 | POST | `/api/v1/workspaces/{ws}/collections/{col}/query` | SQL 查询（DuckDB） | §8.6 |
 | GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/anchor-jump` | 锚点跳转 | §4.3.1 |
 
-#### 9.5.4 Lineage 与一致性
+#### 9.5.5 Lineage 与一致性
 
 | 方法 | 路径 | 说明 | 章节 |
 | --- | --- | --- | --- |
@@ -5951,7 +6098,7 @@ class EvidencePack(BaseModel):
 | GET | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/consistency` | 一致性校验状态 | §5.9 |
 | POST | `/api/v1/workspaces/{ws}/collections/{col}/entities/{entity_id}/reconcile` | 手动触发 Reconciler | §5.9 |
 
-#### 9.5.5 Watch / Ingest Strategy 管理
+#### 9.5.6 Watch / Ingest Strategy 管理
 
 | 方法 | 路径 | 说明 | 章节 |
 | --- | --- | --- | --- |
@@ -5966,7 +6113,7 @@ class EvidencePack(BaseModel):
 | GET | `/api/v1/workspaces/{ws}/ingest-strategies/{id}` | 查看 Ingest Strategy 详情 | §5.15.11.9 |
 | PATCH | `/api/v1/workspaces/{ws}/ingest-strategies/{id}` | 更新 Ingest Strategy | §5.15.11.9 |
 
-#### 9.5.6 Dead Letter 管理
+#### 9.5.7 Dead Letter 管理
 
 | 方法 | 路径 | 说明 | 章节 |
 | --- | --- | --- | --- |
@@ -5974,7 +6121,7 @@ class EvidencePack(BaseModel):
 | POST | `/api/v1/workspaces/{ws}/dead-letters/{id}/replay` | 重试 Dead Letter | §5.15.8 |
 | POST | `/api/v1/workspaces/{ws}/dead-letters/cleanup` | 清理过期 Dead Letter | §5.15.8 |
 
-#### 9.5.7 可观测性
+#### 9.5.8 可观测性
 
 | 方法 | 路径 | 说明 | 章节 |
 | --- | --- | --- | --- |
@@ -5983,7 +6130,7 @@ class EvidencePack(BaseModel):
 | GET | `/metrics` | Prometheus 指标 | §5.15.9 |
 | GET | `/health` | 健康检查 | §20 |
 
-#### 9.5.8 MCP Tool（VFS）
+#### 9.5.9 MCP Tool（VFS）
 
 | Tool | 说明 | 章节 |
 | --- | --- | --- |
