@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 from app.config import Settings
 from app.models.chunk import Chunk
@@ -25,14 +25,14 @@ class MarkdownSplitter:
     """Split Markdown text by headers."""
 
     @staticmethod
-    def split_by_headers(text: str) -> List[Dict[str, Any]]:
+    def split_by_headers(text: str) -> list[dict[str, Any]]:
         if not text:
             return []
 
         header_pattern = r'^(#{1,6})\s+(.+?)\s*$'
-        chunks: List[Dict[str, Any]] = []
+        chunks: list[dict[str, Any]] = []
         lines = text.split('\n')
-        current_chunk: List[str] = []
+        current_chunk: list[str] = []
         current_header: str | None = None
         current_level = 0
         start_pos = 0
@@ -52,7 +52,7 @@ class MarkdownSplitter:
                 current_chunk = [line]
                 current_header = match.group(2).strip()
                 current_level = len(match.group(1))
-                start_pos = sum(len(l) + 1 for l in lines[:i])
+                start_pos = sum(len(line_) + 1 for line_ in lines[:i])
             else:
                 current_chunk.append(line)
 
@@ -77,12 +77,12 @@ class TableDetector:
     """Detect Markdown tables."""
 
     @staticmethod
-    def find_tables(text: str) -> List[Dict[str, Any]]:
-        tables: List[Dict[str, Any]] = []
+    def find_tables(text: str) -> list[dict[str, Any]]:
+        tables: list[dict[str, Any]] = []
         lines = text.split('\n')
         in_table = False
         table_start = -1
-        table_lines: List[str] = []
+        table_lines: list[str] = []
 
         for i, line in enumerate(lines):
             is_table_line = '|' in line
@@ -111,7 +111,7 @@ class TableDetector:
         return tables
 
     @staticmethod
-    def is_inside_table(pos: int, tables: List[Dict[str, Any]]) -> bool:
+    def is_inside_table(pos: int, tables: list[dict[str, Any]]) -> bool:
         for table in tables:
             if table['start'] <= pos <= table['end']:
                 return True
@@ -157,8 +157,8 @@ class ChunkingService:
     async def execute(
         self,
         markdown_content: str,
-        metadata: Dict[str, Any] | None = None,
-    ) -> List[Chunk]:
+        metadata: dict[str, Any] | None = None,
+    ) -> list[Chunk]:
         """Execute chunking pipeline: split → token-chunk → sliding-window."""
         if metadata is None:
             metadata = {}
@@ -199,15 +199,15 @@ class ChunkingService:
     # Splitting helpers
     # ------------------------------------------------------------------
 
-    def _split_by_headers(self, text: str) -> List[Dict[str, Any]]:
+    def _split_by_headers(self, text: str) -> list[dict[str, Any]]:
         return MarkdownSplitter.split_by_headers(text)
 
     def _split_by_tokens(
         self,
-        header_chunks: List[Dict[str, Any]],
-        _tables: List[Dict[str, Any]],
-    ) -> List[Chunk]:
-        chunks: List[Chunk] = []
+        header_chunks: list[dict[str, Any]],
+        _tables: list[dict[str, Any]],
+    ) -> list[Chunk]:
+        chunks: list[Chunk] = []
 
         for chunk_data in header_chunks:
             text = chunk_data['text']
@@ -232,7 +232,7 @@ class ChunkingService:
 
             # Need further splitting
             paragraphs = self._split_by_paragraphs(text)
-            current_chunk: List[Dict[str, Any]] = []
+            current_chunk: list[dict[str, Any]] = []
             current_tokens = 0
 
             for para in paragraphs:
@@ -284,10 +284,10 @@ class ChunkingService:
 
         return chunks
 
-    def _split_by_paragraphs(self, text: str) -> List[Dict[str, Any]]:
-        paragraphs: List[Dict[str, Any]] = []
+    def _split_by_paragraphs(self, text: str) -> list[dict[str, Any]]:
+        paragraphs: list[dict[str, Any]] = []
         lines = text.split('\n')
-        current_paragraph: List[str] = []
+        current_paragraph: list[str] = []
         current_start = 0
 
         for i, line in enumerate(lines):
@@ -317,11 +317,11 @@ class ChunkingService:
         start_pos: int,
         header: str,
         level: int,
-    ) -> List[Chunk]:
-        chunks: List[Chunk] = []
+    ) -> list[Chunk]:
+        chunks: list[Chunk] = []
         sentences = re.split(r'([。！？.!?]+)', text)
 
-        current_parts: List[str] = []
+        current_parts: list[str] = []
         current_tokens = 0
 
         for i in range(0, len(sentences), 2):
@@ -401,7 +401,7 @@ class ChunkingService:
 
     def _create_chunk(
         self,
-        text_parts: List[Dict[str, Any]],
+        text_parts: list[dict[str, Any]],
         _base_start_pos: int,
         header: str,
         level: int,
@@ -432,14 +432,14 @@ class ChunkingService:
 
     def _apply_sliding_window(
         self,
-        chunks: List[Chunk],
-        metadata: Dict[str, Any],
-    ) -> List[Chunk]:
+        chunks: list[Chunk],
+        metadata: dict[str, Any],
+    ) -> list[Chunk]:
         if not chunks:
             return []
 
         half_window = self.window_size // 2
-        windowed_chunks: List[Chunk] = []
+        windowed_chunks: list[Chunk] = []
 
         for i, chunk in enumerate(chunks):
             start_idx = max(0, i - half_window)
@@ -473,9 +473,9 @@ class ChunkingService:
 
     def _truncate_window_chunks(
         self,
-        window_chunks: List[Chunk],
+        window_chunks: list[Chunk],
         target_chunk_index: int,
-    ) -> List[Chunk]:
+    ) -> list[Chunk]:
         """Center-priority window truncation."""
         if not window_chunks:
             return []
@@ -487,7 +487,7 @@ class ChunkingService:
         # If the target itself exceeds the limit, truncate it
         if len(target_text) >= self.max_window_length:
             truncated = _truncate_center(target_text, self.max_window_length)
-            update_fields: Dict[str, Any] = {
+            update_fields: dict[str, Any] = {
                 'token_count': self._count_tokens(truncated),
             }
             if target_chunk.embedding_text:
@@ -506,7 +506,7 @@ class ChunkingService:
         max_distance = max(target_chunk_index, len(window_chunks) - target_chunk_index - 1)
 
         for distance in range(1, max_distance + 1):
-            candidates: List[tuple[str, int]] = []
+            candidates: list[tuple[str, int]] = []
             left_index = target_chunk_index - distance
             right_index = target_chunk_index + distance
 

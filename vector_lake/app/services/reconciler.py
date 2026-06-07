@@ -11,15 +11,13 @@ Based on PRD §5.9 (两阶段一致性校验) and §5.12 (元数据可靠性与�
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Optional
 
 from app.config import Settings
 from app.services.entity_service import EntityService
@@ -29,7 +27,7 @@ from app.storage.local import LocalStorage
 logger = logging.getLogger(__name__)
 
 
-class DriftType(str, Enum):
+class DriftType(StrEnum):
     MISSING_REP = "missing_rep"           # Rep file expected but not found
     STALE_REP = "stale_rep"               # Rep content_hash doesn't match upstream
     EXTRA_FILE = "extra_file"             # Unexpected file in entity dir
@@ -55,7 +53,7 @@ class DriftRecord:
 class ReconcileResult:
     """Result of a single reconcile run."""
     started_at: datetime = field(default_factory=datetime.now)
-    finished_at: Optional[datetime] = None
+    finished_at: datetime | None = None
     entities_scanned: int = 0
     drifts_found: list[DriftRecord] = field(default_factory=list)
     drifts_repaired: int = 0
@@ -90,10 +88,10 @@ class ReconcilerService:
         self.pipeline = pipeline
         self.settings = settings
         self.root = Path(settings.storage.local.root)
-        self._last_result: Optional[ReconcileResult] = None
+        self._last_result: ReconcileResult | None = None
 
     @property
-    def last_result(self) -> Optional[ReconcileResult]:
+    def last_result(self) -> ReconcileResult | None:
         return self._last_result
 
     # ------------------------------------------------------------------
@@ -228,27 +226,22 @@ class ReconcilerService:
                             f"Error checking staleness for {entity_id}: {e}"
                         )
 
-            # Phase 2: Index consistency
+            # Phase 2: Index consistency — use entity_id column directly
             try:
                 import lancedb
                 lance_dir = self.settings.lance.data_dir
                 db = lancedb.connect(lance_dir)
                 table_name = f"{ws}_{col}_chunks"
-                if table_name in db.table_names():
+                if table_name in db.list_tables():
                     tbl = db.open_table(table_name)
-                    df = tbl.to_pandas()
-                    # Get all entity_ids that have chunks in the index
-                    indexed_entities = set()
-                    for _, row in df.iterrows():
-                        meta = row.get("metadata", {})
-                        if isinstance(meta, str):
-                            try:
-                                meta = json.loads(meta)
-                            except:
-                                meta = {}
-                        eid = meta.get("entity_id", row.get("entity_id", ""))
-                        if eid:
-                            indexed_entities.add(eid)
+                    # Get distinct entity_ids from the index using the dedicated column
+                    try:
+                        df = tbl.to_pandas(columns=["entity_id"], limit=100_000)
+                        indexed_entities = set(df["entity_id"].unique())
+                    except Exception:
+                        # Fallback: scan with limit
+                        df = tbl.to_pandas(limit=10_000)
+                        indexed_entities = set(df["entity_id"].unique())
 
                     # Check: entities with canonical_md but no index entries
                     for entity_dir in sorted(col_dir.iterdir()):

@@ -1,9 +1,9 @@
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
-from typing import Optional
-from enum import Enum
 
 
-class SearchType(str, Enum):
+class SearchType(StrEnum):
     SEMANTIC = "semantic"
     LEXICAL = "lexical"
     HYBRID = "hybrid"

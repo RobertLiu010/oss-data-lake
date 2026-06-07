@@ -1,5 +1,6 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
-from typing import Dict, Any
 
 
 class Chunk(BaseModel):
@@ -8,4 +9,4 @@ class Chunk(BaseModel):
     start_pos: int = Field(default=0)
     token_count: int = Field(default=0)
     chunk_chars: int = Field(default=0)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)

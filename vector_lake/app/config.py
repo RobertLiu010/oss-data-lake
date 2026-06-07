@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-
 
 # ---------------------------------------------------------------------------
 # Nested configuration models
@@ -51,11 +49,25 @@ class ChunkingConfig(BaseModel):
 
 class AuthConfig(BaseModel):
     enabled: bool = False
-    api_keys: Dict[str, str] = Field(default_factory=dict)
+    api_keys: dict[str, str] = Field(default_factory=dict)
 
 
 class VfsConfig(BaseModel):
     cache_ttl: float = 30.0
+
+
+class RateLimitConfig(BaseModel):
+    enabled: bool = True
+    default_limit: str = "60/minute"  # slowapi format
+
+
+class MetricsConfig(BaseModel):
+    enabled: bool = True
+    path: str = "/metrics"
+
+
+class CorsConfig(BaseModel):
+    origins: str = "*"  # comma-separated, or "*" for all
 
 
 # ---------------------------------------------------------------------------
@@ -70,11 +82,14 @@ class Settings(BaseSettings):
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     vfs: VfsConfig = Field(default_factory=VfsConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    cors: CorsConfig = Field(default_factory=CorsConfig)
 
     model_config = {"extra": "ignore"}
 
 
-def load_settings(config_path: Optional[str] = None) -> Settings:
+def load_settings(config_path: str | None = None) -> Settings:
     """Load settings from a YAML config file, falling back to defaults."""
     if config_path is None:
         # Look for config.yaml next to the project root
@@ -88,8 +103,8 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
                 break
 
     if config_path and Path(config_path).exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            data: Dict[str, Any] = yaml.safe_load(f) or {}
+        with open(config_path, encoding="utf-8") as f:
+            data: dict[str, Any] = yaml.safe_load(f) or {}
         return Settings(**data)
 
     return Settings()

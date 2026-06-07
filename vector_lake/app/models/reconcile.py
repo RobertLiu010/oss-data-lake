@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel, Field
-
 
 # --- Reconciler models ---
 
@@ -49,7 +46,7 @@ class WatchStrategyResponse(BaseModel):
     total_events: int = 0
     total_processed: int = 0
     total_errors: int = 0
-    last_scan_at: Optional[str] = None
+    last_scan_at: str | None = None
 
 
 class DeadLetterResponse(BaseModel):

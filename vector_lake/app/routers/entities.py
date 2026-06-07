@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
-from app.models.entity import Entity, EntityPatchRequest, EntityStatus, PipelineStatus
+from app.models.entity import Entity, EntityPatchRequest, PipelineStatus
 from app.security import validate_id
 
 router = APIRouter(

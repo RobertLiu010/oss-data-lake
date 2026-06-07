@@ -17,9 +17,8 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Optional
 
 from app.config import Settings
 from app.services.entity_service import EntityService
@@ -28,7 +27,7 @@ from app.storage.local import LocalStorage
 logger = logging.getLogger(__name__)
 
 
-class WatchStatus(str, Enum):
+class WatchStatus(StrEnum):
     INITIALIZING = "initializing"
     ACTIVE = "active"
     PAUSED = "paused"
@@ -36,7 +35,7 @@ class WatchStatus(str, Enum):
     STOPPED = "stopped"
 
 
-class FileEventType(str, Enum):
+class FileEventType(StrEnum):
     CREATED = "created"
     MODIFIED = "modified"
     DELETED = "deleted"
@@ -49,9 +48,9 @@ class FileEvent:
     file_path: Path
     file_name: str
     detected_at: datetime = field(default_factory=datetime.now)
-    entity_id: Optional[str] = None
+    entity_id: str | None = None
     processed: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
@@ -70,7 +69,7 @@ class WatchStrategy:
     scan_interval: int = 10           # seconds between scans (polling mode)
     status: WatchStatus = WatchStatus.INITIALIZING
     created_at: datetime = field(default_factory=datetime.now)
-    last_scan_at: Optional[datetime] = None
+    last_scan_at: datetime | None = None
     total_events: int = 0
     total_processed: int = 0
     total_errors: int = 0
@@ -476,7 +475,7 @@ class WatchService:
             strategy.watch_id, event.file_name,
         )
 
-    async def replay_dead_letter(self, entry_id: str) -> Optional[str]:
+    async def replay_dead_letter(self, entry_id: str) -> str | None:
         """Replay a dead letter entry."""
         with self._lock:
             for i, dl in enumerate(self._dead_letters):

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 
 class VfsLsRequest(BaseModel):
     path: str = "/"  # virtual path, e.g. "/" or "/pricing.pdf"
-    sort: Optional[str] = None  # "name" | "size" | "modified"
-    filter: Optional[str] = None  # simple substring filter on name
+    sort: str | None = None  # "name" | "size" | "modified"
+    filter: str | None = None  # simple substring filter on name
 
 
 class VfsEntry(BaseModel):
@@ -19,10 +17,10 @@ class VfsEntry(BaseModel):
     path: str  # virtual path
     type: str  # "file" | "dir"
     size: int = 0
-    entity_id: Optional[str] = None
-    rep_type: Optional[str] = None
-    entity_type: Optional[str] = None
-    status: Optional[str] = None
+    entity_id: str | None = None
+    rep_type: str | None = None
+    entity_type: str | None = None
+    status: str | None = None
 
 
 class VfsLsResponse(BaseModel):
@@ -34,13 +32,13 @@ class VfsStatResponse(BaseModel):
     path: str
     type: str  # "file" | "dir"
     size: int = 0
-    entity_id: Optional[str] = None
-    rep_type: Optional[str] = None
-    entity_type: Optional[str] = None
-    name: Optional[str] = None
-    status: Optional[str] = None
-    content_hash: Optional[str] = None
-    version: Optional[int] = None
+    entity_id: str | None = None
+    rep_type: str | None = None
+    entity_type: str | None = None
+    name: str | None = None
+    status: str | None = None
+    content_hash: str | None = None
+    version: int | None = None
     labels: list[str] = Field(default_factory=list)
 
 
@@ -66,10 +64,10 @@ class VfsGrepMatch(BaseModel):
     line_text: str
     context_before: list[str] = Field(default_factory=list)
     context_after: list[str] = Field(default_factory=list)
-    entity_id: Optional[str] = None
-    rep_type: Optional[str] = None
-    entity_type: Optional[str] = None
-    name: Optional[str] = None
+    entity_id: str | None = None
+    rep_type: str | None = None
+    entity_type: str | None = None
+    name: str | None = None
 
 
 class VfsGrepResponse(BaseModel):
@@ -82,8 +80,8 @@ class VfsReadResponse(BaseModel):
     path: str
     content: str
     size: int
-    entity_id: Optional[str] = None
-    rep_type: Optional[str] = None
+    entity_id: str | None = None
+    rep_type: str | None = None
 
 
 class CacheInvalidateResponse(BaseModel):

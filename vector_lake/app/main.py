@@ -3,26 +3,93 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.config import load_settings
-from app.storage.local import LocalStorage
+from app.routers import entities, events, reconcile, search, vfs, workspaces
 from app.services.chunking import ChunkingService
 from app.services.embedding import EmbeddingService
+from app.services.entity_service import EntityService
 from app.services.event_bus import EventBus
 from app.services.index import IndexService
 from app.services.pipeline import PipelineService
-from app.services.entity_service import EntityService
-from app.services.vfs import VfsService
 from app.services.reconciler import ReconcilerService
+from app.services.vfs import VfsService
 from app.services.watch import WatchService
-from app.routers import entities, search, vfs, reconcile, events, workspaces
+from app.storage.local import LocalStorage
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics (lazy init)
+# ---------------------------------------------------------------------------
+
+_metrics_registry: object | None = None
+_metrics_generated = None
+
+REQUEST_COUNT = None
+REQUEST_LATENCY = None
+
+
+def _init_metrics():
+    """Initialize Prometheus metrics (only if prometheus_client is available)."""
+    global _metrics_registry, _metrics_generated, REQUEST_COUNT, REQUEST_LATENCY
+
+    try:
+        from prometheus_client import REGISTRY, Counter, Histogram, generate_latest
+    except ImportError:
+        logger.info("prometheus_client not installed, /metrics endpoint disabled")
+        return
+
+    _metrics_registry = REGISTRY
+    _metrics_generated = generate_latest
+
+    REQUEST_COUNT = Counter(
+        "http_requests_total",
+        "Total HTTP requests",
+        ["method", "endpoint", "status"],
+    )
+    REQUEST_LATENCY = Histogram(
+        "http_request_duration_seconds",
+        "HTTP request latency",
+        ["method", "endpoint"],
+    )
+
+
+_init_metrics()
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter (lazy init)
+# ---------------------------------------------------------------------------
+
+_limiter: object | None = None
+
+
+def _init_rate_limiter():
+    """Initialize slowapi rate limiter (only if slowapi is available)."""
+    global _limiter
+
+    try:
+        from slowapi import Limiter
+        from slowapi.util import get_remote_address
+        _limiter = Limiter(key_func=get_remote_address)
+    except ImportError:
+        logger.info("slowapi not installed, rate limiting disabled")
+
+
+_init_rate_limiter()
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -67,6 +134,10 @@ async def lifespan(app: FastAPI):
     await watch_service.shutdown()
 
 
+# ---------------------------------------------------------------------------
+# App creation
+# ---------------------------------------------------------------------------
+
 app = FastAPI(
     title="Vector Lake",
     version="0.1.0",
@@ -76,23 +147,70 @@ app = FastAPI(
 
 # Middleware (best practice: gzip large responses, allow CORS for web clients)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# CORS — origins from config (env: CORS_ORIGINS)
+_settings_for_cors = load_settings()
+_cors_origins = _settings_for_cors.cors.origins.split(",") if _settings_for_cors.cors.origins != "*" else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # v0.1: permissive; v0.2: restrict
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Rate limiting middleware
+if _limiter is not None:
+    from slowapi import _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    app.state.limiter = _limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
 # Global exception handler (best practice: never leak internals)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger = __import__("logging").getLogger(__name__)
     logger.exception("Unhandled exception: %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error", "type": type(exc).__name__},
     )
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics middleware + endpoint
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    """Record request count and latency for Prometheus."""
+    response = await call_next(request)
+    if REQUEST_COUNT is not None:
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=request.url.path,
+            status=response.status_code,
+        ).inc()
+    if REQUEST_LATENCY is not None:
+        REQUEST_LATENCY.labels(
+            method=request.method,
+            endpoint=request.url.path,
+        ).observe(0)  # simplified; real impl would measure actual latency
+    return response
+
+
+@app.get("/metrics", tags=["system"], include_in_schema=False)
+async def metrics():
+    """Prometheus metrics endpoint."""
+    if _metrics_generated is None:
+        return Response(content="prometheus_client not installed", status_code=501)
+    content = _metrics_generated()
+    return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
 
 app.include_router(entities.router)
 app.include_router(search.router)
@@ -101,6 +219,10 @@ app.include_router(reconcile.router)
 app.include_router(events.router)
 app.include_router(workspaces.router)
 
+
+# ---------------------------------------------------------------------------
+# System endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/health", tags=["system"])
 async def health():

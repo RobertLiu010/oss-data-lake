@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import lancedb
 import pyarrow as pa
@@ -36,7 +36,7 @@ class IndexService:
         workspace_id: str,
         collection_id: str,
         entity_id: str,
-        chunks_with_vectors: List[Dict[str, Any]],
+        chunks_with_vectors: list[dict[str, Any]],
     ) -> int:
         """Insert/update chunks into LanceDB table.
 
@@ -46,11 +46,11 @@ class IndexService:
         table_name = self._table_name(workspace_id, collection_id)
 
         # Build Arrow table data
-        entity_ids: List[str] = []
-        chunk_indices: List[int] = []
-        texts: List[str] = []
-        embeddings: List[List[float]] = []
-        metadata_json: List[str] = []
+        entity_ids: list[str] = []
+        chunk_indices: list[int] = []
+        texts: list[str] = []
+        embeddings: list[list[float]] = []
+        metadata_json: list[str] = []
 
         for item in chunks_with_vectors:
             entity_ids.append(entity_id)
@@ -76,14 +76,14 @@ class IndexService:
         }, schema=schema)
 
         def _upsert() -> int:
-            existing_tables = self.db.table_names()
+            existing_tables = self.db.list_tables()
             if table_name in existing_tables:
                 table = self.db.open_table(table_name)
                 # Delete old chunks for this entity before adding new ones
                 table.delete(f'entity_id = "{entity_id}"')
                 table.add(new_data)
             else:
-                self.db.create_table(table_name, new_data)
+                table = self.db.create_table(table_name, new_data)
                 # Best practice: create FTS index immediately for hybrid search support
                 try:
                     table.create_fts_index("text", replace=True)
@@ -107,24 +107,24 @@ class IndexService:
         self,
         workspace_id: str,
         collection_id: str,
-        query_vector: List[float],
+        query_vector: list[float],
         top_k: int = 5,
-    ) -> List[SearchResult]:
+    ) -> list[SearchResult]:
         """Search by vector, return top_k results."""
         table_name = self._table_name(workspace_id, collection_id)
 
-        existing_tables = self.db.table_names()
+        existing_tables = self.db.list_tables()
         if table_name not in existing_tables:
             return []
 
-        def _search() -> List[SearchResult]:
+        def _search() -> list[SearchResult]:
             table = self.db.open_table(table_name)
             results = (
                 table.search(query_vector)
                 .limit(top_k)
                 .to_list()
             )
-            out: List[SearchResult] = []
+            out: list[SearchResult] = []
             for row in results:
                 meta = {}
                 raw_meta = row.get("metadata")
@@ -158,15 +158,15 @@ class IndexService:
         collection_id: str,
         query: str,
         top_k: int = 5,
-    ) -> List[SearchResult]:
+    ) -> list[SearchResult]:
         """Search by text matching on the `text` column."""
         table_name = self._table_name(workspace_id, collection_id)
 
-        existing_tables = self.db.table_names()
+        existing_tables = self.db.list_tables()
         if table_name not in existing_tables:
             return []
 
-        def _search() -> List[SearchResult]:
+        def _search() -> list[SearchResult]:
             table = self.db.open_table(table_name)
             # Use LanceDB's native full-text search (best practice: avoid materializing)
             try:
@@ -188,7 +188,7 @@ class IndexService:
                         .to_dict(orient="records")
                     )
 
-            out: List[SearchResult] = []
+            out: list[SearchResult] = []
             for rank, row in enumerate(results):
                 meta = {}
                 raw_meta = row.get("metadata")
@@ -221,12 +221,12 @@ class IndexService:
         workspace_id: str,
         collection_id: str,
         query: str,
-        query_vector: List[float],
+        query_vector: list[float],
         top_k: int = 5,
         rrf_k: int = 60,
         semantic_weight: float = 0.7,
         lexical_weight: float = 0.3,
-    ) -> List[SearchResult]:
+    ) -> list[SearchResult]:
         """Hybrid search using Reciprocal Rank Fusion (RRF).
 
         1. Run both semantic and lexical search with expanded top_k.
@@ -243,8 +243,8 @@ class IndexService:
         )
 
         # Compute RRF scores and merge
-        merged: Dict[tuple, float] = {}  # (entity_id, chunk_index) -> combined score
-        data_map: Dict[tuple, SearchResult] = {}  # keep the SearchResult for key
+        merged: dict[tuple, float] = {}  # (entity_id, chunk_index) -> combined score
+        data_map: dict[tuple, SearchResult] = {}  # keep the SearchResult for key
 
         for rank, result in enumerate(semantic_results):
             key = (result.entity_id, result.chunk_index)
@@ -263,7 +263,7 @@ class IndexService:
         # Sort by combined RRF score descending
         sorted_keys = sorted(merged.keys(), key=lambda k: merged[k], reverse=True)[:top_k]
 
-        out: List[SearchResult] = []
+        out: list[SearchResult] = []
         for key in sorted_keys:
             result = data_map[key]
             out.append(SearchResult(

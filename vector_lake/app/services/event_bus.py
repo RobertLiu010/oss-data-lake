@@ -1,17 +1,17 @@
 """Simple async event bus for pipeline notifications."""
 from __future__ import annotations
+
 import asyncio
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, Callable, Coroutine
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     ENTITY_CREATED = "entity_created"
     REP_COMPLETED = "rep_completed"
     REP_FAILED = "rep_failed"

@@ -15,7 +15,6 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from app.config import Settings
 
@@ -84,7 +83,7 @@ class LocalStorage:
         collection_id: str,
         entity_id: str,
         rep_type: str,
-    ) -> Optional[bytes]:
+    ) -> bytes | None:
         """Read bytes from the stored file, or None if not found."""
         file_path = self._entity_dir(workspace_id, collection_id, entity_id) / rep_type
         if file_path.exists():
@@ -233,7 +232,7 @@ class LocalStorage:
         workspace_id: str,
         collection_id: str,
         entity_id: str,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Read .entity_manifest.json sidecar."""
         manifest_path = self._entity_dir(workspace_id, collection_id, entity_id) / ".entity_manifest.json"
         if manifest_path.exists():
@@ -283,7 +282,7 @@ class LocalStorage:
         workspace_id: str,
         collection_id: str,
         entity_id: str,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Assemble Entity attributes from manifest (source of truth) or xattr (fallback cache).
 
         Read order: manifest first (authoritative), xattr tags only if manifest missing.

@@ -9,12 +9,10 @@ Provides: ls, stat, read, glob, grep.
 from __future__ import annotations
 
 import fnmatch
-import json
 import logging
 import re
 import time
 from pathlib import Path
-from typing import Optional
 
 from app.config import Settings
 from app.models.vfs import (
@@ -59,7 +57,7 @@ class VfsService:
     def _col_dir(self, ws: str, col: str) -> Path:
         return self.root / ws / col
 
-    def _load_entity_meta(self, entity_dir: Path, ws: str, col: str) -> Optional[dict]:
+    def _load_entity_meta(self, entity_dir: Path, ws: str, col: str) -> dict | None:
         """Load entity meta from OSS Tag + manifest (PRD §4.1)."""
         entity_id = entity_dir.name
         data = self.storage.assemble_entity(ws, col, entity_id)
@@ -67,15 +65,15 @@ class VfsService:
             return data
         return None
 
-    def _entity_name(self, meta: Optional[dict], entity_id: str) -> str:
+    def _entity_name(self, meta: dict | None, entity_id: str) -> str:
         if meta and meta.get("name"):
             return meta["name"]
         return entity_id
 
-    def _rep_to_virtual_name(self, rep_type: str) -> Optional[str]:
+    def _rep_to_virtual_name(self, rep_type: str) -> str | None:
         return REP_TYPE_MAP.get(rep_type, rep_type)
 
-    def _virtual_name_to_rep(self, vname: str) -> Optional[str]:
+    def _virtual_name_to_rep(self, vname: str) -> str | None:
         if vname in VIRTUAL_NAME_TO_REP:
             return VIRTUAL_NAME_TO_REP[vname]
         # fallback: treat virtual name as rep_type directly
@@ -207,7 +205,7 @@ class VfsService:
                 ))
         return entries
 
-    def stat(self, ws: str, col: str, path: str) -> Optional[VfsStatResponse]:
+    def stat(self, ws: str, col: str, path: str) -> VfsStatResponse | None:
         """Get metadata for a virtual path."""
         tree = self._get_tree_cached(ws, col)
         path = path.rstrip("/") or "/"
@@ -233,7 +231,7 @@ class VfsService:
             labels=meta.get("labels", []),
         )
 
-    def read(self, ws: str, col: str, path: str) -> Optional[tuple[str, str, str]]:
+    def read(self, ws: str, col: str, path: str) -> tuple[str, str, str] | None:
         """Read file content at virtual path.
 
         Returns (content, entity_id, rep_type) or None.

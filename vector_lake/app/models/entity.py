@@ -1,15 +1,15 @@
-from pydantic import BaseModel, Field
 from datetime import datetime
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
+
+from pydantic import BaseModel, Field
 
 
-class SourceType(str, Enum):
+class SourceType(StrEnum):
     OSS = "oss"
     URL = "url"
 
 
-class EntityStatus(str, Enum):
+class EntityStatus(StrEnum):
     ENABLED = "enabled"
     HIDDEN = "hidden"
     DELETED = "deleted"
@@ -60,5 +60,5 @@ class PipelineStatus(BaseModel):
 
 class EntityPatchRequest(BaseModel):
     """Request body for updating entity status/labels."""
-    status: Optional[EntityStatus] = None
-    labels: Optional[list[str]] = None
+    status: EntityStatus | None = None
+    labels: list[str] | None = None

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import struct
 import os
-from typing import List
+import struct
 
 import httpx
 
@@ -40,7 +39,7 @@ class EmbeddingService:
     # Mock helper – deterministic pseudo-random vector from text hash
     # ------------------------------------------------------------------
 
-    def _mock_vector(self, text: str) -> List[float]:
+    def _mock_vector(self, text: str) -> list[float]:
         """Generate a deterministic unit vector from text for testing."""
         h = hashlib.sha256(text.encode()).digest()
         vals = []
@@ -59,12 +58,12 @@ class EmbeddingService:
             vec = [v / norm for v in vec]
         return vec
 
-    async def _embed(self, texts: List[str], task: str) -> List[List[float]]:
+    async def _embed(self, texts: list[str], task: str) -> list[list[float]]:
         """Call POST /v1/embeddings and return embedding vectors."""
         if self._mock:
             return [self._mock_vector(t) for t in texts]
 
-        all_vectors: List[List[float]] = []
+        all_vectors: list[list[float]] = []
 
         for offset in range(0, len(texts), self.batch_size):
             batch = texts[offset:offset + self.batch_size]
@@ -88,14 +87,14 @@ class EmbeddingService:
 
         return all_vectors
 
-    async def embed_passages(self, texts: List[str]) -> List[List[float]]:
+    async def embed_passages(self, texts: list[str]) -> list[list[float]]:
         """Embed documents with task=retrieval.passage."""
         if not texts:
             return []
         logger.info("Embedding %d passages", len(texts))
         return await self._embed(texts, self.task_passage)
 
-    async def embed_query(self, text: str) -> List[float]:
+    async def embed_query(self, text: str) -> list[float]:
         """Embed query with task=retrieval.query."""
         logger.info("Embedding query: %s", text[:80])
         vectors = await self._embed([text], self.task_query)

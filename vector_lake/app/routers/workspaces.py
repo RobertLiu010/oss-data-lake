@@ -1,9 +1,11 @@
 """Workspace and Collection management router."""
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Request
+
 from pathlib import Path
 
-from app.models.workspace import WorkspaceCreate, WorkspaceResponse, CollectionCreate, CollectionResponse
+from fastapi import APIRouter, HTTPException, Request
+
+from app.models.workspace import CollectionCreate, CollectionResponse, WorkspaceCreate, WorkspaceResponse
 from app.security import validate_id, validate_path_under_root
 
 router = APIRouter(prefix="/api/v1", tags=["workspaces"])

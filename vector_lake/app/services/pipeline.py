@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from app.config import Settings
 from app.models.chunk import Chunk
 from app.services.chunking import ChunkingService
 from app.services.embedding import EmbeddingService
-from app.services.event_bus import EventBus, Event, EventType
+from app.services.event_bus import Event, EventBus, EventType
 from app.services.index import IndexService
 from app.storage.local import LocalStorage
 
@@ -42,7 +41,7 @@ class PipelineService:
         collection_id: str,
         entity_id: str,
         md_content: str,
-    ) -> List[Chunk]:
+    ) -> list[Chunk]:
         """Full pipeline: MD → canonical_md → chunk → embed → index.
 
         Returns the list of chunks (with embeddings applied).
@@ -75,7 +74,7 @@ class PipelineService:
         )
 
         # 3. Chunk the canonical_md
-        metadata: Dict[str, Any] = {
+        metadata: dict[str, Any] = {
             "entity_id": entity_id,
             "workspace_id": workspace_id,
             "collection_id": collection_id,
@@ -107,7 +106,7 @@ class PipelineService:
             return chunks
 
         # 5. Upsert to LanceDB
-        chunks_with_vectors: List[Dict[str, Any]] = []
+        chunks_with_vectors: list[dict[str, Any]] = []
         for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
             chunks_with_vectors.append({
                 "chunk_index": idx,

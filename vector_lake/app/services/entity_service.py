@@ -16,7 +16,6 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from fastapi import UploadFile
 
@@ -58,7 +57,7 @@ class EntityService:
         workspace_id: str,
         collection_id: str,
         entity_id: str,
-    ) -> Optional[Entity]:
+    ) -> Entity | None:
         """Assemble Entity from manifest (source of truth) or xattr (fallback)."""
         data = self.storage.assemble_entity(workspace_id, collection_id, entity_id)
         if data is None:
@@ -230,7 +229,7 @@ class EntityService:
         workspace_id: str,
         collection_id: str,
         entity_id: str,
-    ) -> Optional[Entity]:
+    ) -> Entity | None:
         """Get entity by ID — assembled from OSS Tag + path."""
         return self._assemble_entity(workspace_id, collection_id, entity_id)
 
@@ -242,7 +241,7 @@ class EntityService:
         self,
         workspace_id: str,
         collection_id: str,
-        status_filter: Optional[str] = None,
+        status_filter: str | None = None,
     ) -> list[Entity]:
         """List all entities, optionally filtered by rag_status."""
         cache_key = f"{workspace_id}/{collection_id}/{status_filter or ''}"
@@ -272,7 +271,7 @@ class EntityService:
         workspace_id: str,
         collection_id: str,
         entity_id: str,
-    ) -> Optional[PipelineStatus]:
+    ) -> PipelineStatus | None:
         """Get the pipeline processing status for an entity."""
         entity = await self.get_entity(workspace_id, collection_id, entity_id)
         if entity is None:
@@ -323,7 +322,7 @@ class EntityService:
         else:
             pipeline_stage = "pending"
 
-        # Check index
+        # Check index — use entity_id column directly (no full-table scan)
         indexed = False
         chunk_count = 0
         try:
@@ -331,17 +330,23 @@ class EntityService:
             lance_dir = self.settings.lance.data_dir
             db = lancedb.connect(lance_dir)
             table_name = f"{workspace_id}_{collection_id}_chunks"
-            if table_name in db.table_names():
+            if table_name in db.list_tables():
                 tbl = db.open_table(table_name)
 
-                def _read_chunks():
-                    df = tbl.to_pandas()
-                    entity_chunks = df[df["metadata"].apply(
-                        lambda m: m.get("entity_id") == entity_id if isinstance(m, dict) else False
-                    )]
-                    return len(entity_chunks)
+                def _count_chunks() -> int:
+                    # Use LanceDB filter on entity_id column (indexed) instead of
+                    # materializing the full table and parsing JSON metadata.
+                    try:
+                        filtered = tbl.search().where(
+                            f'entity_id = "{entity_id}"'
+                        ).limit(10_000).to_list()
+                        return len(filtered)
+                    except Exception:
+                        # Fallback: scan with limit
+                        df = tbl.to_pandas(limit=10_000)
+                        return len(df[df["entity_id"] == entity_id])
 
-                chunk_count = await asyncio.get_event_loop().run_in_executor(None, _read_chunks)
+                chunk_count = await asyncio.get_event_loop().run_in_executor(None, _count_chunks)
                 indexed = chunk_count > 0
         except Exception:
             pass
@@ -364,9 +369,9 @@ class EntityService:
         workspace_id: str,
         collection_id: str,
         entity_id: str,
-        status: Optional[EntityStatus] = None,
-        labels: Optional[list[str]] = None,
-    ) -> Optional[Entity]:
+        status: EntityStatus | None = None,
+        labels: list[str] | None = None,
+    ) -> Entity | None:
         """Update entity status/labels — writes to OSS Tag + manifest."""
         entity = await self.get_entity(workspace_id, collection_id, entity_id)
         if entity is None:
@@ -417,9 +422,11 @@ class EntityService:
                 lance_dir = self.settings.lance.data_dir
                 db = lancedb.connect(lance_dir)
                 table_name = f"{workspace_id}_{collection_id}_chunks"
-                if table_name in db.table_names():
+                if table_name in db.list_tables():
                     tbl = db.open_table(table_name)
-                    tbl.delete(f"metadata.entity_id = '{entity_id}'")
+                    # Use parameterized filter to avoid injection
+                    safe_id = entity_id.replace('"', '').replace("'", "")
+                    tbl.delete(f'entity_id = "{safe_id}"')
                     logger.info("Hard deleted entity %s: removed from index", entity_id)
             except Exception as e:
                 logger.warning("Failed to remove entity %s from index: %s", entity_id, e)
