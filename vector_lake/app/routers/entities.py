@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request
 
 from app.models.entity import Entity, EntityPatchRequest, EntityStatus, PipelineStatus
+from app.security import validate_id
 
 router = APIRouter(
     prefix="/api/v1/workspaces/{ws}/collections/{col}/entities",
@@ -24,6 +25,11 @@ async def create_entity(
     request: Request = None,
 ):
     """Upload a file and create an entity. Only .md supported in v0.1 MVP."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_entity_service(request)
     try:
         entity = await svc.create_from_file(ws, col, file)
@@ -42,6 +48,11 @@ async def list_entities(
     request: Request = None,
 ):
     """List all entities, optionally filtered by status."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_entity_service(request)
     entities = await svc.list_entities(ws, col, status_filter=status)
     return entities
@@ -50,6 +61,12 @@ async def list_entities(
 @router.get("/{entity_id}", response_model=Entity)
 async def get_entity(ws: str, col: str, entity_id: str, request: Request):
     """Get entity details."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+        validate_id(entity_id, "entity_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_entity_service(request)
     entity = await svc.get_entity(ws, col, entity_id)
     if entity is None:
@@ -60,6 +77,12 @@ async def get_entity(ws: str, col: str, entity_id: str, request: Request):
 @router.get("/{entity_id}/status", response_model=PipelineStatus)
 async def get_entity_status(ws: str, col: str, entity_id: str, request: Request):
     """Get entity pipeline processing status — reps, chunks, index."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+        validate_id(entity_id, "entity_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_entity_service(request)
     status = await svc.get_pipeline_status(ws, col, entity_id)
     if status is None:
@@ -76,6 +99,12 @@ async def patch_entity(
     request: Request,
 ):
     """Update entity status (enabled/hidden/deleted) and/or labels."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+        validate_id(entity_id, "entity_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_entity_service(request)
     entity = await svc.patch_entity(
         ws, col, entity_id,
@@ -96,6 +125,12 @@ async def delete_entity(
     request: Request = None,
 ):
     """Delete an entity. Soft delete by default (status=deleted), hard delete with ?hard=true."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+        validate_id(entity_id, "entity_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_entity_service(request)
     success = await svc.delete_entity(ws, col, entity_id, hard=hard)
     if not success:

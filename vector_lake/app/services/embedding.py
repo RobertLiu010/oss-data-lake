@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import struct
 import os
 from typing import List
 
@@ -29,6 +30,11 @@ class EmbeddingService:
         self.task_query = settings.embedding.task_query
         self.batch_size = settings.embedding.batch_size
         self._mock = os.environ.get("EMBEDDING_MOCK", "").strip() == "1"
+        self._client = httpx.AsyncClient(timeout=300.0)
+
+    async def close(self) -> None:
+        """Close the underlying httpx client."""
+        await self._client.aclose()
 
     # ------------------------------------------------------------------
     # Mock helper – deterministic pseudo-random vector from text hash
@@ -37,7 +43,6 @@ class EmbeddingService:
     def _mock_vector(self, text: str) -> List[float]:
         """Generate a deterministic unit vector from text for testing."""
         h = hashlib.sha256(text.encode()).digest()
-        import struct
         vals = []
         for i in range(0, min(len(h) * 2, self.dimension * 4), 4):
             chunk = h[i % len(h): i % len(h) + 4]
@@ -61,26 +66,25 @@ class EmbeddingService:
 
         all_vectors: List[List[float]] = []
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            for offset in range(0, len(texts), self.batch_size):
-                batch = texts[offset:offset + self.batch_size]
-                payload = {
-                    "model": self.model,
-                    "task": task,
-                    "input": batch,
-                    "dimensions": self.dimension,
-                }
-                resp = await client.post(
-                    f"{self.base_url}/v1/embeddings",
-                    json=payload,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        for offset in range(0, len(texts), self.batch_size):
+            batch = texts[offset:offset + self.batch_size]
+            payload = {
+                "model": self.model,
+                "task": task,
+                "input": batch,
+                "dimensions": self.dimension,
+            }
+            resp = await self._client.post(
+                f"{self.base_url}/v1/embeddings",
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                # Sort by index to guarantee order
-                sorted_data = sorted(data["data"], key=lambda d: d["index"])
-                for item in sorted_data:
-                    all_vectors.append(item["embedding"])
+            # Sort by index to guarantee order
+            sorted_data = sorted(data["data"], key=lambda d: d["index"])
+            for item in sorted_data:
+                all_vectors.append(item["embedding"])
 
         return all_vectors
 

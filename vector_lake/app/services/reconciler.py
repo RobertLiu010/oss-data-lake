@@ -229,12 +229,43 @@ class ReconcilerService:
                         )
 
             # Phase 2: Index consistency
-            # Check if entities with canonical_md have LanceDB index entries
             try:
-                from app.services.index import IndexService
-                # We'll check via the index service if available
-            except ImportError:
-                pass
+                import lancedb
+                lance_dir = self.settings.lance.data_dir
+                db = lancedb.connect(lance_dir)
+                table_name = f"{ws}_{col}_chunks"
+                if table_name in db.table_names():
+                    tbl = db.open_table(table_name)
+                    df = tbl.to_pandas()
+                    # Get all entity_ids that have chunks in the index
+                    indexed_entities = set()
+                    for _, row in df.iterrows():
+                        meta = row.get("metadata", {})
+                        if isinstance(meta, str):
+                            try:
+                                meta = json.loads(meta)
+                            except:
+                                meta = {}
+                        eid = meta.get("entity_id", row.get("entity_id", ""))
+                        if eid:
+                            indexed_entities.add(eid)
+
+                    # Check: entities with canonical_md but no index entries
+                    for entity_dir in sorted(col_dir.iterdir()):
+                        if not entity_dir.is_dir():
+                            continue
+                        entity_id = entity_dir.name
+                        has_canonical = (entity_dir / "canonical_md").exists()
+                        if has_canonical and entity_id not in indexed_entities:
+                            result.drifts_found.append(DriftRecord(
+                                entity_id=entity_id,
+                                workspace_id=ws,
+                                collection_id=col,
+                                drift_type=DriftType.MISSING_INDEX,
+                                detail="Entity has canonical_md but no LanceDB index entries",
+                            ))
+            except Exception as e:
+                result.errors.append(f"Phase 2 index check failed: {e}")
 
             # Auto-repair: rebuild stale/missing Reps
             for drift in result.drifts_found:
@@ -246,6 +277,14 @@ class ReconcilerService:
                         drift.repaired = True
                         drift.repair_detail = "Pipeline re-executed"
                         result.drifts_repaired += 1
+
+                        # After successful repair, update manifest
+                        manifest = self.storage.read_entity_manifest(ws, col, drift.entity_id)
+                        if manifest:
+                            manifest["updated_at"] = str(datetime.now())
+                            manifest["version"] = manifest.get("version", 1) + 1
+                            self.storage.save_entity_manifest(ws, col, drift.entity_id, manifest)
+                            self.storage.sync_tags_from_manifest(ws, col, drift.entity_id)
                     except Exception as e:
                         drift.repair_detail = f"Repair failed: {e}"
                         result.errors.append(

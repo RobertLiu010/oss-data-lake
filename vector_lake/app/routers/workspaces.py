@@ -1,33 +1,12 @@
 """Workspace and Collection management router."""
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
-from typing import Optional
 from pathlib import Path
 
+from app.models.workspace import WorkspaceCreate, WorkspaceResponse, CollectionCreate, CollectionResponse
+from app.security import validate_id, validate_path_under_root
+
 router = APIRouter(prefix="/api/v1", tags=["workspaces"])
-
-class WorkspaceCreate(BaseModel):
-    workspace_id: str
-    name: str = ""
-    description: str = ""
-
-class WorkspaceResponse(BaseModel):
-    workspace_id: str
-    name: str
-    description: str
-    collections_count: int = 0
-
-class CollectionCreate(BaseModel):
-    collection_id: str
-    name: str = ""
-    description: str = ""
-
-class CollectionResponse(BaseModel):
-    collection_id: str
-    name: str
-    description: str
-    entity_count: int = 0
 
 # Workspace endpoints
 @router.get("/workspaces", response_model=list[WorkspaceResponse])
@@ -52,9 +31,14 @@ async def list_workspaces(request: Request):
 @router.post("/workspaces", status_code=201, response_model=WorkspaceResponse)
 async def create_workspace(req: WorkspaceCreate, request: Request):
     """Create a new workspace."""
+    try:
+        validate_id(req.workspace_id, "workspace_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     settings = request.app.state.settings
     root = Path(settings.storage.local.root)
     ws_dir = root / req.workspace_id
+    validate_path_under_root(ws_dir, root)
     if ws_dir.exists():
         raise HTTPException(status_code=409, detail=f"Workspace {req.workspace_id} already exists")
     ws_dir.mkdir(parents=True, exist_ok=True)
@@ -66,9 +50,14 @@ async def create_workspace(req: WorkspaceCreate, request: Request):
 
 @router.get("/workspaces/{ws}", response_model=WorkspaceResponse)
 async def get_workspace(ws: str, request: Request):
+    try:
+        validate_id(ws, "ws")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     settings = request.app.state.settings
     root = Path(settings.storage.local.root)
     ws_dir = root / ws
+    validate_path_under_root(ws_dir, root)
     if not ws_dir.exists():
         raise HTTPException(status_code=404, detail="Workspace not found")
     cols_count = len([d for d in ws_dir.iterdir() if d.is_dir()])
@@ -76,11 +65,30 @@ async def get_workspace(ws: str, request: Request):
 
 @router.delete("/workspaces/{ws}")
 async def delete_workspace(ws: str, request: Request):
+    try:
+        validate_id(ws, "ws")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     settings = request.app.state.settings
     root = Path(settings.storage.local.root)
     ws_dir = root / ws
+    validate_path_under_root(ws_dir, root)
     if not ws_dir.exists():
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Check for active watch strategies referencing this workspace
+    watch_service = request.app.state.watch_service
+    active_watches = [
+        s for s in watch_service.watches.values()
+        if s.workspace_id == ws
+    ]
+    if active_watches:
+        watch_ids = [s.watch_id for s in active_watches]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete workspace: active watch strategies reference it: {watch_ids}",
+        )
+
     import shutil
     shutil.rmtree(ws_dir)
     return {"workspace_id": ws, "deleted": True}
@@ -88,9 +96,14 @@ async def delete_workspace(ws: str, request: Request):
 # Collection endpoints
 @router.get("/workspaces/{ws}/collections", response_model=list[CollectionResponse])
 async def list_collections(ws: str, request: Request):
+    try:
+        validate_id(ws, "ws")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     settings = request.app.state.settings
     root = Path(settings.storage.local.root)
     ws_dir = root / ws
+    validate_path_under_root(ws_dir, root)
     if not ws_dir.exists():
         return []
     results = []
@@ -107,9 +120,15 @@ async def list_collections(ws: str, request: Request):
 
 @router.post("/workspaces/{ws}/collections", status_code=201, response_model=CollectionResponse)
 async def create_collection(ws: str, req: CollectionCreate, request: Request):
+    try:
+        validate_id(ws, "ws")
+        validate_id(req.collection_id, "collection_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     settings = request.app.state.settings
     root = Path(settings.storage.local.root)
     col_dir = root / ws / req.collection_id
+    validate_path_under_root(col_dir, root)
     if col_dir.exists():
         raise HTTPException(status_code=409, detail=f"Collection {req.collection_id} already exists")
     col_dir.mkdir(parents=True, exist_ok=True)
@@ -121,11 +140,31 @@ async def create_collection(ws: str, req: CollectionCreate, request: Request):
 
 @router.delete("/workspaces/{ws}/collections/{col}")
 async def delete_collection(ws: str, col: str, request: Request):
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     settings = request.app.state.settings
     root = Path(settings.storage.local.root)
     col_dir = root / ws / col
+    validate_path_under_root(col_dir, root)
     if not col_dir.exists():
         raise HTTPException(status_code=404, detail="Collection not found")
+
+    # Check for active watch strategies referencing this collection
+    watch_service = request.app.state.watch_service
+    active_watches = [
+        s for s in watch_service.watches.values()
+        if s.workspace_id == ws and s.collection_id == col
+    ]
+    if active_watches:
+        watch_ids = [s.watch_id for s in active_watches]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete collection: active watch strategies reference it: {watch_ids}",
+        )
+
     import shutil
     shutil.rmtree(col_dir)
     return {"workspace_id": ws, "collection_id": col, "deleted": True}

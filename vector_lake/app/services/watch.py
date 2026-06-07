@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -104,6 +105,9 @@ class WatchService:
         self.settings = settings
         self.root = Path(settings.storage.local.root)
 
+        # Thread safety lock for shared state
+        self._lock = threading.Lock()
+
         # Active watch strategies
         self._watches: dict[str, WatchStrategy] = {}
         # File hash cache: {watch_id: {file_path: sha256_hash}}
@@ -123,16 +127,18 @@ class WatchService:
 
     def create_watch(self, strategy: WatchStrategy) -> WatchStrategy:
         """Register a new watch strategy."""
-        if strategy.watch_id in self._watches:
-            raise ValueError(f"Watch {strategy.watch_id} already exists")
+        with self._lock:
+            if strategy.watch_id in self._watches:
+                raise ValueError(f"Watch {strategy.watch_id} already exists")
 
         # Verify watch directory exists
         watch_path = Path(strategy.watch_dir)
         if not watch_path.exists():
             watch_path.mkdir(parents=True, exist_ok=True)
 
-        self._watches[strategy.watch_id] = strategy
-        self._file_hashes[strategy.watch_id] = {}
+        with self._lock:
+            self._watches[strategy.watch_id] = strategy
+            self._file_hashes[strategy.watch_id] = {}
         logger.info("Created watch strategy %s for dir=%s", strategy.watch_id, strategy.watch_dir)
         return strategy
 
@@ -190,9 +196,10 @@ class WatchService:
             self._tasks[watch_id].cancel()
             del self._tasks[watch_id]
 
-        self._watches[watch_id].status = WatchStatus.STOPPED
-        del self._watches[watch_id]
-        self._file_hashes.pop(watch_id, None)
+        with self._lock:
+            self._watches[watch_id].status = WatchStatus.STOPPED
+            del self._watches[watch_id]
+            self._file_hashes.pop(watch_id, None)
         logger.info("Stopped watch %s", watch_id)
 
     async def _poll_loop(self, watch_id: str) -> None:
@@ -376,7 +383,8 @@ class WatchService:
                     ))
 
         # Update hash cache
-        self._file_hashes[watch_id] = curr_hashes
+        with self._lock:
+            self._file_hashes[watch_id] = curr_hashes
         strategy.last_scan_at = datetime.now()
 
         return events
@@ -401,13 +409,14 @@ class WatchService:
         except Exception as e:
             event.error = str(e)
             strategy.total_errors += 1
-            self._dead_letters.append(DeadLetterEntry(
-                entry_id=f"dl_{len(self._dead_letters):06d}",
-                workspace_id=strategy.workspace_id,
-                collection_id=strategy.collection_id,
-                file_path=str(event.file_path),
-                error=str(e),
-            ))
+            with self._lock:
+                self._dead_letters.append(DeadLetterEntry(
+                    entry_id=f"dl_{len(self._dead_letters):06d}",
+                    workspace_id=strategy.workspace_id,
+                    collection_id=strategy.collection_id,
+                    file_path=str(event.file_path),
+                    error=str(e),
+                ))
             logger.warning(
                 "Watch %s: failed to process %s event for %s: %s",
                 strategy.watch_id, event.event_type.value,
@@ -420,18 +429,11 @@ class WatchService:
         """Handle new file — create Entity."""
         content = event.file_path.read_bytes()
 
-        # Create a simple file-like object for EntityService
-        from fastapi import UploadFile
-        import io
-
-        file_obj = UploadFile(
-            filename=event.file_name,
-            file=io.BytesIO(content),
-        )
-        entity = await self.entity_service.create_from_file(
+        entity = await self.entity_service.create_from_bytes(
             strategy.workspace_id,
             strategy.collection_id,
-            file_obj,
+            event.file_name,
+            content,
         )
         event.entity_id = entity.entity_id
         logger.info(
@@ -453,17 +455,11 @@ class WatchService:
         # v0.1: re-create entity (which re-runs pipeline)
         content = event.file_path.read_bytes()
 
-        from fastapi import UploadFile
-        import io
-
-        file_obj = UploadFile(
-            filename=event.file_name,
-            file=io.BytesIO(content),
-        )
-        entity = await self.entity_service.create_from_file(
+        entity = await self.entity_service.create_from_bytes(
             strategy.workspace_id,
             strategy.collection_id,
-            file_obj,
+            event.file_name,
+            content,
         )
         event.entity_id = entity.entity_id
         logger.info(
@@ -482,42 +478,38 @@ class WatchService:
 
     async def replay_dead_letter(self, entry_id: str) -> Optional[str]:
         """Replay a dead letter entry."""
-        for i, dl in enumerate(self._dead_letters):
-            if dl.entry_id == entry_id:
-                file_path = Path(dl.file_path)
-                if not file_path.exists():
-                    return f"File no longer exists: {dl.file_path}"
+        with self._lock:
+            for i, dl in enumerate(self._dead_letters):
+                if dl.entry_id == entry_id:
+                    file_path = Path(dl.file_path)
+                    if not file_path.exists():
+                        return f"File no longer exists: {dl.file_path}"
 
-                from fastapi import UploadFile
-                import io
-
-                content = file_path.read_bytes()
-                file_obj = UploadFile(
-                    filename=file_path.name,
-                    file=io.BytesIO(content),
-                )
-                entity = await self.entity_service.create_from_file(
-                    dl.workspace_id,
-                    dl.collection_id,
-                    file_obj,
-                )
-                dl.replayed = True
-                self._dead_letters.pop(i)
-                return f"Replayed: entity {entity.entity_id} created"
+                    content = file_path.read_bytes()
+                    entity = await self.entity_service.create_from_bytes(
+                        dl.workspace_id,
+                        dl.collection_id,
+                        file_path.name,
+                        content,
+                    )
+                    dl.replayed = True
+                    self._dead_letters.pop(i)
+                    return f"Replayed: entity {entity.entity_id} created"
 
         return None
 
     def cleanup_dead_letters(self, max_age_hours: int = 72) -> int:
         """Remove old dead letter entries."""
         now = datetime.now()
-        to_remove = []
-        for i, dl in enumerate(self._dead_letters):
-            age = (now - dl.created_at).total_seconds() / 3600
-            if age > max_age_hours:
-                to_remove.append(i)
+        with self._lock:
+            to_remove = []
+            for i, dl in enumerate(self._dead_letters):
+                age = (now - dl.created_at).total_seconds() / 3600
+                if age > max_age_hours:
+                    to_remove.append(i)
 
-        for i in reversed(to_remove):
-            self._dead_letters.pop(i)
+            for i in reversed(to_remove):
+                self._dead_letters.pop(i)
 
         return len(to_remove)
 

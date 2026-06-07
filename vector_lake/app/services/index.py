@@ -162,6 +162,11 @@ class IndexService:
 
         def _search() -> List[SearchResult]:
             table = self.db.open_table(table_name)
+            # Safety: don't load more than 100K rows into memory
+            count = len(table)
+            if count > 100_000:
+                logger.warning("Table %s has %d rows, skipping lexical fallback scan", table_name, count)
+                return []
             # Use LanceDB's full-text search if available, otherwise fall back
             # to a simple string-contains filter.
             try:

@@ -62,9 +62,7 @@ async def stream_events(request: Request):
         finally:
             # Clean up queues
             for et, q in queues.items():
-                subscribers = event_bus._subscribers.get(et, [])
-                if q in subscribers:
-                    subscribers.remove(q)
+                event_bus.unsubscribe(et, q)
 
     return StreamingResponse(
         event_generator(),

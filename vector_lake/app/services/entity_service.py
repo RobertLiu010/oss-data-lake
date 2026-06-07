@@ -9,9 +9,11 @@ Entity attributes assembled from manifest (source of truth) or xattr (fallback):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -42,6 +44,10 @@ class EntityService:
         self.pipeline = pipeline
         self.settings = settings
         self.root = Path(settings.storage.local.root)
+        # TTL cache for list_entities
+        self._list_cache: dict = {}
+        self._list_cache_ts: dict = {}
+        self._list_cache_ttl: float = 10.0  # seconds
 
     # ------------------------------------------------------------------
     # Internal: Entity ↔ dict conversion (from manifest or xattr fallback)
@@ -114,6 +120,18 @@ class EntityService:
         self.storage.sync_tags_from_manifest(workspace_id, collection_id, entity_id)
 
     # ------------------------------------------------------------------
+    # Cache invalidation
+    # ------------------------------------------------------------------
+
+    def _invalidate_list_cache(self, workspace_id: str, collection_id: str) -> None:
+        """Invalidate list cache entries for a given workspace/collection."""
+        prefix = f"{workspace_id}/{collection_id}/"
+        keys_to_remove = [k for k in self._list_cache if k.startswith(prefix)]
+        for k in keys_to_remove:
+            self._list_cache.pop(k, None)
+            self._list_cache_ts.pop(k, None)
+
+    # ------------------------------------------------------------------
     # Create
     # ------------------------------------------------------------------
 
@@ -126,7 +144,16 @@ class EntityService:
         """Create entity from an uploaded file (only .md supported in v0.1)."""
         filename = file.filename or "unknown.md"
         content = await file.read()
+        return await self.create_from_bytes(workspace_id, collection_id, filename, content)
 
+    async def create_from_bytes(
+        self,
+        workspace_id: str,
+        collection_id: str,
+        filename: str,
+        content: bytes,
+    ) -> Entity:
+        """Create entity from filename + bytes directly."""
         if not filename.lower().endswith(".md"):
             raise ValueError(f"Unsupported file type: {filename}. Only .md files are supported in v0.1.")
 
@@ -191,6 +218,7 @@ class EntityService:
         )
 
         logger.info("Created entity %s from file %s", entity_id, filename)
+        self._invalidate_list_cache(workspace_id, collection_id)
         return entity
 
     # ------------------------------------------------------------------
@@ -217,6 +245,11 @@ class EntityService:
         status_filter: Optional[str] = None,
     ) -> list[Entity]:
         """List all entities, optionally filtered by rag_status."""
+        cache_key = f"{workspace_id}/{collection_id}/{status_filter or ''}"
+        now = time.time()
+        if cache_key in self._list_cache and (now - self._list_cache_ts.get(cache_key, 0)) < self._list_cache_ttl:
+            return self._list_cache[cache_key]
+
         entity_ids = self.storage.list_entities(workspace_id, collection_id)
         entities: list[Entity] = []
         for eid in entity_ids:
@@ -225,6 +258,9 @@ class EntityService:
                 if status_filter and entity.status.value != status_filter:
                     continue
                 entities.append(entity)
+
+        self._list_cache[cache_key] = entities
+        self._list_cache_ts[cache_key] = now
         return entities
 
     # ------------------------------------------------------------------
@@ -297,11 +333,15 @@ class EntityService:
             table_name = f"{workspace_id}_{collection_id}_chunks"
             if table_name in db.table_names():
                 tbl = db.open_table(table_name)
-                df = tbl.to_pandas()
-                entity_chunks = df[df["metadata"].apply(
-                    lambda m: m.get("entity_id") == entity_id if isinstance(m, dict) else False
-                )]
-                chunk_count = len(entity_chunks)
+
+                def _read_chunks():
+                    df = tbl.to_pandas()
+                    entity_chunks = df[df["metadata"].apply(
+                        lambda m: m.get("entity_id") == entity_id if isinstance(m, dict) else False
+                    )]
+                    return len(entity_chunks)
+
+                chunk_count = await asyncio.get_event_loop().run_in_executor(None, _read_chunks)
                 indexed = chunk_count > 0
         except Exception:
             pass
@@ -343,6 +383,7 @@ class EntityService:
         self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
 
         logger.info("Patched entity %s: status=%s, labels=%s", entity_id, entity.status, entity.labels)
+        self._invalidate_list_cache(workspace_id, collection_id)
         return entity
 
     # ------------------------------------------------------------------
@@ -389,4 +430,5 @@ class EntityService:
             self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
             logger.info("Soft deleted entity %s", entity_id)
 
+        self._invalidate_list_cache(workspace_id, collection_id)
         return True

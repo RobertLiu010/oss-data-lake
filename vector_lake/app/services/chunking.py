@@ -126,8 +126,9 @@ def _truncate_center(text: str, max_length: int) -> str:
     """Truncate text from both sides, keeping the center portion."""
     if len(text) <= max_length:
         return text
-    half = max_length // 2
-    return text[half:max_length]
+    # Keep the center portion
+    start = (len(text) - max_length) // 2
+    return text[start:start + max_length]
 
 
 # =========================================================================
@@ -147,7 +148,7 @@ class ChunkingService:
         # Ensure window size is odd
         if self.window_size % 2 == 0:
             self.window_size += 1
-            logger.info("窗口大小调整为奇数: %d", self.window_size)
+            logger.info("Window size adjusted to odd: %d", self.window_size)
 
     # ------------------------------------------------------------------
     # Public API
@@ -163,25 +164,25 @@ class ChunkingService:
             metadata = {}
 
         logger.info(
-            "开始文本分块处理: content_length=%d",
+            "Starting text chunking: content_length=%d",
             len(markdown_content),
         )
 
         # Step 1: split by headers
         header_chunks = self._split_by_headers(markdown_content)
-        logger.info("按标题分割完成: %d 个块", len(header_chunks))
+        logger.info("Header splitting complete: %d chunks", len(header_chunks))
 
         # Step 2: detect tables (for boundary awareness)
         tables = TableDetector.find_tables(markdown_content)
-        logger.info("检测到 %d 个表格", len(tables))
+        logger.info("Detected %d tables", len(tables))
 
         # Step 3: split by token threshold
         token_chunks = self._split_by_tokens(header_chunks, tables)
-        logger.info("按 token 切分完成: %d 个块", len(token_chunks))
+        logger.info("Token splitting complete: %d chunks", len(token_chunks))
 
         # Step 4: sliding window
         window_chunks = self._apply_sliding_window(token_chunks, metadata)
-        logger.info("滑动窗口处理完成: %d 个窗口", len(window_chunks))
+        logger.info("Sliding window complete: %d windows", len(window_chunks))
 
         return window_chunks
 
@@ -489,7 +490,7 @@ class ChunkingService:
             update_fields: Dict[str, Any] = {
                 'token_count': self._count_tokens(truncated),
             }
-            if target_chunk.embedding_text is not None:
+            if target_chunk.embedding_text:
                 update_fields['embedding_text'] = truncated
             else:
                 update_fields['text'] = truncated

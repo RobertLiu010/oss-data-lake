@@ -23,7 +23,6 @@ class ReconcileResponse(BaseModel):
 class WatchStrategyCreate(BaseModel):
     """Request body for creating a watch strategy."""
     watch_dir: str
-    workspace_id: str = "ws_001"
     collection_id: str = "kb_001"
     allowed_extensions: list[str] = Field(default_factory=lambda: [".md"])
     entity_id_strategy: str = "filename"

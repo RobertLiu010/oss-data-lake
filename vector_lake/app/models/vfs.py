@@ -84,3 +84,10 @@ class VfsReadResponse(BaseModel):
     size: int
     entity_id: Optional[str] = None
     rep_type: Optional[str] = None
+
+
+class CacheInvalidateResponse(BaseModel):
+    """Response model for cache invalidation."""
+    status: str
+    ws: str
+    col: str

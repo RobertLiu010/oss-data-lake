@@ -10,6 +10,7 @@ from app.models.reconcile import (
     WatchStrategyCreate,
     WatchStrategyResponse,
 )
+from app.security import validate_id
 
 router = APIRouter(prefix="/api/v1/workspaces/{ws}", tags=["reconcile-watch"])
 
@@ -29,6 +30,11 @@ def _get_watch_service(request: Request):
 @router.post("/collections/{col}/reconcile", response_model=ReconcileResponse)
 async def run_reconcile(ws: str, col: str, request: Request):
     """Run a full reconcile: detect drifts and auto-repair."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     reconciler = _get_reconciler(request)
     result = await reconciler.reconcile(ws, col)
     return ReconcileResponse(
@@ -52,6 +58,11 @@ async def run_reconcile(ws: str, col: str, request: Request):
 @router.get("/collections/{col}/reconcile/status")
 async def reconcile_status(ws: str, col: str, request: Request):
     """Get the last reconcile result."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     reconciler = _get_reconciler(request)
     result = reconciler.last_result
 
@@ -91,6 +102,10 @@ async def reconcile_status(ws: str, col: str, request: Request):
 @router.get("/watch-strategies", response_model=list[WatchStrategyResponse])
 async def list_watch_strategies(ws: str, request: Request):
     """List all watch strategies for a workspace."""
+    try:
+        validate_id(ws, "ws")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_watch_service(request)
     results = []
     for wid, strategy in svc.watches.items():
@@ -118,6 +133,13 @@ async def list_watch_strategies(ws: str, request: Request):
 @router.post("/watch-strategies", status_code=201, response_model=WatchStrategyResponse)
 async def create_watch_strategy(ws: str, req: WatchStrategyCreate, request: Request):
     """Create a new watch strategy."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(req.collection_id, "collection_id")
+        if '..' in req.watch_dir:
+            raise ValueError("watch_dir contains path traversal sequence")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     from app.services.watch import WatchStrategy
 
     svc = _get_watch_service(request)
@@ -161,6 +183,11 @@ async def create_watch_strategy(ws: str, req: WatchStrategyCreate, request: Requ
 @router.post("/watch-strategies/{watch_id}/start")
 async def start_watch(ws: str, watch_id: str, request: Request):
     """Start watching (begin background polling)."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(watch_id, "watch_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_watch_service(request)
     try:
         svc.start_watch(watch_id)
@@ -172,6 +199,11 @@ async def start_watch(ws: str, watch_id: str, request: Request):
 @router.post("/watch-strategies/{watch_id}/pause")
 async def pause_watch(ws: str, watch_id: str, request: Request):
     """Pause a watch strategy."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(watch_id, "watch_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_watch_service(request)
     try:
         svc.pause_watch(watch_id)
@@ -183,6 +215,11 @@ async def pause_watch(ws: str, watch_id: str, request: Request):
 @router.delete("/watch-strategies/{watch_id}")
 async def delete_watch(ws: str, watch_id: str, request: Request):
     """Stop and delete a watch strategy."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(watch_id, "watch_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_watch_service(request)
     try:
         svc.stop_watch(watch_id)
@@ -198,6 +235,10 @@ async def delete_watch(ws: str, watch_id: str, request: Request):
 @router.get("/dead-letters", response_model=list[DeadLetterResponse])
 async def list_dead_letters(ws: str, request: Request):
     """List all dead letter entries."""
+    try:
+        validate_id(ws, "ws")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_watch_service(request)
     return [
         DeadLetterResponse(
@@ -217,6 +258,11 @@ async def list_dead_letters(ws: str, request: Request):
 @router.post("/dead-letters/{entry_id}/replay")
 async def replay_dead_letter(ws: str, entry_id: str, request: Request):
     """Replay a dead letter entry."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(entry_id, "entry_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_watch_service(request)
     result = await svc.replay_dead_letter(entry_id)
     if result is None:
@@ -227,6 +273,10 @@ async def replay_dead_letter(ws: str, entry_id: str, request: Request):
 @router.post("/dead-letters/cleanup")
 async def cleanup_dead_letters(ws: str, request: Request):
     """Clean up old dead letter entries."""
+    try:
+        validate_id(ws, "ws")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     svc = _get_watch_service(request)
     removed = svc.cleanup_dead_letters()
     return {"removed": removed}

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.models.search import SearchRequest, SearchResult
+from app.models.search import SearchRequest, SearchResult, SearchType
+from app.security import validate_id
 
 router = APIRouter(
     prefix="/api/v1/workspaces/{ws}/collections/{col}",
@@ -15,11 +16,17 @@ router = APIRouter(
 @router.post("/search", response_model=list[SearchResult])
 async def search(ws: str, col: str, req: SearchRequest, request: Request):
     """Search: semantic, lexical, or hybrid (RRF) based on search_type."""
+    try:
+        validate_id(ws, "ws")
+        validate_id(col, "col")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     embedding_svc = request.app.state.embedding_service
     index_svc = request.app.state.index_service
 
     # Lexical-only search does not need embeddings
-    if req.search_type == "lexical":
+    if req.search_type == SearchType.LEXICAL:
         try:
             results = await index_svc.search_lexical(
                 ws, col, req.query, top_k=req.top_k,
@@ -40,7 +47,7 @@ async def search(ws: str, col: str, req: SearchRequest, request: Request):
             detail=f"Embedding service error: {exc}",
         )
 
-    if req.search_type == "hybrid":
+    if req.search_type == SearchType.HYBRID:
         try:
             results = await index_svc.search_hybrid(
                 ws, col, req.query, query_vector,

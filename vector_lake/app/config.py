@@ -54,6 +54,10 @@ class AuthConfig(BaseModel):
     api_keys: Dict[str, str] = Field(default_factory=dict)
 
 
+class VfsConfig(BaseModel):
+    cache_ttl: float = 30.0
+
+
 # ---------------------------------------------------------------------------
 # Top-level Settings
 # ---------------------------------------------------------------------------
@@ -65,6 +69,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    vfs: VfsConfig = Field(default_factory=VfsConfig)
 
     model_config = {"extra": "ignore"}
 

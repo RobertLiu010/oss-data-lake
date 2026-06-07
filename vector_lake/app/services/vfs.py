@@ -49,7 +49,7 @@ class VfsService:
         self.settings = settings
         self.root = Path(settings.storage.local.root)
         self._cache: dict[str, dict] = {}
-        self._cache_ttl: float = 30.0  # seconds
+        self._cache_ttl: float = settings.vfs.cache_ttl
         self._cache_timestamps: dict[str, float] = {}
 
     # ------------------------------------------------------------------
@@ -59,16 +59,12 @@ class VfsService:
     def _col_dir(self, ws: str, col: str) -> Path:
         return self.root / ws / col
 
-    def _load_entity_meta(self, entity_dir: Path) -> Optional[dict]:
+    def _load_entity_meta(self, entity_dir: Path, ws: str, col: str) -> Optional[dict]:
         """Load entity meta from OSS Tag + manifest (PRD §4.1)."""
-        parts = entity_dir.parts
-        if len(parts) >= 3:
-            entity_id = parts[-1]
-            col = parts[-2]
-            ws = parts[-3]
-            data = self.storage.assemble_entity(ws, col, entity_id)
-            if data:
-                return data
+        entity_id = entity_dir.name
+        data = self.storage.assemble_entity(ws, col, entity_id)
+        if data:
+            return data
         return None
 
     def _entity_name(self, meta: Optional[dict], entity_id: str) -> str:
@@ -107,7 +103,7 @@ class VfsService:
             if not entity_dir.is_dir():
                 continue
             entity_id = entity_dir.name
-            meta = self._load_entity_meta(entity_dir)
+            meta = self._load_entity_meta(entity_dir, ws, col)
             entity_name = self._entity_name(meta, entity_id)
 
             # Dir entry for the entity
@@ -135,6 +131,7 @@ class VfsService:
                     "path": rep_file,
                     "meta": meta,
                     "type": "file",
+                    "size": rep_file.stat().st_size,
                 }
 
         return tree
@@ -197,7 +194,7 @@ class VfsService:
             if vpath.startswith(prefix) and vpath.count("/") == path.count("/") + 1:
                 meta = info.get("meta") or {}
                 name = vpath[len(prefix):]
-                size = info["path"].stat().st_size if info["type"] == "file" else 0
+                size = info.get("size", 0) if info["type"] == "file" else 0
                 entries.append(VfsEntry(
                     name=name,
                     path=vpath,
@@ -220,7 +217,7 @@ class VfsService:
             return None
 
         meta = info.get("meta") or {}
-        size = info["path"].stat().st_size if info["type"] == "file" else 0
+        size = info.get("size", 0) if info["type"] == "file" else 0
 
         return VfsStatResponse(
             path=path,
@@ -273,7 +270,7 @@ class VfsService:
         for vpath, info in tree.items():
             if fnmatch.fnmatch(vpath, pattern):
                 meta = info.get("meta") or {}
-                size = info["path"].stat().st_size if info["type"] == "file" else 0
+                size = info.get("size", 0) if info["type"] == "file" else 0
                 name = vpath.rsplit("/", 1)[-1] if "/" in vpath else vpath.lstrip("/")
                 results.append(VfsEntry(
                     name=name,

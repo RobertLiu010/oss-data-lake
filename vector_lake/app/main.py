@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -45,8 +46,20 @@ async def lifespan(app: FastAPI):
     app.state.watch_service = watch_service
     app.state.event_bus = event_bus
 
+    # Periodic cleanup of stale event bus subscribers
+    async def _event_bus_cleanup_loop():
+        while True:
+            await asyncio.sleep(600)  # every 10 minutes
+            event_bus.cleanup_stale_subscribers()
+
+    cleanup_task = asyncio.create_task(_event_bus_cleanup_loop())
+
     yield
 
+    # Shutdown: cancel cleanup task
+    cleanup_task.cancel()
+    # Shutdown: close embedding client
+    await embedding.close()
     # Shutdown: stop all watch tasks
     await watch_service.shutdown()
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 import asyncio
 import logging
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -32,8 +34,11 @@ class EventBus:
 
     def __init__(self):
         self._subscribers: dict[EventType, list[asyncio.Queue]] = {}
+        # Track per-queue metadata: {id(queue): {"created_at": float, "last_read": float}}
+        self._queue_meta: dict[int, dict[str, float]] = {}
         self._history: list[Event] = []
         self._max_history = 1000
+        self._lock = threading.Lock()
 
     def subscribe(self, event_type: EventType) -> asyncio.Queue:
         """Subscribe to an event type, returns a Queue that receives Events."""
@@ -41,6 +46,8 @@ class EventBus:
             self._subscribers[event_type] = []
         q: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._subscribers[event_type].append(q)
+        now = time.time()
+        self._queue_meta[id(q)] = {"created_at": now, "last_read": now}
         return q
 
     async def publish(self, event: Event) -> None:
@@ -53,6 +60,9 @@ class EventBus:
         for q in subscribers:
             try:
                 q.put_nowait(event)
+                meta = self._queue_meta.get(id(q))
+                if meta is not None:
+                    meta["last_read"] = time.time()
             except asyncio.QueueFull:
                 logger.warning("Event queue full, dropping %s", event.event_type)
 
@@ -66,3 +76,30 @@ class EventBus:
         if event_type:
             events = [e for e in events if e.event_type == event_type]
         return events[-limit:]
+
+    def cleanup_stale_subscribers(self, max_age_seconds: float = 3600.0) -> int:
+        """Remove closed/abandoned queues older than max_age_seconds with no reads.
+
+        Returns the number of removed queues.
+        """
+        now = time.time()
+        removed = 0
+        for event_type in list(self._subscribers.keys()):
+            queues = self._subscribers[event_type]
+            to_keep: list[asyncio.Queue] = []
+            for q in queues:
+                meta = self._queue_meta.get(id(q))
+                if meta is None:
+                    # No metadata tracked, keep it
+                    to_keep.append(q)
+                    continue
+                age = now - meta["created_at"]
+                idle = now - meta["last_read"]
+                # Remove if older than 1 hour AND no reads in the last hour
+                if age > max_age_seconds and idle > max_age_seconds:
+                    self._queue_meta.pop(id(q), None)
+                    removed += 1
+                else:
+                    to_keep.append(q)
+            self._subscribers[event_type] = to_keep
+        return removed
