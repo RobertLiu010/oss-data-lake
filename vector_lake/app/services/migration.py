@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Registry of migrations: version -> callable
 _MIGRATIONS: dict[int, callable] = {}
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
 
 def _get_version_file(lance_dir: str) -> Path:
@@ -74,6 +74,33 @@ def _migration_001_create_fts_indexes(db, settings):
             logger.info("Migration 001: created FTS index on %s", table_name)
         except Exception as e:
             logger.warning("Migration 001: failed on %s: %s", table_name, e)
+
+
+@migration(2)
+def _migration_002_add_rep_name_column(db, settings):
+    """Add rep_name column to all existing chunk tables.
+
+    For pre-existing data, set rep_name = 'canonical_md' as the default.
+    New data will have the correct rep_name set by the pipeline.
+    """
+
+    tables = db.list_tables()
+    table_names = tables.tables if hasattr(tables, "tables") else list(tables)
+    for table_name in table_names:
+        try:
+            table = db.open_table(table_name)
+            schema = table.schema
+            # Check if rep_name column already exists
+            if "rep_name" in {f.name for f in schema}:
+                logger.info("Migration 002: rep_name already exists in %s, skipping", table_name)
+                continue
+            # Add rep_name column with default value
+            table.add_columns({
+                "rep_name": "'canonical_md'",
+            })
+            logger.info("Migration 002: added rep_name column to %s", table_name)
+        except Exception as e:
+            logger.warning("Migration 002: failed on %s: %s", table_name, e)
 
 
 # ---------------------------------------------------------------------------

@@ -26,3 +26,4 @@ class SearchResult(BaseModel):
     score: float
     metadata: dict = Field(default_factory=dict)
     search_type: str = "semantic"  # which search produced this result
+    rep_name: str = "canonical_md"  # which representation this chunk belongs to

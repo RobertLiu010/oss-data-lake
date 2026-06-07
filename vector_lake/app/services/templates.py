@@ -197,9 +197,11 @@ class VectorIndexTemplate:
 
     async def build(self, ctx: IndexContext) -> None:
         """Upsert chunks with vectors into the index."""
+        rep_name = ctx.chunks[0].get("rep_name", "canonical_md") if ctx.chunks else "canonical_md"
         await ctx.index_service.upsert_chunks(
             ctx.workspace_id, ctx.collection_id, ctx.entity_id,
             ctx.chunks,
+            rep_name=rep_name,
         )
 
     async def search(self, ctx: SearchContext) -> list[SearchResult]:

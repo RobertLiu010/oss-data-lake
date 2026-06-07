@@ -327,6 +327,7 @@ async def test_vector_index_template_build():
 
     mock_index_service.upsert_chunks.assert_awaited_once_with(
         "ws-1", "col-1", "ent-1", chunks,
+        rep_name="canonical_md",
     )
 
 

@@ -47,11 +47,17 @@ class IndexService:
         collection_id: str,
         entity_id: str,
         chunks_with_vectors: list[dict[str, Any]],
+        rep_name: str = "canonical_md",
     ) -> int:
         """Insert/update chunks into LanceDB table.
 
         Each item in *chunks_with_vectors* should have keys:
             chunk_index, text, embedding, metadata
+
+        The *rep_name* parameter identifies which representation these
+        chunks belong to (e.g. "canonical_md", "rep_pdf", "rep_png").
+        Old chunks for the same (entity_id, rep_name) are deleted first,
+        so intermediate reps don't overwrite each other.
         """
         table_name = self._table_name(workspace_id, collection_id)
 
@@ -61,6 +67,7 @@ class IndexService:
         texts: list[str] = []
         embeddings: list[list[float]] = []
         metadata_json: list[str] = []
+        rep_names: list[str] = []
 
         for item in chunks_with_vectors:
             entity_ids.append(entity_id)
@@ -68,6 +75,7 @@ class IndexService:
             texts.append(item["text"])
             embeddings.append(item["embedding"])
             metadata_json.append(json.dumps(item.get("metadata", {}), ensure_ascii=False))
+            rep_names.append(rep_name)
 
         schema = pa.schema([
             pa.field("entity_id", pa.string()),
@@ -75,6 +83,7 @@ class IndexService:
             pa.field("text", pa.string()),
             pa.field("embedding", pa.list_(pa.float32(), self.dimension)),
             pa.field("metadata", pa.string()),
+            pa.field("rep_name", pa.string()),
         ])
 
         new_data = pa.table({
@@ -83,15 +92,18 @@ class IndexService:
             "text": texts,
             "embedding": embeddings,
             "metadata": metadata_json,
+            "rep_name": rep_names,
         }, schema=schema)
 
         def _upsert() -> int:
             existing_tables = self.db.list_tables().tables
+            safe_id = entity_id.replace('"', '').replace("'", "")
+            safe_rep = rep_name.replace('"', '').replace("'", "")
             if table_name in existing_tables:
                 table = self.db.open_table(table_name)
-                # Delete old chunks for this entity before adding new ones
-                safe_id = entity_id.replace('"', '').replace("'", "")
-                table.delete(f'entity_id = "{safe_id}"')
+                # Delete old chunks for this (entity_id, rep_name) only
+                # This preserves chunks from other reps (intermediate products)
+                table.delete(f'entity_id = "{safe_id}" AND rep_name = "{safe_rep}"')
                 table.add(new_data)
             else:
                 table = self.db.create_table(table_name, new_data)
@@ -105,8 +117,8 @@ class IndexService:
 
         count = await asyncio.get_event_loop().run_in_executor(None, _upsert)
         logger.info(
-            "Upserted %d chunks for entity %s in %s",
-            count, entity_id, table_name,
+            "Upserted %d chunks for entity %s rep=%s in %s",
+            count, entity_id, rep_name, table_name,
         )
         return count
 
@@ -222,6 +234,7 @@ class IndexService:
                     score=float(row.get("_distance", 0.0)),
                     metadata=meta,
                     search_type="semantic",
+                    rep_name=row.get("rep_name", "canonical_md"),
                 ))
             return out
 
@@ -287,6 +300,7 @@ class IndexService:
                     score=float(row.get("_relevance_score", 1.0 / (rank + 1))),
                     metadata=meta,
                     search_type="lexical",
+                    rep_name=row.get("rep_name", "canonical_md"),
                 ))
             return out
 
@@ -353,5 +367,6 @@ class IndexService:
                 score=merged[key],
                 metadata=result.metadata,
                 search_type="hybrid",
+                rep_name=result.rep_name,
             ))
         return out

@@ -157,6 +157,7 @@ class PipelineService:
                 "text": chunk.text,
                 "embedding": vector,
                 "metadata": chunk.metadata,
+                "rep_name": "canonical_md",
             })
 
         try:
@@ -437,12 +438,14 @@ class PipelineService:
                         "text": c.text,
                         "embedding": [],
                         "metadata": c.metadata,
+                        "rep_name": rep_name,
                     }
                     for idx, c in enumerate(chunks)
                 ]
                 await self.index.upsert_chunks(
                     workspace_id, collection_id, entity_id,
                     chunks_for_index,
+                    rep_name=rep_name,
                 )
                 logger.info(
                     "Per-step index: %d chunks indexed (lexical) for rep %s",
@@ -473,12 +476,14 @@ class PipelineService:
                 "text": chunk.text,
                 "embedding": vector,
                 "metadata": chunk.metadata,
+                "rep_name": rep_name,
             })
 
         try:
             await self.index.upsert_chunks(
                 workspace_id, collection_id, entity_id,
                 chunks_with_vectors,
+                rep_name=rep_name,
             )
             logger.info(
                 "Per-step index: %d chunks indexed (vector) for rep %s",

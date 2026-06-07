@@ -46,6 +46,10 @@ class RepInfo(BaseModel):
     exists: bool
     size: int = 0
     content_hash: str = ""
+    # Intermediate product tracking
+    index_mode: str | None = None  # None, "text", "lexical", "vision"
+    indexed: bool = False  # whether this rep has been indexed
+    source_step: str = ""  # which RepStep produced this rep
 
 
 class PipelineStatus(BaseModel):
