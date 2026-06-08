@@ -20,9 +20,19 @@ class LocalStorageConfig(BaseModel):
     root: str = "./data"
 
 
+class S3StorageConfig(BaseModel):
+    endpoint_url: str = "http://127.0.0.1:9000"
+    access_key: str = "minioadmin"
+    secret_key: str = "minioadmin"
+    bucket: str = "vector-lake"
+    prefix: str = "data"
+    region: str = "us-east-1"
+
+
 class StorageConfig(BaseModel):
     backend: str = "local"
     local: LocalStorageConfig = Field(default_factory=LocalStorageConfig)
+    s3: S3StorageConfig = Field(default_factory=S3StorageConfig)
 
 
 class LanceConfig(BaseModel):

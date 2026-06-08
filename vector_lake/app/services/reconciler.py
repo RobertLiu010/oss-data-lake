@@ -87,7 +87,7 @@ class ReconcilerService:
         self.entity_service = entity_service
         self.pipeline = pipeline
         self.settings = settings
-        self.root = Path(settings.storage.local.root)
+        self.root = Path(storage.root)
         self._last_result: ReconcileResult | None = None
 
     @property

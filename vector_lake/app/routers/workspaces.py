@@ -1,12 +1,10 @@
 """Workspace and Collection management router."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException, Request
 
 from app.models.workspace import CollectionCreate, CollectionResponse, WorkspaceCreate, WorkspaceResponse
-from app.security import validate_id, validate_path_under_root
+from app.security import validate_id
 
 router = APIRouter(prefix="/api/v1", tags=["workspaces"])
 
@@ -14,20 +12,16 @@ router = APIRouter(prefix="/api/v1", tags=["workspaces"])
 @router.get("/workspaces", response_model=list[WorkspaceResponse])
 async def list_workspaces(request: Request):
     """List all workspaces."""
-    settings = request.app.state.settings
-    root = Path(settings.storage.local.root)
-    if not root.exists():
-        return []
+    storage = request.app.state.entity_service.storage
     results = []
-    for ws_dir in sorted(root.iterdir()):
-        if ws_dir.is_dir():
-            cols_count = len([d for d in ws_dir.iterdir() if d.is_dir()])
-            results.append(WorkspaceResponse(
-                workspace_id=ws_dir.name,
-                name=ws_dir.name,
-                description="",
-                collections_count=cols_count,
-            ))
+    for ws_id in storage.list_workspaces():
+        cols_count = len(storage.list_collections(ws_id))
+        results.append(WorkspaceResponse(
+            workspace_id=ws_id,
+            name=ws_id,
+            description="",
+            collections_count=cols_count,
+        ))
     return results
 
 @router.post("/workspaces", status_code=201, response_model=WorkspaceResponse)
@@ -37,13 +31,10 @@ async def create_workspace(req: WorkspaceCreate, request: Request):
         validate_id(req.workspace_id, "workspace_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    settings = request.app.state.settings
-    root = Path(settings.storage.local.root)
-    ws_dir = root / req.workspace_id
-    validate_path_under_root(ws_dir, root)
-    if ws_dir.exists():
+    storage = request.app.state.entity_service.storage
+    if req.workspace_id in storage.list_workspaces():
         raise HTTPException(status_code=409, detail=f"Workspace {req.workspace_id} already exists")
-    ws_dir.mkdir(parents=True, exist_ok=True)
+    storage.create_workspace(req.workspace_id)
     return WorkspaceResponse(
         workspace_id=req.workspace_id,
         name=req.name or req.workspace_id,
@@ -56,13 +47,10 @@ async def get_workspace(ws: str, request: Request):
         validate_id(ws, "ws")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    settings = request.app.state.settings
-    root = Path(settings.storage.local.root)
-    ws_dir = root / ws
-    validate_path_under_root(ws_dir, root)
-    if not ws_dir.exists():
+    storage = request.app.state.entity_service.storage
+    if ws not in storage.list_workspaces():
         raise HTTPException(status_code=404, detail="Workspace not found")
-    cols_count = len([d for d in ws_dir.iterdir() if d.is_dir()])
+    cols_count = len(storage.list_collections(ws))
     return WorkspaceResponse(workspace_id=ws, name=ws, description="", collections_count=cols_count)
 
 @router.delete("/workspaces/{ws}")
@@ -71,11 +59,8 @@ async def delete_workspace(ws: str, request: Request):
         validate_id(ws, "ws")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    settings = request.app.state.settings
-    root = Path(settings.storage.local.root)
-    ws_dir = root / ws
-    validate_path_under_root(ws_dir, root)
-    if not ws_dir.exists():
+    storage = request.app.state.entity_service.storage
+    if ws not in storage.list_workspaces():
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     # Check for active watch strategies referencing this workspace
@@ -91,11 +76,10 @@ async def delete_workspace(ws: str, request: Request):
             detail=f"Cannot delete workspace: active watch strategies reference it: {watch_ids}",
         )
 
-    # Collect collection names before removing directory
-    col_names = [d.name for d in ws_dir.iterdir() if d.is_dir()]
+    # Collect collection names before removing
+    col_names = storage.list_collections(ws)
 
-    import shutil
-    shutil.rmtree(ws_dir)
+    storage.delete_workspace(ws)
 
     # Clean up LanceDB index tables for all collections in this workspace
     try:
@@ -114,22 +98,18 @@ async def list_collections(ws: str, request: Request):
         validate_id(ws, "ws")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    settings = request.app.state.settings
-    root = Path(settings.storage.local.root)
-    ws_dir = root / ws
-    validate_path_under_root(ws_dir, root)
-    if not ws_dir.exists():
+    storage = request.app.state.entity_service.storage
+    if ws not in storage.list_workspaces():
         return []
     results = []
-    for col_dir in sorted(ws_dir.iterdir()):
-        if col_dir.is_dir():
-            entity_count = len([d for d in col_dir.iterdir() if d.is_dir()])
-            results.append(CollectionResponse(
-                collection_id=col_dir.name,
-                name=col_dir.name,
-                description="",
-                entity_count=entity_count,
-            ))
+    for col_id in storage.list_collections(ws):
+        entity_count = len(storage.list_entities(ws, col_id))
+        results.append(CollectionResponse(
+            collection_id=col_id,
+            name=col_id,
+            description="",
+            entity_count=entity_count,
+        ))
     return results
 
 @router.post("/workspaces/{ws}/collections", status_code=201, response_model=CollectionResponse)
@@ -139,13 +119,10 @@ async def create_collection(ws: str, req: CollectionCreate, request: Request):
         validate_id(req.collection_id, "collection_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    settings = request.app.state.settings
-    root = Path(settings.storage.local.root)
-    col_dir = root / ws / req.collection_id
-    validate_path_under_root(col_dir, root)
-    if col_dir.exists():
+    storage = request.app.state.entity_service.storage
+    if req.collection_id in storage.list_collections(ws):
         raise HTTPException(status_code=409, detail=f"Collection {req.collection_id} already exists")
-    col_dir.mkdir(parents=True, exist_ok=True)
+    storage.create_collection(ws, req.collection_id)
     return CollectionResponse(
         collection_id=req.collection_id,
         name=req.name or req.collection_id,
@@ -159,11 +136,8 @@ async def delete_collection(ws: str, col: str, request: Request):
         validate_id(col, "col")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    settings = request.app.state.settings
-    root = Path(settings.storage.local.root)
-    col_dir = root / ws / col
-    validate_path_under_root(col_dir, root)
-    if not col_dir.exists():
+    storage = request.app.state.entity_service.storage
+    if col not in storage.list_collections(ws):
         raise HTTPException(status_code=404, detail="Collection not found")
 
     # Check for active watch strategies referencing this collection
@@ -179,8 +153,7 @@ async def delete_collection(ws: str, col: str, request: Request):
             detail=f"Cannot delete collection: active watch strategies reference it: {watch_ids}",
         )
 
-    import shutil
-    shutil.rmtree(col_dir)
+    storage.delete_collection(ws, col)
 
     # Clean up LanceDB index table for this collection
     try:

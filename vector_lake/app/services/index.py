@@ -85,10 +85,12 @@ def _cast_to_lance_schema(table: pa.Table, lance_schema: pa.Schema) -> pa.Table:
 class IndexService:
     """Manage chunk vectors with entity-level parquet + LanceDB sync."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, data_dir: str | None = None):
         self.settings = settings
         self.db = lancedb.connect(settings.lance.data_dir)
         self.dimension = settings.embedding.dimension
+        # Data dir for parquet staging files — defaults to storage.local.root
+        self._data_dir = data_dir or settings.storage.local.root
         # Run schema migrations on startup
         from app.services.migration import run_migrations
 
@@ -106,7 +108,7 @@ class IndexService:
     def _index_dir(self, workspace_id: str, collection_id: str, entity_id: str) -> Path:
         """Return the _index/staging directory for an entity (PRD §5.12)."""
         return (
-            Path(self.settings.storage.local.root)
+            Path(self._data_dir)
             / workspace_id / collection_id / entity_id / "_index" / "staging"
         )
 
@@ -323,7 +325,7 @@ class IndexService:
         Returns total rows synced.
         """
         table_name = self._table_name(workspace_id, collection_id)
-        col_dir = Path(self.settings.storage.local.root) / workspace_id / collection_id
+        col_dir = Path(self._data_dir) / workspace_id / collection_id
         if not col_dir.exists():
             return 0
 
@@ -462,7 +464,7 @@ class IndexService:
 
     def get_indexed_entity_ids(self, workspace_id: str, collection_id: str) -> set[str]:
         """Get the set of entity_ids that have index parquet files."""
-        col_dir = Path(self.settings.storage.local.root) / workspace_id / collection_id
+        col_dir = Path(self._data_dir) / workspace_id / collection_id
         if not col_dir.exists():
             return set()
 

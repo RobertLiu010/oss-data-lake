@@ -75,6 +75,7 @@ class SyncQueue:
 
     def __init__(self, settings: Settings, maxsize: int = 10_000):
         self._queue: asyncio.Queue[SyncTask] = asyncio.Queue(maxsize=maxsize)
+        # Sidecar is always local (crash-recovery log), use local.root as base
         self._sidecar_path = Path(settings.storage.local.root) / "_sync_queue.jsonl"
         self._pending: dict[str, SyncTask] = {}  # dedup key → task
         self._stats = {

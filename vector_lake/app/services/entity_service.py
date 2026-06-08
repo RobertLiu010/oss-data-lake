@@ -48,7 +48,7 @@ class EntityService:
         self.storage = storage
         self.pipeline = pipeline
         self.settings = settings
-        self.root = Path(settings.storage.local.root)
+        self.root = Path(storage.root)
         self._registry = template_registry or default_registry
         # TTL cache for list_entities
         self._list_cache: dict = {}
@@ -325,8 +325,7 @@ class EntityService:
         if entity is None:
             return None
 
-        entity_dir = self.root / workspace_id / collection_id / entity_id
-        if not entity_dir.exists():
+        if not self.storage.entity_dir_exists(workspace_id, collection_id, entity_id):
             return PipelineStatus(
                 entity_id=entity_id,
                 entity_status=entity.status.value,

@@ -29,7 +29,7 @@ from app.services.sync_queue import SyncQueue, SyncWorker
 from app.services.templates import register_builtin_templates
 from app.services.vfs import VfsService
 from app.services.watch import WatchService
-from app.storage.local import LocalStorage
+from app.storage.factory import create_storage
 
 # ---------------------------------------------------------------------------
 # Structured JSON logging with request_id support
@@ -161,10 +161,11 @@ async def lifespan(app: FastAPI):
     # Register built-in templates (MD rep + vector index)
     register_builtin_templates()
 
-    storage = LocalStorage(settings)
+    storage = create_storage(settings)
     chunking = ChunkingService(settings)
     embedding = EmbeddingService(settings)
-    index = IndexService(settings)
+    # IndexService uses storage.root for parquet staging (works for both local and S3)
+    index = IndexService(settings, data_dir=str(storage.root))
     event_bus = EventBus()
 
     # Sync queue + worker for reliable parquet → LanceDB sync

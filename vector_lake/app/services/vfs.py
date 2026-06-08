@@ -46,7 +46,7 @@ class VfsService:
     def __init__(self, storage: StorageProtocol, settings: Settings):
         self.storage = storage
         self.settings = settings
-        self.root = Path(settings.storage.local.root)
+        self.root = Path(storage.root)
         self._cache: dict[str, dict] = {}
         self._cache_ttl: float = settings.vfs.cache_ttl
         self._cache_timestamps: dict[str, float] = {}

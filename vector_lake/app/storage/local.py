@@ -408,3 +408,58 @@ class LocalStorage:
         result["updated_at"] = ""
 
         return result
+
+    # ------------------------------------------------------------------
+    # Workspace / Collection management (pluggable storage support)
+    # ------------------------------------------------------------------
+
+    def list_workspaces(self) -> list[str]:
+        """List all workspace IDs by scanning root directory."""
+        root = Path(self.root)
+        if not root.exists():
+            return []
+        return [
+            d.name
+            for d in sorted(root.iterdir())
+            if d.is_dir() and not d.name.startswith("_")
+        ]
+
+    def list_collections(self, workspace_id: str) -> list[str]:
+        """List all collection IDs under a workspace."""
+        ws_dir = Path(self.root) / workspace_id
+        if not ws_dir.exists():
+            return []
+        return [
+            d.name
+            for d in sorted(ws_dir.iterdir())
+            if d.is_dir() and not d.name.startswith("_")
+        ]
+
+    def create_workspace(self, workspace_id: str) -> None:
+        """Create workspace directory."""
+        ws_dir = Path(self.root) / workspace_id
+        ws_dir.mkdir(parents=True, exist_ok=True)
+
+    def create_collection(self, workspace_id: str, collection_id: str) -> None:
+        """Create collection directory."""
+        col_dir = Path(self.root) / workspace_id / collection_id
+        col_dir.mkdir(parents=True, exist_ok=True)
+
+    def delete_workspace(self, workspace_id: str) -> None:
+        """Delete workspace directory and all contents."""
+        import shutil
+        ws_dir = Path(self.root) / workspace_id
+        if ws_dir.exists():
+            shutil.rmtree(ws_dir)
+
+    def delete_collection(self, workspace_id: str, collection_id: str) -> None:
+        """Delete collection directory and all contents."""
+        import shutil
+        col_dir = Path(self.root) / workspace_id / collection_id
+        if col_dir.exists():
+            shutil.rmtree(col_dir)
+
+    def entity_dir_exists(self, workspace_id: str, collection_id: str, entity_id: str) -> bool:
+        """Check if entity directory exists."""
+        entity_dir = self._entity_dir(workspace_id, collection_id, entity_id)
+        return entity_dir.exists()

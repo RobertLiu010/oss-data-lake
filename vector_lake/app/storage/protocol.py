@@ -2,7 +2,7 @@
 
 Implementations:
 - LocalStorage: local filesystem + xattr
-- Planned: S3Storage, OSSStorage (v0.2)
+- S3Storage: S3/MinIO-compatible object storage
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ class StorageProtocol(Protocol):
     """Protocol defining the storage backend contract.
 
     All storage implementations must satisfy this interface.
+    The `root` attribute is a Path for local backends, or a pseudo-Path
+    (e.g. s3://bucket/prefix) for object storage backends.
     """
 
     root: Path
@@ -143,6 +145,38 @@ class StorageProtocol(Protocol):
         collection_id: str,
         entity_id: str,
     ) -> list[dict]: ...
+
+    # ------------------------------------------------------------------
+    # Workspace / Collection management (pluggable storage support)
+    # ------------------------------------------------------------------
+
+    def list_workspaces(self) -> list[str]:
+        """List all workspace IDs."""
+        ...
+
+    def list_collections(self, workspace_id: str) -> list[str]:
+        """List all collection IDs under a workspace."""
+        ...
+
+    def create_workspace(self, workspace_id: str) -> None:
+        """Create a workspace (directory or sentinel object)."""
+        ...
+
+    def create_collection(self, workspace_id: str, collection_id: str) -> None:
+        """Create a collection (directory or sentinel object)."""
+        ...
+
+    def delete_workspace(self, workspace_id: str) -> None:
+        """Delete a workspace and all its contents."""
+        ...
+
+    def delete_collection(self, workspace_id: str, collection_id: str) -> None:
+        """Delete a collection and all its contents."""
+        ...
+
+    def entity_dir_exists(self, workspace_id: str, collection_id: str, entity_id: str) -> bool:
+        """Check if an entity directory/prefix exists."""
+        ...
 
 
 # Type alias for storage instances

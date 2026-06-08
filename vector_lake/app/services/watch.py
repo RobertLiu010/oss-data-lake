@@ -102,7 +102,7 @@ class WatchService:
         self.storage = storage
         self.entity_service = entity_service
         self.settings = settings
-        self.root = Path(settings.storage.local.root)
+        self.root = Path(storage.root)
 
         # Thread safety lock for shared state
         self._lock = threading.Lock()
