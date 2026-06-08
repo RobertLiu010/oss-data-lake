@@ -39,6 +39,11 @@ class LanceConfig(BaseModel):
     data_dir: str = "./lance_data"
 
 
+class PipelineConfig(BaseModel):
+    max_concurrent_entities: int = 4
+    embedding_max_concurrent_batches: int = 4
+
+
 class EmbeddingConfig(BaseModel):
     base_url: str = "http://127.0.0.1:8006"
     model: str = "embedding-v5"
