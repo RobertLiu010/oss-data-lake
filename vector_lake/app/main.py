@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from app.auth import AuthService, build_auth_service_from_config, is_public_path
 from app.config import load_settings
 from app.routers import entities, events, reconcile, search, templates, vfs, workspaces
 from app.services.chunking import ChunkingService
@@ -193,6 +194,15 @@ async def lifespan(app: FastAPI):
     app.state.sync_queue = sync_queue
     app.state.sync_worker = sync_worker
 
+    # Initialize AuthService from config
+    auth_config_dict = settings.auth.model_dump()
+    auth_service = build_auth_service_from_config(auth_config_dict)
+    app.state.auth_service = auth_service
+    if auth_service.enabled:
+        logger.info("Authentication enabled: %d users configured", len(auth_service._key_to_user))
+    else:
+        logger.info("Authentication disabled")
+
     # Periodic cleanup of stale event bus subscribers
     async def _event_bus_cleanup_loop():
         while True:
@@ -224,7 +234,43 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Middleware: X-Request-ID (must run first — before CORS/GZip/Prometheus)
+# Middleware: Authentication + Workspace isolation
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Authenticate API Key and enforce workspace isolation.
+
+    - Public paths (/health, /readiness, /status, /metrics, /docs) bypass auth.
+    - Extracts user identity from API Key, stores in request.state.user.
+    - Extracts workspace_id from URL path and enforces user→workspace binding.
+    """
+    auth_service: AuthService | None = getattr(request.app.state, "auth_service", None)
+
+    if auth_service is None or is_public_path(request.url.path):
+        request.state.user = None
+        return await call_next(request)
+
+    # Authenticate
+    user = auth_service.authenticate(request)
+    request.state.user = user
+
+    # Extract workspace_id from path: /api/v1/workspaces/{ws}/...
+    path = request.url.path
+    ws = None
+    if "/workspaces/" in path:
+        try:
+            after_ws = path.split("/workspaces/")[1]
+            ws = after_ws.split("/")[0]
+        except (IndexError, ValueError):
+            pass
+
+    # Enforce workspace isolation if ws is in the path
+    if ws:
+        auth_service.enforce_workspace(user, ws)
+
+    return await call_next(request)
+
+
+# Middleware: X-Request-ID (must run after auth — so auth errors get request IDs too)
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     """Extract/generate X-Request-ID, inject into logging, record Prometheus metrics."""

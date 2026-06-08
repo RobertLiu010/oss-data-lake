@@ -57,9 +57,17 @@ class ChunkingConfig(BaseModel):
     max_table_length: int = 3000
 
 
+class UserInfoConfig(BaseModel):
+    api_key: str
+    user_id: str
+    workspace_id: str
+
+
 class AuthConfig(BaseModel):
     enabled: bool = False
-    api_keys: dict[str, str] = Field(default_factory=dict)
+    admin_api_key: str = ""
+    users: list[UserInfoConfig] = []
+    api_keys: dict[str, str] = Field(default_factory=dict)  # backward compat
 
 
 class VfsConfig(BaseModel):

@@ -35,7 +35,15 @@ chunking:
 
 auth:
   enabled: false
-  api_keys: {}
+  # admin_api_key: "vl_admin_key"  # Admin can access all workspaces
+  # users:                          # Each user is bound to exactly one workspace
+  #   - api_key: "user1_key"
+  #     user_id: "user1"
+  #     workspace_id: "ws_user1"
+  #   - api_key: "user2_key"
+  #     user_id: "user2"
+  #     workspace_id: "ws_user2"
+  api_keys: {}                      # Backward compat: {key: name} → auto ws_{name}
 
 metrics:
   enabled: true

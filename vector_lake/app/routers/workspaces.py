@@ -3,18 +3,33 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.auth import AuthUser
 from app.models.workspace import CollectionCreate, CollectionResponse, WorkspaceCreate, WorkspaceResponse
 from app.security import validate_id
 
 router = APIRouter(prefix="/api/v1", tags=["workspaces"])
 
+
+def _get_user(request: Request) -> AuthUser | None:
+    """Get authenticated user from request state (set by auth middleware)."""
+    return getattr(request.state, "user", None)
+
+
 # Workspace endpoints
 @router.get("/workspaces", response_model=list[WorkspaceResponse])
 async def list_workspaces(request: Request):
-    """List all workspaces."""
+    """List all workspaces. When auth is enabled, non-admin users only see their own workspace."""
     storage = request.app.state.entity_service.storage
+    user = _get_user(request)
+
+    all_ws = storage.list_workspaces()
+
+    # Filter: non-admin users can only see their own workspace
+    if user is not None and not user.is_admin:
+        all_ws = [ws_id for ws_id in all_ws if ws_id == user.workspace_id]
+
     results = []
-    for ws_id in storage.list_workspaces():
+    for ws_id in all_ws:
         cols_count = len(storage.list_collections(ws_id))
         results.append(WorkspaceResponse(
             workspace_id=ws_id,
@@ -26,11 +41,21 @@ async def list_workspaces(request: Request):
 
 @router.post("/workspaces", status_code=201, response_model=WorkspaceResponse)
 async def create_workspace(req: WorkspaceCreate, request: Request):
-    """Create a new workspace."""
+    """Create a new workspace. When auth is enabled, non-admin users can only create their own workspace."""
     try:
         validate_id(req.workspace_id, "workspace_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    user = _get_user(request)
+
+    # Non-admin users can only create their own workspace
+    if user is not None and not user.is_admin and req.workspace_id != user.workspace_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"User '{user.user_id}' can only create workspace '{user.workspace_id}'",
+        )
+
     storage = request.app.state.entity_service.storage
     if req.workspace_id in storage.list_workspaces():
         raise HTTPException(status_code=409, detail=f"Workspace {req.workspace_id} already exists")
