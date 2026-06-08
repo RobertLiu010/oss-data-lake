@@ -1,0 +1,412 @@
+# Vector Lake — Kubernetes 部署清单
+# ========================================
+# 使用方式:
+#   kubectl apply -k deploy/k8s/
+#   或
+#   kubectl apply -f deploy/k8s/ -n vector-lake
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+    app.kubernetes.io/part-of: vector-lake
+
+---
+# ConfigMap — 应用配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vector-lake-config
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+data:
+  config.yaml: |
+    server:
+      host: "0.0.0.0"
+      port: 8000
+
+    storage:
+      backend: ${STORAGE_BACKEND}
+      local:
+        root: "/app/data"
+      s3:
+        endpoint_url: "${S3_ENDPOINT_URL}"
+        access_key: "${S3_ACCESS_KEY}"
+        secret_key: "${S3_SECRET_KEY}"
+        bucket: "${S3_BUCKET}"
+        prefix: "${S3_PREFIX}"
+        region: "${S3_REGION}"
+
+    lance:
+      data_dir: "/app/lance_data"
+
+    embedding:
+      base_url: "${EMBEDDING_BASE_URL}"
+      model: "${EMBEDDING_MODEL}"
+      dimension: ${EMBEDDING_DIMENSION}
+      task_passage: "retrieval.passage"
+      task_query: "retrieval.query"
+      batch_size: 64
+
+    chunking:
+      method: "markdown_heading"
+      chunk_tokens: 256
+      window_size: 9
+      max_window_length: 12000
+      target_max_length: 10000
+      max_table_length: 3000
+
+    auth:
+      enabled: ${AUTH_ENABLED}
+      api_keys: {}
+
+    metrics:
+      enabled: true
+      path: "/metrics"
+
+    rate_limit:
+      enabled: true
+      default_limit: "60/minute"
+
+    cors:
+      origins: "*"
+
+---
+# Secret — 敏感配置
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vector-lake-secrets
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+type: Opaque
+stringData:
+  S3_ACCESS_KEY: "minioadmin"
+  S3_SECRET_KEY: "minioadmin"
+  API_KEYS: "{}"
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vector-lake
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  # LanceDB 不支持多写, 单副本写 + 多副本读需通过 ReadWriteOnce PVC
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vector-lake
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vector-lake
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: vector-lake
+          image: vector-lake:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: STORAGE_BACKEND
+              value: "local"
+            - name: S3_ENDPOINT_URL
+              value: "http://minio:9000"
+            - name: S3_BUCKET
+              value: "vector-lake"
+            - name: S3_PREFIX
+              value: "data"
+            - name: S3_REGION
+              value: "us-east-1"
+            - name: EMBEDDING_BASE_URL
+              value: "http://embedding:8006"
+            - name: EMBEDDING_MODEL
+              value: "embedding-v5"
+            - name: EMBEDDING_DIMENSION
+              value: "1024"
+            - name: EMBEDDING_MOCK
+              value: "0"
+            - name: AUTH_ENABLED
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: vector-lake-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: lance-data
+              mountPath: /app/lance_data
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vector-lake-data
+        - name: lance-data
+          persistentVolumeClaim:
+            claimName: vector-lake-lance
+        - name: config
+          configMap:
+            name: vector-lake-config
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: vector-lake
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: vector-lake
+    app.kubernetes.io/component: api
+
+---
+# PVC — Entity 数据
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vector-lake-data
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: standard  # 按集群调整
+
+---
+# PVC — LanceDB 数据
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vector-lake-lance
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: standard  # 按集群调整
+
+---
+# MinIO Deployment (S3 兼容存储)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: vector-lake
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          env:
+            - name: MINIO_ROOT_USER
+              value: minioadmin
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vector-lake-secrets
+                  key: S3_SECRET_KEY
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: minio-data
+
+---
+# MinIO Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: minio
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: api
+      name: api
+    - port: 9001
+      targetPort: console
+      name: console
+  selector:
+    app.kubernetes.io/name: minio
+
+---
+# MinIO PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: minio
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# MinIO Job — 初始化 Bucket
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: minio-init
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2024-11-05T11-29-45Z
+          command:
+            - /bin/sh
+            - -c
+            - |
+              mc alias set myminio http://minio:9000 minioadmin minioadmin
+              mc mb myminio/vector-lake --ignore-existing
+              echo "Bucket vector-lake ready"
+  backoffLimit: 3
+
+---
+# Prometheus ServiceMonitor (如果集群有 Prometheus Operator)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vector-lake
+  namespace: vector-lake
+  labels:
+    app.kubernetes.io/name: vector-lake
+    release: prometheus  # 匹配 Prometheus Operator 的 serviceMonitorSelector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vector-lake
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 10s
+  namespaceSelector:
+    matchNames:
+      - vector-lake

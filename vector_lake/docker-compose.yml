@@ -1,0 +1,173 @@
+# Vector Lake — docker-compose 部署方案
+# ==========================================
+# 使用方式:
+#   本地存储模式:  docker compose up
+#   MinIO 模式:    docker compose --profile minio up
+#   全栈模式:      docker compose --profile full up
+
+services:
+  # ===================================================================
+  # Vector Lake 主服务
+  # ===================================================================
+  vector-lake:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: "[s3]"
+        STORAGE_BACKEND: local
+    image: vector-lake:0.1.0
+    container_name: vector-lake
+    restart: unless-stopped
+    ports:
+      - "${VL_PORT:-8000}:8000"
+    volumes:
+      - vl-data:/app/data
+      - vl-lance:/app/lance_data
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      # 通过环境变量覆盖 config.yaml (pydantic-settings 支持)
+      VL_STORAGE__BACKEND: ${VL_STORAGE_BACKEND:-local}
+      VL_STORAGE__LOCAL__ROOT: /app/data
+      VL_LANCE__DATA_DIR: /app/lance_data
+      VL_EMBEDDING__BASE_URL: ${VL_EMBEDDING_BASE_URL:-http://embedding:8006}
+      VL_EMBEDDING__MOCK: ${VL_EMBEDDING_MOCK:-0}
+    depends_on:
+      embedding:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - vl-net
+
+  # ===================================================================
+  # Embedding 服务 (兼容 OpenAI API 的向量服务)
+  # ===================================================================
+  embedding:
+    image: ${VL_EMBEDDING_IMAGE:-ghcr.io/embedding-proxy/embedding-proxy:latest}
+    container_name: vl-embedding
+    restart: unless-stopped
+    ports:
+      - "8006:8006"
+    environment:
+      # 替换为实际的 embedding 服务配置
+      MODEL_NAME: ${VL_EMBEDDING_MODEL:-embedding-v5}
+    profiles:
+      - full
+    networks:
+      - vl-net
+
+  # ===================================================================
+  # MinIO (S3 兼容对象存储) — 可选
+  # ===================================================================
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    container_name: vl-minio
+    restart: unless-stopped
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - minio
+      - full
+    networks:
+      - vl-net
+
+  # MinIO 初始化 (创建 bucket)
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-05T11-29-45Z
+    container_name: vl-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      mc mb myminio/vector-lake --ignore-existing;
+      echo 'Bucket vector-lake created';
+      "
+    profiles:
+      - minio
+      - full
+    networks:
+      - vl-net
+
+  # ===================================================================
+  # Prometheus (指标采集) — 可选
+  # ===================================================================
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: vl-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    profiles:
+      - full
+    networks:
+      - vl-net
+
+  # ===================================================================
+  # Grafana (指标可视化) — 可选
+  # ===================================================================
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: vl-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./deploy/grafana-datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    profiles:
+      - full
+    networks:
+      - vl-net
+
+# ===================================================================
+# Volumes
+# ===================================================================
+volumes:
+  vl-data:
+    driver: local
+  vl-lance:
+    driver: local
+  minio-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# ===================================================================
+# Networks
+# ===================================================================
+networks:
+  vl-net:
+    driver: bridge

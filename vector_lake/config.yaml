@@ -6,6 +6,13 @@ storage:
   backend: local
   local:
     root: "./data"
+  s3:
+    endpoint_url: "http://127.0.0.1:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+    bucket: "vector-lake"
+    prefix: "data"
+    region: "us-east-1"
 
 lance:
   data_dir: "./lance_data"
@@ -29,3 +36,14 @@ chunking:
 auth:
   enabled: false
   api_keys: {}
+
+metrics:
+  enabled: true
+  path: "/metrics"
+
+rate_limit:
+  enabled: true
+  default_limit: "60/minute"
+
+cors:
+  origins: "*"

@@ -3,14 +3,25 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Copy source and build wheels
+# Build args for optional dependencies
+ARG EXTRAS=""
+
 COPY pyproject.toml ./
 COPY app/ ./app/
 RUN pip install --no-cache-dir --upgrade pip setuptools \
-    && pip wheel --no-cache-dir --wheel-dir /wheels .
+    && pip wheel --no-cache-dir --wheel-dir /wheels ".${EXTRAS}"
 
 # ---------- Stage 2: Runtime ----------
 FROM python:3.11-slim
+
+# Build arg: storage backend tag for image labeling
+ARG STORAGE_BACKEND=local
+
+LABEL maintainer="vector-lake"
+LABEL org.opencontainers.image.title="vector-lake"
+LABEL org.opencontainers.image.description="OSS-based knowledge lake with Entity → Rep → Chunk → Index model"
+LABEL org.opencontainers.image.version="0.1.0"
+LABEL vector-lake.storage-backend="${STORAGE_BACKEND}"
 
 # Create non-root user
 RUN groupadd -r vectorlake && useradd -r -g vectorlake -d /app vectorlake
@@ -26,7 +37,7 @@ RUN pip install --no-cache-dir --find-links /wheels vector-lake \
 COPY --chown=vectorlake:vectorlake app/ ./app/
 COPY --chown=vectorlake:vectorlake config.yaml ./
 
-# Create data directories
+# Create data directories (local backend)
 RUN mkdir -p /app/data /app/lance_data && chown -R vectorlake:vectorlake /app/data /app/lance_data
 
 # Expose port
