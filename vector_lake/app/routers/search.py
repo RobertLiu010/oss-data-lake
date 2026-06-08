@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, HTTPException, Request
 
 from app.models.search import SearchRequest, SearchResult, SearchType
@@ -28,6 +30,7 @@ async def search(ws: str, col: str, req: SearchRequest, request: Request):
     # Lexical-only search does not need embeddings
     if req.search_type == SearchType.LEXICAL:
         try:
+            t0 = time.monotonic()
             results = await index_svc.search_lexical(
                 ws, col, req.query, top_k=req.top_k,
             )
@@ -36,6 +39,8 @@ async def search(ws: str, col: str, req: SearchRequest, request: Request):
                 status_code=500,
                 detail=f"Index search error: {exc}",
             )
+        from app.metrics import record_search_query
+        record_search_query("lexical", time.monotonic() - t0, len(results))
         return results
 
     # Semantic and hybrid both need a query vector
@@ -49,6 +54,7 @@ async def search(ws: str, col: str, req: SearchRequest, request: Request):
 
     if req.search_type == SearchType.HYBRID:
         try:
+            t0 = time.monotonic()
             results = await index_svc.search_hybrid(
                 ws, col, req.query, query_vector,
                 top_k=req.top_k,
@@ -61,14 +67,19 @@ async def search(ws: str, col: str, req: SearchRequest, request: Request):
                 status_code=500,
                 detail=f"Index search error: {exc}",
             )
+        from app.metrics import record_search_query
+        record_search_query("hybrid", time.monotonic() - t0, len(results))
         return results
 
     # Default: semantic search
     try:
+        t0 = time.monotonic()
         results = await index_svc.search(ws, col, query_vector, top_k=req.top_k)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Index search error: {exc}",
         )
+    from app.metrics import record_search_query
+    record_search_query("semantic", time.monotonic() - t0, len(results))
     return results

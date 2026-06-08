@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,8 @@ class IndexService:
         tmp_path = parquet_path.with_suffix(".parquet.tmp")
         pq.write_table(table, tmp_path)
         tmp_path.replace(parquet_path)
+        from app.metrics import record_parquet_write
+        record_parquet_write()
         logger.info(
             "Wrote %d chunks to %s (entity %s, rep=%s)",
             len(chunks_with_vectors), parquet_path, entity_id, rep_name,
@@ -291,7 +294,16 @@ class IndexService:
 
             return full_table.num_rows
 
-        count = await asyncio.get_event_loop().run_in_executor(None, _sync)
+        t0 = time.monotonic()
+        try:
+            count = await asyncio.get_event_loop().run_in_executor(None, _sync)
+            from app.metrics import record_lance_sync, record_chunks_indexed
+            record_lance_sync("success", time.monotonic() - t0)
+            record_chunks_indexed(count)
+        except Exception:
+            from app.metrics import record_lance_sync
+            record_lance_sync("failure")
+            raise
         logger.info(
             "Synced %d rows from parquet to LanceDB %s (entity=%s, rep=%s)",
             count, table_name, entity_id, rep_name,
@@ -356,6 +368,8 @@ class IndexService:
             return combined.num_rows
 
         count = await asyncio.get_event_loop().run_in_executor(None, _rebuild)
+        from app.metrics import record_lance_rebuild
+        record_lance_rebuild()
         logger.info(
             "Rebuilt LanceDB table %s with %d rows from %d parquet files",
             table_name, count, len(all_tables),
@@ -509,7 +523,11 @@ class IndexService:
                 ))
             return out
 
-        return await asyncio.get_event_loop().run_in_executor(None, _search)
+        t0 = time.monotonic()
+        out = await asyncio.get_event_loop().run_in_executor(None, _search)
+        from app.metrics import record_search_query
+        record_search_query("semantic", time.monotonic() - t0, len(out))
+        return out
 
     # ------------------------------------------------------------------
     # Lexical search
@@ -572,7 +590,11 @@ class IndexService:
                 ))
             return out
 
-        return await asyncio.get_event_loop().run_in_executor(None, _search)
+        t0 = time.monotonic()
+        out = await asyncio.get_event_loop().run_in_executor(None, _search)
+        from app.metrics import record_search_query
+        record_search_query("lexical", time.monotonic() - t0, len(out))
+        return out
 
     # ------------------------------------------------------------------
     # Hybrid search (RRF)
@@ -590,6 +612,7 @@ class IndexService:
         lexical_weight: float = 0.3,
     ) -> list[SearchResult]:
         """Hybrid search using Reciprocal Rank Fusion (RRF)."""
+        t0 = time.monotonic()
         fetch_k = top_k * 3
 
         semantic_results, lexical_results = await asyncio.gather(
@@ -627,4 +650,6 @@ class IndexService:
                 search_type="hybrid",
                 rep_name=result.rep_name,
             ))
+        from app.metrics import record_search_query
+        record_search_query("hybrid", time.monotonic() - t0, len(out))
         return out

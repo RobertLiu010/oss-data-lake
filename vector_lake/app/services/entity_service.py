@@ -259,6 +259,9 @@ class EntityService:
         # Write Entity Tags + manifest AFTER pipeline + rep tags
         self._write_entity_meta(workspace_id, collection_id, entity_id, entity, trigger="ingest")
 
+        from app.metrics import record_entity_op
+        record_entity_op("create")
+
         logger.info("Created entity %s from file %s", entity_id, filename)
         self._invalidate_list_cache(workspace_id, collection_id)
         return entity
@@ -274,6 +277,8 @@ class EntityService:
         entity_id: str,
     ) -> Entity | None:
         """Get entity by ID — assembled from OSS Tag + path."""
+        from app.metrics import record_entity_op
+        record_entity_op("read")
         return self._assemble_entity(workspace_id, collection_id, entity_id)
 
     # ------------------------------------------------------------------
@@ -444,6 +449,9 @@ class EntityService:
             entity_id, rebuilt,
         )
 
+        from app.metrics import record_entity_op
+        record_entity_op("content_update")
+
         # 5. Update manifest + version log
         self._write_entity_meta(
             workspace_id, collection_id, entity_id, entity,
@@ -477,6 +485,9 @@ class EntityService:
 
         entity.updated_at = datetime.now()
 
+        from app.metrics import record_entity_op
+        record_entity_op("update")
+
         # Update OSS Tags + manifest
         self._write_entity_meta(workspace_id, collection_id, entity_id, entity)
 
@@ -503,6 +514,9 @@ class EntityService:
         entity = await self.get_entity(workspace_id, collection_id, entity_id)
         if entity is None:
             return False
+
+        from app.metrics import record_entity_op
+        record_entity_op("delete")
 
         if hard:
             entity_dir = self.root / workspace_id / collection_id / entity_id

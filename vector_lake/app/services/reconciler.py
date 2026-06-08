@@ -148,6 +148,7 @@ class ReconcilerService:
         Phase 2: Check index consistency
         """
         result = ReconcileResult()
+        t0 = time.monotonic()
 
         # Acquire distributed lock
         try:
@@ -171,6 +172,8 @@ class ReconcilerService:
 
                 entity_id = entity_dir.name
                 result.entities_scanned += 1
+                from app.metrics import record_reconcile_scan
+                record_reconcile_scan()
 
                 # Load entity metadata from OSS Tag + manifest
                 entity_tags = self.storage.get_entity_tags(ws, col, entity_id)
@@ -183,6 +186,8 @@ class ReconcilerService:
                         drift_type=DriftType.MISSING_ENTITY_META,
                         detail="No OSS Tags or manifest found",
                     ))
+                    from app.metrics import record_reconcile_drift
+                    record_reconcile_drift(DriftType.MISSING_ENTITY_META.value)
                     continue
 
                 # Check required rep files exist via storage API
@@ -196,6 +201,8 @@ class ReconcilerService:
                             drift_type=DriftType.MISSING_REP,
                             detail=f"Required rep_type '{rep_type}' not found",
                         ))
+                        from app.metrics import record_reconcile_drift
+                        record_reconcile_drift(DriftType.MISSING_REP.value)
 
                 # Check content staleness: source_original hash vs Tag content_hash
                 source_exists = self.storage.file_exists(ws, col, entity_id, "source_original")
@@ -218,6 +225,8 @@ class ReconcilerService:
                                         f"recorded={recorded_hash}, actual={actual_hash}"
                                     ),
                                 ))
+                                from app.metrics import record_reconcile_drift
+                                record_reconcile_drift(DriftType.STALE_REP.value)
                     except Exception as e:
                         result.errors.append(
                             f"Error checking staleness for {entity_id}: {e}"
@@ -241,6 +250,8 @@ class ReconcilerService:
                             drift_type=DriftType.MISSING_INDEX,
                             detail="Entity has canonical_md but no LanceDB index entries",
                         ))
+                        from app.metrics import record_reconcile_drift
+                        record_reconcile_drift(DriftType.MISSING_INDEX.value)
             except Exception as e:
                 result.errors.append(f"Phase 2 index check failed: {e}")
 
@@ -254,6 +265,8 @@ class ReconcilerService:
                         drift.repaired = True
                         drift.repair_detail = "Pipeline re-executed"
                         result.drifts_repaired += 1
+                        from app.metrics import record_reconcile_repair
+                        record_reconcile_repair(drift.drift_type.value)
 
                         # After successful repair, update manifest
                         manifest = self.storage.read_entity_manifest(ws, col, drift.entity_id)
@@ -277,6 +290,8 @@ class ReconcilerService:
                         drift.repaired = True
                         drift.repair_detail = f"Re-synced {count} rows to LanceDB"
                         result.drifts_repaired += 1
+                        from app.metrics import record_reconcile_repair
+                        record_reconcile_repair(drift.drift_type.value)
                     except Exception as e:
                         drift.repair_detail = f"Index repair failed: {e}"
                         result.errors.append(
@@ -292,6 +307,8 @@ class ReconcilerService:
                         drift.repaired = True
                         drift.repair_detail = f"Synced {count} rows to LanceDB"
                         result.drifts_repaired += 1
+                        from app.metrics import record_reconcile_repair
+                        record_reconcile_repair(drift.drift_type.value)
                     except Exception as e:
                         drift.repair_detail = f"Index sync failed: {e}"
                         result.errors.append(
@@ -307,6 +324,8 @@ class ReconcilerService:
                 result.drifts_repaired,
                 len(result.errors),
             )
+            from app.metrics import record_reconcile_latency
+            record_reconcile_latency(time.monotonic() - t0)
             return result
         finally:
             self._release_lock(ws, col)

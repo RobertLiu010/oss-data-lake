@@ -109,6 +109,9 @@ class SyncQueue:
 
         self._pending[key] = task
         self._stats["enqueued"] += 1
+        from app.metrics import record_sync_enqueue, set_sync_queue_depth
+        record_sync_enqueue()
+        set_sync_queue_depth(self.queue_size())
         # Persist to sidecar
         self._append_sidecar(task)
         return True
@@ -129,6 +132,9 @@ class SyncQueue:
         key = self._dedup_key(task)
         self._pending.pop(key, None)
         self._stats["completed"] += 1
+        from app.metrics import record_sync_dequeue, set_sync_queue_depth
+        record_sync_dequeue("success")
+        set_sync_queue_depth(self.queue_size())
         self._update_sidecar(task)
 
     def mark_failed(self, task: SyncTask, error: str) -> None:
@@ -145,6 +151,8 @@ class SyncQueue:
                 "Sync task %s failed (attempt %d/%d), retry in %ds: %s",
                 task.task_id, task.attempts, task.max_attempts, backoff, error,
             )
+            from app.metrics import record_sync_retry
+            record_sync_retry()
             # Schedule re-enqueue after backoff
             asyncio.get_event_loop().call_later(
                 backoff,
@@ -155,6 +163,9 @@ class SyncQueue:
             key = self._dedup_key(task)
             self._pending.pop(key, None)
             self._stats["failed"] += 1
+            from app.metrics import record_sync_dequeue, set_sync_queue_depth
+            record_sync_dequeue("failure")
+            set_sync_queue_depth(self.queue_size())
             logger.error(
                 "Sync task %s permanently failed after %d attempts: %s",
                 task.task_id, task.attempts, error,
@@ -355,6 +366,8 @@ class SyncWorker:
                     task.entity_id, task.rep_name, error_msg,
                 )
                 self.queue.mark_failed(task, error_msg)
+                from app.metrics import record_sync_worker_error
+                record_sync_worker_error()
 
     def is_running(self) -> bool:
         return self._running and self._task is not None and not self._task.done()

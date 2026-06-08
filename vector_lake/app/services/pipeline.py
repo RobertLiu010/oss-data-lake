@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from typing import Any
 
 from app.config import Settings
@@ -469,13 +470,20 @@ class IndexPipelineService:
         # Embed the chunks
         texts_to_embed = [c.embedding_text or c.text for c in chunks]
         try:
+            t0 = time.monotonic()
             vectors = await self.embedding.embed_passages(texts_to_embed)
+            from app.metrics import record_embedding_latency, record_pipeline_chunks
+            record_embedding_latency(time.monotonic() - t0, len(texts_to_embed))
+            record_pipeline_chunks(len(chunks))
         except Exception as exc:
             logger.warning(
                 "IndexPipeline: embedding failed for entity %s (%s), "
                 "chunks saved but not indexed",
                 entity_id, exc,
             )
+            from app.metrics import record_pipeline_error, record_pipeline_entity
+            record_pipeline_error("embed")
+            record_pipeline_entity("failure")
             return chunks
 
         # Build index via IndexTemplate
@@ -509,6 +517,9 @@ class IndexPipelineService:
                 "IndexPipeline: indexed %d chunks for entity %s",
                 len(chunks), entity_id,
             )
+            from app.metrics import record_pipeline_entity, record_chunks_indexed
+            record_pipeline_entity("success")
+            record_chunks_indexed(len(chunks))
             if self.event_bus:
                 await self.event_bus.publish(Event(
                     event_type=EventType.INDEX_COMPLETED,
@@ -523,6 +534,9 @@ class IndexPipelineService:
                 "chunks saved but not searchable",
                 entity_id, exc,
             )
+            from app.metrics import record_pipeline_error, record_pipeline_entity
+            record_pipeline_error("index")
+            record_pipeline_entity("failure")
 
         return chunks
 
@@ -861,13 +875,19 @@ class PipelineService:
         # Embed the chunks
         texts_to_embed = [c.embedding_text or c.text for c in chunks]
         try:
+            t0 = time.monotonic()
             vectors = await self.embedding.embed_passages(texts_to_embed)
+            from app.metrics import record_embedding_latency, record_pipeline_chunks
+            record_embedding_latency(time.monotonic() - t0, len(texts_to_embed))
+            record_pipeline_chunks(len(chunks))
         except Exception as exc:
             logger.warning(
                 "Pipeline: embedding failed for entity %s (%s), "
                 "chunks saved but not indexed",
                 entity_id, exc,
             )
+            from app.metrics import record_pipeline_error
+            record_pipeline_error("embed")
             if self.event_bus:
                 await self.event_bus.publish(Event(
                     event_type=EventType.REP_COMPLETED,
@@ -923,6 +943,8 @@ class PipelineService:
                 "chunks saved but not searchable",
                 entity_id, exc,
             )
+            from app.metrics import record_pipeline_error
+            record_pipeline_error("index")
             if self.event_bus:
                 await self.event_bus.publish(Event(
                     event_type=EventType.REP_COMPLETED,

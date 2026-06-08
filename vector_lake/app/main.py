@@ -116,6 +116,10 @@ def _init_metrics():
 
 _init_metrics()
 
+# Initialize business metrics (pipeline, index, sync, reconciler, search, entity)
+from app.metrics import init_metrics as _init_business_metrics
+_init_business_metrics()
+
 
 # ---------------------------------------------------------------------------
 # Rate limiter (lazy init)
@@ -347,6 +351,63 @@ async def readiness():
         "pipeline": True,
         "vfs": app.state.vfs_service is not None,
     }
-    if not all(checks.values()):
+    # Non-critical: sync_worker may not be running in test environments
+    sync_worker = getattr(app.state, "sync_worker", None)
+    checks["sync_worker"] = sync_worker is not None and sync_worker.is_running()
+    critical_checks = {k: v for k, v in checks.items() if k != "sync_worker"}
+    if not all(critical_checks.values()):
         return JSONResponse(status_code=503, content={"ready": False, "checks": checks})
     return {"ready": True, "checks": checks}
+
+
+@app.get("/status", tags=["system"])
+async def status():
+    """Detailed system status including sync queue, reconciler, and index stats."""
+    settings = getattr(app.state, "settings", None)
+    if settings is None:
+        return JSONResponse(status_code=503, content={"status": "not_initialized"})
+
+    result: dict = {"status": "ok"}
+
+    # Sync queue stats
+    sync_queue = getattr(app.state, "sync_queue", None)
+    if sync_queue is not None:
+        result["sync_queue"] = sync_queue.stats()
+    else:
+        result["sync_queue"] = {"available": False}
+
+    # Sync worker status
+    sync_worker = getattr(app.state, "sync_worker", None)
+    if sync_worker is not None:
+        result["sync_worker"] = {"running": sync_worker.is_running()}
+    else:
+        result["sync_worker"] = {"running": False}
+
+    # Reconciler last result
+    reconciler = getattr(app.state, "reconciler_service", None)
+    if reconciler is not None and reconciler.last_result is not None:
+        lr = reconciler.last_result
+        result["reconciler"] = {
+            "last_scan": {
+                "started_at": str(lr.started_at),
+                "finished_at": str(lr.finished_at) if lr.finished_at else None,
+                "entities_scanned": lr.entities_scanned,
+                "drifts_found": lr.drift_count,
+                "drifts_repaired": lr.drifts_repaired,
+                "errors": len(lr.errors),
+            }
+        }
+    else:
+        result["reconciler"] = {"last_scan": None}
+
+    # Index service basic info
+    index_svc = getattr(app.state, "index_service", None)
+    if index_svc is not None:
+        result["index"] = {
+            "dimension": index_svc.dimension,
+            "data_dir": index_svc.settings.lance.data_dir,
+        }
+    else:
+        result["index"] = {"available": False}
+
+    return result
